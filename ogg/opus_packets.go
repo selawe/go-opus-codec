@@ -15,6 +15,9 @@ func BuildOpusHeadPacket(h OpusHead) ([]byte, error) {
 		return nil, fmt.Errorf("%w: channels=0", ErrBadOpusHead)
 	}
 	if h.ChannelMappingFamily == 0 {
+		if h.Channels > 2 {
+			return nil, fmt.Errorf("%w: family 0 requires channels <= 2, got %d", ErrBadOpusHead, h.Channels)
+		}
 		b := make([]byte, 19)
 		copy(b[0:8], opusHeadMagic)
 		b[8] = h.Version

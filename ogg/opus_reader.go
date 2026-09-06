@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
+	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -48,12 +49,37 @@ type OpusTags struct {
 	Comments []string
 }
 
+// Get returns the value of the first comment matching key (case-insensitive).
+// For example, tags.Get("TITLE") returns "My Song" from "TITLE=My Song".
+// Returns empty string if key is not found.
+func (t OpusTags) Get(key string) string {
+	prefix := strings.ToUpper(key) + "="
+	for _, c := range t.Comments {
+		if len(c) >= len(prefix) && strings.EqualFold(c[:len(prefix)], prefix) {
+			return c[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// GetAll returns all comment values matching key (case-insensitive).
+func (t OpusTags) GetAll(key string) []string {
+	prefix := strings.ToUpper(key) + "="
+	var matches []string
+	for _, c := range t.Comments {
+		if len(c) >= len(prefix) && strings.EqualFold(c[:len(prefix)], prefix) {
+			matches = append(matches, c[len(prefix):])
+		}
+	}
+	return matches
+}
+
 type OpusAudioPacket struct {
 	Data         []byte
 	GranulePos   uint64
 	GranuleValid bool
 	EOS          bool
-    PageSequence uint32
+	PageSequence uint32
 }
 
 // OpusReader reads an Ogg Opus file/stream and yields Opus audio packets.
@@ -140,31 +166,31 @@ func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 		GranulePos:   pkt.GranulePosition,
 		GranuleValid: pkt.GranuleValid,
 		EOS:          pkt.EOS,
-        PageSequence: pkt.PageSequenceEnd,
+		PageSequence: pkt.PageSequenceEnd,
 	}, nil
 }
 
 // returns the granule position of the sequence just before the requested granule position
 func (r *OpusReader) SeekToPage(granulePos uint64) (uint64, error) {
-    return r.pr.SeekToPage(granulePos)
+	return r.pr.SeekToPage(granulePos)
 }
 
 // return the total number of samples in the stream, derived from the last page granule position.
 // Note: this method is destructive in that it reads packets. Subsequent calls to ReadAudioPacket may return EOF.
 // if the underlying reader is seekable, you may want to seek back to the start after calling this method.
 func (r *OpusReader) TotalSamples() (int64, error) {
-    // only compute one time
-    r.cachedTotalOnce.Do(func() {
-        granule, err := r.pr.LastPageGranule()
-        if err != nil {
-            r.cachedTotalErr = err
-        } else {
-            r.cachedTotalSamples = granule - int64(r.Head.PreSkip)
-            r.cachedTotalErr = nil
-        }
-    })
+	// only compute one time
+	r.cachedTotalOnce.Do(func() {
+		granule, err := r.pr.LastPageGranule()
+		if err != nil {
+			r.cachedTotalErr = err
+		} else {
+			r.cachedTotalSamples = granule - int64(r.Head.PreSkip)
+			r.cachedTotalErr = nil
+		}
+	})
 
-    return r.cachedTotalSamples, r.cachedTotalErr
+	return r.cachedTotalSamples, r.cachedTotalErr
 }
 
 // TotalDuration returns the decoded playback duration, derived from TotalSamples.
@@ -193,12 +219,29 @@ func parseOpusHead(b []byte) (OpusHead, error) {
 	h.OutputGainQ8 = int16(binary.LittleEndian.Uint16(b[16:18]))
 	h.ChannelMappingFamily = b[18]
 
-	if h.ChannelMappingFamily != 0 {
+	if h.Channels == 0 {
+		return OpusHead{}, fmt.Errorf("%w: channels=0", ErrBadOpusHead)
+	}
+
+	if h.ChannelMappingFamily == 0 {
+		if h.Channels > 2 {
+			return OpusHead{}, fmt.Errorf("%w: family 0 requires channels <= 2, got %d", ErrBadOpusHead, h.Channels)
+		}
+	} else {
 		if len(b) < 21 {
 			return OpusHead{}, fmt.Errorf("%w: mapping too short", ErrBadOpusHead)
 		}
 		h.StreamCount = b[19]
 		h.CoupledStreamCount = b[20]
+		if h.StreamCount == 0 {
+			return OpusHead{}, fmt.Errorf("%w: stream count cannot be 0", ErrBadOpusHead)
+		}
+		if h.CoupledStreamCount > h.StreamCount {
+			return OpusHead{}, fmt.Errorf("%w: coupled stream count %d > stream count %d", ErrBadOpusHead, h.CoupledStreamCount, h.StreamCount)
+		}
+		if int(h.StreamCount)+int(h.CoupledStreamCount) > int(h.Channels) {
+			return OpusHead{}, fmt.Errorf("%w: streams (%d+%d) > channels (%d)", ErrBadOpusHead, h.StreamCount, h.CoupledStreamCount, h.Channels)
+		}
 		need := 21 + int(h.Channels)
 		if len(b) < need {
 			return OpusHead{}, fmt.Errorf("%w: mapping table too short", ErrBadOpusHead)
