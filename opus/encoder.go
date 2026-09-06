@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"unsafe"
 
 	libc "github.com/kazzmir/opus-go/libcshim"
 
@@ -36,6 +35,10 @@ type Encoder struct {
 	sampleRate  int
 	channels    int
 	application int
+
+	encBuf []byte
+	pcmI16 []int16
+	pcmF32 []float32
 }
 
 func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
@@ -226,13 +229,87 @@ func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (int, error)
 		return 0, errors.New("opus: packet buffer is empty")
 	}
 
-	pcmPtr := uintptr(unsafe.Pointer(&pcm[0]))
-	outPtr := uintptr(unsafe.Pointer(&packet[0]))
+	// Ensure heap-backed buffers for ccgo interop so pointers remain valid
+	// if the goroutine stack grows during transpiled C execution.
+	if cap(e.encBuf) < len(packet) {
+		e.encBuf = make([]byte, len(packet))
+	} else {
+		e.encBuf = e.encBuf[:len(packet)]
+	}
+	if cap(e.pcmI16) < nNeeded {
+		e.pcmI16 = make([]int16, nNeeded)
+	} else {
+		e.pcmI16 = e.pcmI16[:nNeeded]
+	}
+	copy(e.pcmI16, pcm[:nNeeded])
+
+	pcmPtr := libc.PtrInt16(e.pcmI16)
+	outPtr := libc.PtrByte(e.encBuf)
 
 	ret := opusccenc.Opus_opus_encode(e.tls, e.st, pcmPtr, int32(frameSize), outPtr, opusccenc.OpusT_opus_int32(len(packet)))
 	if ret < 0 {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, int32(ret)), ret)
 	}
+	copy(packet, e.encBuf[:ret])
+	return int(ret), nil
+}
+
+// EncodeF32 encodes interleaved float32 PCM (normalized to [-1.0, 1.0]) into a single Opus packet.
+//
+// frameSize is the number of samples per channel in the input PCM.
+// Supported frame sizes at 48 kHz are 120, 240, 480, 960, 1920, and 2880 (2.5, 5, 10, 20, 40, and 60 ms).
+//
+// Returns the number of bytes written to packet.
+func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (int, error) {
+	if e == nil {
+		return 0, errors.New("opus: encoder closed")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.tls == nil || e.st == 0 {
+		return 0, errors.New("opus: encoder closed")
+	}
+	if frameSize <= 0 {
+		return 0, errors.New("opus: invalid frameSize")
+	}
+	nNeeded := frameSize * e.channels
+	if len(pcm) < nNeeded {
+		return 0, fmt.Errorf("opus: pcm buffer too small: need %d samples, have %d", nNeeded, len(pcm))
+	}
+	if len(packet) == 0 {
+		return 0, errors.New("opus: packet buffer is empty")
+	}
+
+	// Ensure heap-backed buffers for ccgo interop so pointers remain valid
+	// if the goroutine stack grows during transpiled C execution.
+	if cap(e.encBuf) < len(packet) {
+		e.encBuf = make([]byte, len(packet))
+	} else {
+		e.encBuf = e.encBuf[:len(packet)]
+	}
+	if cap(e.pcmF32) < nNeeded {
+		e.pcmF32 = make([]float32, nNeeded)
+	} else {
+		e.pcmF32 = e.pcmF32[:nNeeded]
+	}
+	copy(e.pcmF32, pcm[:nNeeded])
+
+	pcmPtr := libc.PtrFloat32(e.pcmF32)
+	outPtr := libc.PtrByte(e.encBuf)
+
+	ret := opusccenc.Opus_opus_encode_float(
+		e.tls,
+		e.st,
+		pcmPtr,
+		int32(frameSize),
+		outPtr,
+		opusccenc.OpusT_opus_int32(len(packet)),
+	)
+	if ret < 0 {
+		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, int32(ret)), ret)
+	}
+	copy(packet, e.encBuf[:ret])
 	return int(ret), nil
 }
 
