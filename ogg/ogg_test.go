@@ -285,3 +285,80 @@ func TestRFC3533_InvalidCapturePattern(t *testing.T) {
 		t.Fatalf("expected ErrInvalidCapturePattern, got: %v", err)
 	}
 }
+
+func TestRFC3533_Resynchronization(t *testing.T) {
+	// Create two valid pages using PacketWriter
+	var buf1, buf2 bytes.Buffer
+	pw1 := NewPacketWriter(&buf1, 0x1234)
+	if err := pw1.WritePacket([]byte("page-one-payload"), 960, true, false); err != nil {
+		t.Fatalf("WritePacket 1: %v", err)
+	}
+	if err := pw1.Flush(); err != nil {
+		t.Fatalf("Flush 1: %v", err)
+	}
+
+	pw2 := NewPacketWriter(&buf2, 0x1234)
+	if err := pw2.WritePacket([]byte("page-two-payload"), 1920, false, true); err != nil {
+		t.Fatalf("WritePacket 2: %v", err)
+	}
+	if err := pw2.Flush(); err != nil {
+		t.Fatalf("Flush 2: %v", err)
+	}
+
+	page1Bytes := buf1.Bytes()
+	page2Bytes := buf2.Bytes()
+
+	// 1. Inject junk before page 1, between page 1 and page 2, and verify recovery
+	var corruptedStream bytes.Buffer
+	corruptedStream.Write([]byte("GARBAGE_PREFIX_DATA_CORRUPTION_12345"))
+	corruptedStream.Write(page1Bytes)
+	corruptedStream.Write([]byte("RANDOM_INTERMEDIATE_NOISE_PACKET_LOSS_BYTES"))
+	corruptedStream.Write(page2Bytes)
+
+	pr := NewPageReader(bytes.NewReader(corruptedStream.Bytes()))
+	p1, err := pr.ReadPage()
+	if err != nil {
+		t.Fatalf("failed to resync and read page 1: %v", err)
+	}
+	if string(p1.SegmentData) != "page-one-payload" {
+		t.Fatalf("page 1 data mismatch: got %q, want 'page-one-payload'", string(p1.SegmentData))
+	}
+
+	p2, err := pr.ReadPage()
+	if err != nil {
+		t.Fatalf("failed to resync and read page 2: %v", err)
+	}
+	if string(p2.SegmentData) != "page-two-payload" {
+		t.Fatalf("page 2 data mismatch: got %q, want 'page-two-payload'", string(p2.SegmentData))
+	}
+
+	// 2. Resync disabled should fail immediately on corrupted stream prefix
+	prNoResync := NewPageReader(bytes.NewReader(corruptedStream.Bytes()))
+	prNoResync.Resync = false
+	_, err = prNoResync.ReadPage()
+	if !errors.Is(err, ErrInvalidCapturePattern) {
+		t.Fatalf("expected ErrInvalidCapturePattern when Resync=false, got: %v", err)
+	}
+
+	// 3. False capture pattern with invalid version (e.g. version = 99) should be skipped
+	var streamWithFalseOggS bytes.Buffer
+	streamWithFalseOggS.Write([]byte{'O', 'g', 'g', 'S', 99, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	streamWithFalseOggS.Write(page1Bytes)
+
+	prFalseOggS := NewPageReader(bytes.NewReader(streamWithFalseOggS.Bytes()))
+	pRecovered, err := prFalseOggS.ReadPage()
+	if err != nil {
+		t.Fatalf("failed to recover from false OggS header: %v", err)
+	}
+	if string(pRecovered.SegmentData) != "page-one-payload" {
+		t.Fatalf("recovered page data mismatch: got %q", string(pRecovered.SegmentData))
+	}
+
+	// 4. Exceeding MaxResync returns ErrResyncFailed
+	prLimit := NewPageReader(bytes.NewReader(make([]byte, 5000)))
+	prLimit.MaxResync = 1000
+	_, err = prLimit.ReadPage()
+	if !errors.Is(err, ErrResyncFailed) {
+		t.Fatalf("expected ErrResyncFailed when exceeding MaxResync, got: %v", err)
+	}
+}
