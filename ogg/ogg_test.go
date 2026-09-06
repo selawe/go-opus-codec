@@ -467,3 +467,28 @@ func TestRFC3533_MultiPacketPageBatching(t *testing.T) {
 		t.Fatalf("EOS granule mismatch: valid=%v, pos=%d", pktEOS.GranuleValid, pktEOS.GranulePosition)
 	}
 }
+
+func TestRFC3533_CRC32SliceBy8Equivalence(t *testing.T) {
+	// Canonical reference implementation (byte-by-byte)
+	refCRC := func(crc uint32, data []byte) uint32 {
+		for _, v := range data {
+			crc = (crc << 8) ^ crcTable8[0][byte(crc>>24)^v]
+		}
+		return crc
+	}
+
+	// Test across varying lengths from 0 to 2048 bytes (including non-multiples of 8)
+	testData := make([]byte, 2048)
+	for i := range testData {
+		testData[i] = byte(i*37 + 13)
+	}
+
+	for length := 0; length <= len(testData); length += 7 {
+		chunk := testData[:length]
+		want := refCRC(0, chunk)
+		got := updateCRC8(0, chunk)
+		if got != want {
+			t.Fatalf("CRC32 mismatch for length %d: got 0x%08X, want 0x%08X", length, got, want)
+		}
+	}
+}

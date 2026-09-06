@@ -32,20 +32,6 @@ type PacketWriter struct {
 }
 
 func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
-	var tbl [256]uint32
-	const poly uint32 = 0x04C11DB7
-	for i := 0; i < 256; i++ {
-		c := uint32(i) << 24
-		for j := 0; j < 8; j++ {
-			if c&0x80000000 != 0 {
-				c = (c << 1) ^ poly
-			} else {
-				c <<= 1
-			}
-		}
-		tbl[i] = c
-	}
-
 	bw, ok := w.(*bufio.Writer)
 	if !ok {
 		bw = bufio.NewWriterSize(w, 1<<20)
@@ -55,7 +41,7 @@ func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
 		bw:           bw,
 		serial:       serial,
 		seq:          0,
-		crcTable:     tbl,
+		crcTable:     crcTable8[0],
 		pageSegTable: make([]byte, 0, 255),
 		pageData:     make([]byte, 0, 4096),
 	}
@@ -233,7 +219,7 @@ func (pw *PacketWriter) writePage(headerType uint8, granulePos uint64, segTable 
 	binary.LittleEndian.PutUint32(header[22:26], 0) // checksum placeholder
 	header[26] = byte(len(segTable))
 
-	crc := oggCRC3(header[:], segTable, segData, pw.crcTable)
+	crc := oggCRC3(header[:], segTable, segData)
 	binary.LittleEndian.PutUint32(header[22:26], crc)
 
 	if _, err := pw.bw.Write(header[:]); err != nil {

@@ -6,34 +6,21 @@ import (
 	"testing"
 )
 
+var sink uint32
+
 func BenchmarkCRC32(b *testing.B) {
 	data := make([]byte, 4096)
 	for i := range data {
 		data[i] = byte(i)
 	}
-
 	var header [27]byte
 	copy(header[:4], "OggS")
 	segTable := []byte{255, 255, 255, 255}
 
-	var tbl [256]uint32
-	const poly uint32 = 0x04C11DB7
-	for i := 0; i < 256; i++ {
-		c := uint32(i) << 24
-		for j := 0; j < 8; j++ {
-			if c&0x80000000 != 0 {
-				c = (c << 1) ^ poly
-			} else {
-				c <<= 1
-			}
-		}
-		tbl[i] = c
-	}
-
 	b.SetBytes(int64(len(header) + len(segTable) + len(data)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = oggCRC3(header[:], segTable, data, tbl)
+		sink = oggCRC3(header[:], segTable, data)
 	}
 }
 

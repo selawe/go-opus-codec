@@ -46,10 +46,10 @@ type PageReader struct {
 	crcTable  [256]uint32
 }
 
-func NewPageReader(r io.Reader) *PageReader {
-	var tbl [256]uint32
-	// Ogg uses the same CRC as Vorbis: polynomial 0x04C11DB7, MSB-first.
-	// This is not the reflected IEEE CRC32 used by Go's hash/crc32.
+// crcTable8 contains the precomputed tables for Slice-by-8 CRC32 computation.
+// Polynomial: 0x04C11DB7 (Ogg/Vorbis MSB-first, non-reflected).
+var crcTable8 = func() [8][256]uint32 {
+	var tbl [8][256]uint32
 	const poly uint32 = 0x04C11DB7
 	for i := 0; i < 256; i++ {
 		c := uint32(i) << 24
@@ -60,15 +60,24 @@ func NewPageReader(r io.Reader) *PageReader {
 				c <<= 1
 			}
 		}
-		tbl[i] = c
+		tbl[0][i] = c
 	}
+	for k := 1; k < 8; k++ {
+		for i := 0; i < 256; i++ {
+			prev := tbl[k-1][i]
+			tbl[k][i] = (prev << 8) ^ tbl[0][byte(prev>>24)]
+		}
+	}
+	return tbl
+}()
 
+func NewPageReader(r io.Reader) *PageReader {
 	return &PageReader{
 		r:         bufio.NewReaderSize(r, 128*1024),
 		VerifyCRC: true,
 		Resync:    true,
 		MaxResync: 128 * 1024,
-		crcTable:  tbl,
+		crcTable:  crcTable8[0],
 	}
 }
 
@@ -241,20 +250,48 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 	}
 }
 
+// updateCRC8 updates the MSB-first CRC32 using the Slice-by-8 algorithm.
+func updateCRC8(crc uint32, data []byte) uint32 {
+	t0 := &crcTable8[0]
+	t1 := &crcTable8[1]
+	t2 := &crcTable8[2]
+	t3 := &crcTable8[3]
+	t4 := &crcTable8[4]
+	t5 := &crcTable8[5]
+	t6 := &crcTable8[6]
+	t7 := &crcTable8[7]
+
+	for len(data) >= 8 {
+		_ = data[7]
+		v1 := binary.BigEndian.Uint32(data[:4]) ^ crc
+		v2 := binary.BigEndian.Uint32(data[4:8])
+
+		crc = t7[byte(v1>>24)] ^
+			t6[byte(v1>>16)] ^
+			t5[byte(v1>>8)] ^
+			t4[byte(v1)] ^
+			t3[byte(v2>>24)] ^
+			t2[byte(v2>>16)] ^
+			t1[byte(v2>>8)] ^
+			t0[byte(v2)]
+
+		data = data[8:]
+	}
+
+	for _, v := range data {
+		crc = (crc << 8) ^ t0[byte(crc>>24)^v]
+	}
+	return crc
+}
+
 func (pr *PageReader) verifySliceCRC(page []byte, expected uint32) bool {
 	if len(page) < 27 {
 		return false
 	}
-	var crc uint32
-	for i := 0; i < 22; i++ {
-		crc = (crc << 8) ^ pr.crcTable[byte(crc>>24)^page[i]]
-	}
-	for i := 0; i < 4; i++ {
-		crc = (crc << 8) ^ pr.crcTable[byte(crc>>24)^0]
-	}
-	for i := 26; i < len(page); i++ {
-		crc = (crc << 8) ^ pr.crcTable[byte(crc>>24)^page[i]]
-	}
+	crc := updateCRC8(0, page[:22])
+	zero4 := [4]byte{0, 0, 0, 0}
+	crc = updateCRC8(crc, zero4[:])
+	crc = updateCRC8(crc, page[26:])
 	return crc == expected
 }
 
@@ -298,20 +335,14 @@ func (pr *PageReader) verifyCRC(header [27]byte, segTable []byte, body []byte, e
 	header[23] = 0
 	header[24] = 0
 	header[25] = 0
-	got := oggCRC3(header[:], segTable, body, pr.crcTable)
+	got := oggCRC3(header[:], segTable, body)
 	return got == expected, nil
 }
 
-func oggCRC3(a []byte, b []byte, c []byte, table [256]uint32) uint32 {
+func oggCRC3(a []byte, b []byte, c []byte) uint32 {
 	var crc uint32
-	for _, v := range a {
-		crc = (crc << 8) ^ table[byte(crc>>24)^v]
-	}
-	for _, v := range b {
-		crc = (crc << 8) ^ table[byte(crc>>24)^v]
-	}
-	for _, v := range c {
-		crc = (crc << 8) ^ table[byte(crc>>24)^v]
-	}
+	crc = updateCRC8(crc, a)
+	crc = updateCRC8(crc, b)
+	crc = updateCRC8(crc, c)
 	return crc
 }
