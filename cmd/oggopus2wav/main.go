@@ -69,9 +69,11 @@ func main() {
 
 	// Maximum Opus frame size at 48kHz is 120ms = 5760 samples/channel.
 	maxFrame := 5760
-	pcm := make([]int16, maxFrame*int(r.Head.Channels))
+	channels := int(r.Head.Channels)
+	pcm := make([]int16, maxFrame*channels)
 
 	preSkipRemaining := int(r.Head.PreSkip)
+	totalSamplesDecoded := uint64(0)
 
 	for {
 		pkt, err := r.ReadAudioPacket()
@@ -87,8 +89,10 @@ func main() {
 			fatal(err)
 		}
 
+		totalSamplesDecoded += uint64(n)
+
 		// n is samples per channel.
-		frames := pcm[:n*int(r.Head.Channels)]
+		frames := pcm[:n*channels]
 
 		// Apply OpusHead pre-skip in samples per channel.
 		if preSkipRemaining > 0 {
@@ -99,11 +103,23 @@ func main() {
 			preSkipRemaining -= skip
 
 			// Drop 'skip' samples per channel from interleaved PCM.
-			drop := skip * int(r.Head.Channels)
+			drop := skip * channels
 			if drop >= len(frames) {
 				continue
 			}
 			frames = frames[drop:]
+		}
+
+		// RFC 7845 Section 4: If packet has a valid granule position (especially at EOS),
+		// trim any trailing excess samples beyond the granule position.
+		if pkt.GranuleValid && totalSamplesDecoded > pkt.GranulePos {
+			excess := totalSamplesDecoded - pkt.GranulePos
+			excessSamples := int(excess) * channels
+			if excessSamples < len(frames) {
+				frames = frames[:len(frames)-excessSamples]
+			} else {
+				frames = nil
+			}
 		}
 
 		if len(frames) > 0 {
