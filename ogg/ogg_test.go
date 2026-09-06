@@ -3,6 +3,7 @@ package ogg
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -360,5 +361,109 @@ func TestRFC3533_Resynchronization(t *testing.T) {
 	_, err = prLimit.ReadPage()
 	if !errors.Is(err, ErrResyncFailed) {
 		t.Fatalf("expected ErrResyncFailed when exceeding MaxResync, got: %v", err)
+	}
+}
+
+func TestRFC3533_MultiPacketPageBatching(t *testing.T) {
+	var buf bytes.Buffer
+	const serial uint32 = 0x55AA1122
+	pw := NewPacketWriter(&buf, serial)
+	pw.MaxPageSize = 4000 // Enable multi-packet page batching (RFC 3533 §6)
+
+	// 1. Write BOS packet (MUST be on its own page per RFC 7845 §5.1)
+	bosPayload := []byte("OpusHead-BOS-Header")
+	if err := pw.WritePacket(bosPayload, 0, true, false); err != nil {
+		t.Fatalf("WritePacket BOS: %v", err)
+	}
+
+	// 2. Write 10 small packets that should be batched together
+	expectedPackets := make([][]byte, 10)
+	for i := 0; i < 10; i++ {
+		payload := []byte(fmt.Sprintf("audio-frame-%02d", i))
+		expectedPackets[i] = payload
+		granule := uint64((i + 1) * 960)
+		if err := pw.WritePacket(payload, granule, false, false); err != nil {
+			t.Fatalf("WritePacket %d: %v", i, err)
+		}
+	}
+
+	// 3. Write EOS packet (50 bytes)
+	eosPayload := []byte("audio-frame-eos")
+	if err := pw.WritePacket(eosPayload, 11*960, false, true); err != nil {
+		t.Fatalf("WritePacket EOS: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// Verify page count: BOS (page 0) + 1 Batched Page containing 11 packets (page 1) = 2 pages total!
+	prPages := NewPageReader(bytes.NewReader(buf.Bytes()))
+
+	// Page 0: BOS alone
+	pg0, err := prPages.ReadPage()
+	if err != nil {
+		t.Fatalf("ReadPage 0: %v", err)
+	}
+	if !pg0.IsBOS() {
+		t.Fatal("expected page 0 to have BOS flag")
+	}
+	if len(pg0.SegmentTable) != 1 {
+		t.Fatalf("expected 1 segment in BOS page, got %d", len(pg0.SegmentTable))
+	}
+	if pg0.GranulePosition != 0 {
+		t.Fatalf("expected granule 0 for BOS page, got %d", pg0.GranulePosition)
+	}
+
+	// Page 1: Batched page with 11 packets
+	pg1, err := prPages.ReadPage()
+	if err != nil {
+		t.Fatalf("ReadPage 1: %v", err)
+	}
+	if !pg1.IsEOS() {
+		t.Fatal("expected page 1 to have EOS flag")
+	}
+	if len(pg1.SegmentTable) != 11 {
+		t.Fatalf("expected 11 segments in batched page, got %d", len(pg1.SegmentTable))
+	}
+	// Per RFC 3533 §6: page granule position must equal granule position of the last packet
+	if pg1.GranulePosition != 11*960 {
+		t.Fatalf("expected page granule position %d, got %d", 11*960, pg1.GranulePosition)
+	}
+
+	// Ensure no extra pages
+	_, err = prPages.ReadPage()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF after 2 pages, got: %v", err)
+	}
+
+	// 4. Verify that PacketReader reassembles all 12 packets back with exact fidelity
+	prPackets := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	pktBOS, err := prPackets.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket BOS: %v", err)
+	}
+	if !pktBOS.BOS || !bytes.Equal(pktBOS.Data, bosPayload) {
+		t.Fatalf("BOS packet mismatch")
+	}
+
+	for i := 0; i < 10; i++ {
+		pkt, err := prPackets.ReadPacket()
+		if err != nil {
+			t.Fatalf("ReadPacket %d: %v", i, err)
+		}
+		if !bytes.Equal(pkt.Data, expectedPackets[i]) {
+			t.Fatalf("packet %d payload mismatch: got %s, want %s", i, pkt.Data, expectedPackets[i])
+		}
+	}
+
+	pktEOS, err := prPackets.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket EOS: %v", err)
+	}
+	if !pktEOS.EOS || !bytes.Equal(pktEOS.Data, eosPayload) {
+		t.Fatalf("EOS packet mismatch")
+	}
+	if !pktEOS.GranuleValid || pktEOS.GranulePosition != 11*960 {
+		t.Fatalf("EOS granule mismatch: valid=%v, pos=%d", pktEOS.GranuleValid, pktEOS.GranulePosition)
 	}
 }

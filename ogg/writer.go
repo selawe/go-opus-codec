@@ -17,6 +17,18 @@ type PacketWriter struct {
 	seq    uint32
 
 	crcTable [256]uint32
+
+	// MaxPageSize controls multi-packet page batching (RFC 3533 §6).
+	// If MaxPageSize > 0, small packets are buffered together into a single page
+	// until MaxPageSize is reached, 255 segments are accumulated, or Flush/FlushPage/EOS occurs.
+	// If MaxPageSize <= 0 (default), each packet is emitted on its own page (1:1 mode).
+	MaxPageSize int
+
+	pageHeaderType uint8
+	pageGranule    uint64
+	pageSegTable   []byte
+	pageData       []byte
+	hasPendingPage bool
 }
 
 func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
@@ -40,15 +52,42 @@ func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
 	}
 
 	return &PacketWriter{
-		bw:       bw,
-		serial:   serial,
-		seq:      0,
-		crcTable: tbl,
+		bw:           bw,
+		serial:       serial,
+		seq:          0,
+		crcTable:     tbl,
+		pageSegTable: make([]byte, 0, 255),
+		pageData:     make([]byte, 0, 4096),
 	}
 }
 
+// FlushPage forces any buffered packets in the current page to be written out.
+func (pw *PacketWriter) FlushPage() error {
+	if pw == nil || !pw.hasPendingPage || len(pw.pageSegTable) == 0 {
+		return nil
+	}
+	err := pw.writePage(pw.pageHeaderType, pw.pageGranule, pw.pageSegTable, pw.pageData)
+	if err != nil {
+		return err
+	}
+	pw.seq++
+	pw.pageHeaderType = 0
+	pw.pageGranule = 0
+	pw.pageSegTable = pw.pageSegTable[:0]
+	pw.pageData = pw.pageData[:0]
+	pw.hasPendingPage = false
+	return nil
+}
+
+// Flush writes any pending batched page and flushes the underlying buffered writer.
 func (pw *PacketWriter) Flush() error {
-	if pw == nil || pw.bw == nil {
+	if pw == nil {
+		return nil
+	}
+	if err := pw.FlushPage(); err != nil {
+		return err
+	}
+	if pw.bw == nil {
 		return nil
 	}
 	return pw.bw.Flush()
@@ -56,10 +95,72 @@ func (pw *PacketWriter) Flush() error {
 
 // WritePacket writes a single logical Ogg packet.
 //
+// If MaxPageSize > 0, small packets are batched together into a single page
+// to reduce framing overhead per RFC 3533 §6.
+//
 // If the packet is too large for one page, it will be continued across pages.
 // For continued packets, only the final page carries the provided granulePos;
 // earlier pages use granulePos = -1 (0xFFFFFFFFFFFFFFFF).
 func (pw *PacketWriter) WritePacket(packet []byte, granulePos uint64, bos bool, eos bool) error {
+	segTable, _ := oggLacing(packet)
+
+	// If batching is disabled (MaxPageSize <= 0), or if packet spans across pages (> 255 segments):
+	if pw.MaxPageSize <= 0 || len(segTable) > 255 {
+		if pw.hasPendingPage {
+			if err := pw.FlushPage(); err != nil {
+				return err
+			}
+		}
+		return pw.writeSpanningPacket(packet, granulePos, bos, eos)
+	}
+
+	// Batching is enabled (MaxPageSize > 0) and len(segTable) <= 255:
+	// 1. BOS packets MUST be placed alone on the first page per RFC 7845 §5.1.
+	if bos {
+		if pw.hasPendingPage {
+			if err := pw.FlushPage(); err != nil {
+				return err
+			}
+		}
+		pw.pageHeaderType = 0x02 // BOS
+		if eos {
+			pw.pageHeaderType |= 0x04 // EOS
+		}
+		pw.pageGranule = granulePos
+		pw.pageSegTable = append(pw.pageSegTable, segTable...)
+		pw.pageData = append(pw.pageData, packet...)
+		pw.hasPendingPage = true
+		return pw.FlushPage()
+	}
+
+	// 2. Regular packet: check if it fits in the current page buffer.
+	fits := (len(pw.pageSegTable)+len(segTable) <= 255) &&
+		(len(pw.pageData)+len(packet) <= pw.MaxPageSize)
+
+	if !fits && pw.hasPendingPage {
+		if err := pw.FlushPage(); err != nil {
+			return err
+		}
+	}
+
+	pw.pageSegTable = append(pw.pageSegTable, segTable...)
+	pw.pageData = append(pw.pageData, packet...)
+	pw.pageGranule = granulePos
+	pw.hasPendingPage = true
+
+	if eos {
+		pw.pageHeaderType |= 0x04
+		return pw.FlushPage()
+	}
+
+	if len(pw.pageData) >= pw.MaxPageSize || len(pw.pageSegTable) >= 255 {
+		return pw.FlushPage()
+	}
+
+	return nil
+}
+
+func (pw *PacketWriter) writeSpanningPacket(packet []byte, granulePos uint64, bos bool, eos bool) error {
 	lace, laceDataLens := oggLacing(packet)
 	dataOff := 0
 
