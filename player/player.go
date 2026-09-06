@@ -208,6 +208,7 @@ func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
 		player.bufferFloat32 = player.bufferFloat32[:newSize]
 	}
 
+	channels := player.Channels()
 	switch player.reader.Head.Channels {
 	case 1:
 		// we have to produce stereo audio, so each input sample becomes two output samples
@@ -235,7 +236,7 @@ func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
 
 		return count * 8, nil
 
-	case 2:
+	default:
 		atMost := min(len(p)/4, len(player.bufferFloat32)-player.position)
 
 		// log.Printf("Rendering opus: p=%d buffer=%d atMost=%d position=%d", len(p), len(player.buffer), atMost, player.position)
@@ -253,12 +254,10 @@ func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
 			count += 1
 		}
 		player.position += count
-		player.totalSamples += int64(count / 2)
+		player.totalSamples += int64(count / channels)
 
 		return count * 4, nil
 	}
-
-	return 0, fmt.Errorf("unsupported number of channels: %d", player.reader.Head.Channels)
 }
 
 func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxLength int) int {
@@ -299,15 +298,12 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 
 			// fill with silence
 			/*
-			   for i := range p {
-			       p[i] = 0
-			   }
-
-			   return len(p), err
+				for i := range p {
+					p[i] = 0
+				}
+				return len(p), nil
 			*/
 		}
-
-		// fmt.Printf("Packet granule: %v valid: %v sequence: %v eos: %v\n", packet.GranulePos, packet.GranuleValid, packet.PageSequence, packet.EOS)
 
 		player.updateTimestamp(packet.GranulePos)
 
@@ -330,6 +326,7 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 		player.bufferInt16 = player.bufferInt16[:newSize]
 	}
 
+	channels := player.Channels()
 	switch player.reader.Head.Channels {
 	case 1:
 		// we have to produce stereo audio, so each input sample becomes two output samples
@@ -351,7 +348,7 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 
 		return count * 4, nil
 
-	case 2:
+	default:
 		atMost := min(len(p)/2, len(player.bufferInt16)-player.position)
 
 		// log.Printf("Rendering opus: p=%d buffer=%d atMost=%d position=%d", len(p), len(player.buffer), atMost, player.position)
@@ -363,17 +360,20 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 			count += 1
 		}
 		player.position += count
-		player.totalSamples += int64(count / 2)
+		player.totalSamples += int64(count / channels)
 
 		return count * 2, nil
 	}
-
-	return 0, fmt.Errorf("unsupported number of channels: %d", player.reader.Head.Channels)
 }
 
-// always 2 channels (stereo)
+// Channels returns the number of channels of the output PCM stream.
+// Mono audio (1 channel) is upmixed to stereo (2 channels).
+// Multichannel audio (e.g. 5.1, 7.1) preserves all channels.
 func (player *OpusPlayer[T]) Channels() int {
-	return 2 // always stereo output
+	if player.reader.Head.Channels == 1 {
+		return 2 // mono is upmixed to stereo
+	}
+	return int(player.reader.Head.Channels)
 }
 
 // The sample rate of the decoded PCM stream, which is always 48000 Hz for Opus
@@ -387,8 +387,7 @@ func (player *OpusPlayer[T]) SampleRate() int {
 //
 // Returns the new offset in bytes from the start of the stream.
 func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
-	bytesPerSample := int64(player.bytesPerSample * 2)
-	// 1 sample = 2 bytes per channel, where the decoded stream is always stereo
+	bytesPerSample := int64(player.bytesPerSample * player.Channels())
 	byteToSample := func(b int64) int64 {
 		return b / bytesPerSample
 	}
@@ -408,10 +407,14 @@ func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
 		n := max(0, offset+length)
 		err = player.SeekSample(uint64(n))
 	default:
-		err = fmt.Errorf("invalid whence: %d", whence)
+		return 0, fmt.Errorf("invalid whence: %d", whence)
 	}
 
-	return player.totalSamples * bytesPerSample, err
+	if err != nil {
+		return 0, err
+	}
+
+	return player.totalSamples * bytesPerSample, nil
 }
 
 // Total length in bytes of the decoded stream (not samples).
@@ -424,7 +427,7 @@ func (player *OpusPlayer[T]) Length() int64 {
 	if err != nil {
 		return 0
 	}
-	return total * 2 * int64(player.bytesPerSample)
+	return total * int64(player.Channels()) * int64(player.bytesPerSample)
 }
 
 // position is a number of samples (not bytes) from the start of the stream.
@@ -468,7 +471,7 @@ func (player *OpusPlayer[T]) SeekSample(position uint64) error {
 	player.bufferInt16 = player.bufferInt16[:0]
 	player.bufferFloat32 = player.bufferFloat32[:0]
 
-	_, err = io.CopyN(io.Discard, player, int64(skipSamples*uint64(player.bytesPerSample)*2))
+	_, err = io.CopyN(io.Discard, player, int64(skipSamples*uint64(player.bytesPerSample)*uint64(player.Channels())))
 	return err
 }
 

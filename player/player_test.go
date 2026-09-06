@@ -8,6 +8,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/kazzmir/opus-go/ogg"
 )
 
 const testFilePath = "../test/music_64kbps.opus"
@@ -283,3 +285,54 @@ func BenchmarkDecodeFloat32(bench *testing.B) {
 		io.Copy(io.Discard, player)
 	}
 }
+
+func TestMultichannelPlayer(t *testing.T) {
+	head := ogg.OpusHead{
+		Version:              1,
+		Channels:             6, // 5.1 surround
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         0,
+		ChannelMappingFamily: 1,
+		StreamCount:          4,
+		CoupledStreamCount:   2,
+		ChannelMapping:       []byte{0, 4, 1, 2, 3, 5},
+	}
+
+	tags := ogg.OpusTags{
+		Vendor: "test-multichannel",
+	}
+
+	headPkt, err := ogg.BuildOpusHeadPacket(head)
+	if err != nil {
+		t.Fatalf("head.ToPacket: %v", err)
+	}
+	tagsPkt, err := ogg.BuildOpusTagsPacket(tags)
+	if err != nil {
+		t.Fatalf("tags.ToPacket: %v", err)
+	}
+
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, 0x12345678)
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		t.Fatalf("write head: %v", err)
+	}
+	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		t.Fatalf("write tags: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("pw.Flush: %v", err)
+	}
+
+	// Create a player from this 5.1 stream
+	p, err := NewPlayerFromReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewPlayerFromReader: %v", err)
+	}
+
+	// Verify channels
+	if p.Channels() != 6 {
+		t.Fatalf("expected 6 channels for 5.1 player, got %d", p.Channels())
+	}
+}
+
