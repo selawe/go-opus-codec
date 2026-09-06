@@ -22,9 +22,21 @@ type Tpthread_key_t = uint32
 // - a simple LIFO "stack" allocator (Alloc/Free) for temporary scratch
 // - a very small malloc/free implementation for long-lived allocations
 // - pthread-specific storage emulation for the ccgo TLS pseudostack
+type tlsChunk struct {
+	buf []byte
+	sp  int
+}
+
+// TLS is a per-decoder state object used by ccgo-generated code.
+//
+// It provides:
+// - a simple LIFO "stack" allocator (Alloc/Free) for temporary scratch
+// - a very small malloc/free implementation for long-lived allocations
+// - pthread-specific storage emulation for the ccgo TLS pseudostack
 type TLS struct {
-	stack []byte
-	sp    int
+	chunks []tlsChunk
+	curr   int
+	sp     int // total allocated stack bytes across chunks
 
 	heapMu sync.Mutex
 	heap   map[uintptr]*heapAlloc
@@ -39,9 +51,10 @@ type heapAlloc struct {
 
 func NewTLS() *TLS {
 	return &TLS{
-		stack: make([]byte, 64<<10),
-		heap:  make(map[uintptr]*heapAlloc),
-		keys:  make(map[Tpthread_key_t]uintptr),
+		chunks: []tlsChunk{{buf: make([]byte, 64<<10), sp: 0}},
+		curr:   0,
+		heap:   make(map[uintptr]*heapAlloc),
+		keys:   make(map[Tpthread_key_t]uintptr),
 	}
 }
 
@@ -57,7 +70,8 @@ func (t *TLS) Close() {
 	t.keys = nil
 	t.keysMu.Unlock()
 
-	t.stack = nil
+	t.chunks = nil
+	t.curr = 0
 	t.sp = 0
 }
 
@@ -67,46 +81,70 @@ func ptrAdd(p unsafe.Pointer, off uintptr) unsafe.Pointer { return unsafe.Add(p,
 
 // Alloc returns a pointer to at least n bytes of temporary memory.
 // The memory is 16-byte aligned and valid until the matching Free.
+//
+// Alloc uses chunked blocks so that existing allocated pointers are NEVER
+// moved or invalidated when additional stack capacity is required.
 func (t *TLS) Alloc(n int) uintptr {
-	if t == nil {
-		return 0
-	}
-	if n <= 0 {
+	if t == nil || n <= 0 {
 		return 0
 	}
 	n = align16(n)
-	need := t.sp + n
-	if need > len(t.stack) {
-		newCap := len(t.stack)
-		if newCap == 0 {
-			newCap = 64 << 10
-		}
-		for need > newCap {
-			newCap *= 2
-		}
-		newStack := make([]byte, newCap)
-		copy(newStack, t.stack)
-		t.stack = newStack
+
+	if len(t.chunks) == 0 {
+		t.chunks = []tlsChunk{{buf: make([]byte, 64<<10), sp: 0}}
+		t.curr = 0
 	}
-	base := unsafe.Pointer(unsafe.SliceData(t.stack))
-	p := uintptr(ptrAdd(base, uintptr(t.sp)))
+
+	c := &t.chunks[t.curr]
+	if c.sp+n > len(c.buf) {
+		chunkSize := 64 << 10
+		if n > chunkSize {
+			chunkSize = n
+		}
+		t.curr++
+		if t.curr < len(t.chunks) {
+			if len(t.chunks[t.curr].buf) < n {
+				t.chunks[t.curr] = tlsChunk{buf: make([]byte, chunkSize), sp: 0}
+			} else {
+				t.chunks[t.curr].sp = 0
+			}
+		} else {
+			t.chunks = append(t.chunks, tlsChunk{buf: make([]byte, chunkSize), sp: 0})
+		}
+		c = &t.chunks[t.curr]
+	}
+
+	base := unsafe.Pointer(unsafe.SliceData(c.buf))
+	p := uintptr(ptrAdd(base, uintptr(c.sp)))
+	c.sp += n
 	t.sp += n
 	return p
 }
 
 // Free releases the last Alloc(n) region.
 func (t *TLS) Free(n int) {
-	if t == nil {
-		return
-	}
-	if n <= 0 {
+	if t == nil || n <= 0 {
 		return
 	}
 	n = align16(n)
 	if t.sp < n {
 		panic("libcshim: TLS.Free underflow")
 	}
-	t.sp -= n
+
+	for n > 0 && t.curr >= 0 {
+		c := &t.chunks[t.curr]
+		if c.sp == 0 && t.curr > 0 {
+			t.curr--
+			continue
+		}
+		avail := min(c.sp, n)
+		c.sp -= avail
+		t.sp -= avail
+		n -= avail
+		if c.sp == 0 && t.curr > 0 {
+			t.curr--
+		}
+	}
 }
 
 // ---- Varargs helpers (very small va_list model) ----

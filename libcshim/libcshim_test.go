@@ -53,6 +53,39 @@ func TestTLSStackExpansion(t *testing.T) {
 	tls.Free(128 << 10)
 }
 
+func TestTLSAllocPointerStability(t *testing.T) {
+	tls := NewTLS()
+	defer tls.Close()
+
+	// Allocate a pointer in the first chunk and store a sentinel value
+	p1 := tls.Alloc(32)
+	StoreInt32(p1, 0x12345678)
+	StoreInt32(p1+4, 0x778899AA)
+
+	// Now allocate enough memory to force transition to a second chunk (64KB+)
+	p2 := tls.Alloc(128 << 10)
+	if p2 == 0 {
+		t.Fatal("expected non-zero p2")
+	}
+	StoreInt32(p2, 0x55AA55AA)
+
+	// p1 must NOT have moved and must retain its exact sentinel values!
+	if val := LoadInt32(p1); val != 0x12345678 {
+		t.Fatalf("p1 corrupted after chunk allocation: got %x, want %x", val, 0x12345678)
+	}
+	if val := LoadInt32(p1 + 4); val != int32(int64(0x778899AA)) {
+		t.Fatalf("p1+4 corrupted after chunk allocation: got %x, want %x", val, 0x778899AA)
+	}
+
+	// Free in reverse order
+	tls.Free(128 << 10)
+	tls.Free(32)
+
+	if tls.sp != 0 {
+		t.Fatalf("expected sp to be 0 after all frees, got %d", tls.sp)
+	}
+}
+
 func TestXmallocAndXfree(t *testing.T) {
 	tls := NewTLS()
 	defer tls.Close()
