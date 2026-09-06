@@ -99,6 +99,57 @@ func (e *Encoder) SetComplexity(complexity int) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_COMPLEXITY_REQUEST), int32(complexity))
 }
 
+// Reset resets the internal encoder state.
+func (e *Encoder) Reset() error {
+	return e.ctl(int32(opusccenc.OPUS_RESET_STATE))
+}
+
+// SetDTX configures the encoder's Discontinuous Transmission (DTX) mode (RFC 6716).
+func (e *Encoder) SetDTX(enabled bool) error {
+	var v int32
+	if enabled {
+		v = 1
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_DTX_REQUEST), v)
+}
+
+// SetInbandFEC enables or disables the encoder's inband Forward Error Correction (FEC).
+func (e *Encoder) SetInbandFEC(enabled bool) error {
+	var v int32
+	if enabled {
+		v = 1
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_INBAND_FEC_REQUEST), v)
+}
+
+// SetPacketLossPerc configures the encoder's expected packet loss percentage (0-100).
+func (e *Encoder) SetPacketLossPerc(percentage int) error {
+	if percentage < 0 {
+		percentage = 0
+	} else if percentage > 100 {
+		percentage = 100
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_PACKET_LOSS_PERC_REQUEST), int32(percentage))
+}
+
+func (e *Encoder) ctl(request int32) error {
+	if e == nil {
+		return errors.New("opus: encoder closed")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.tls == nil || e.st == 0 {
+		return errors.New("opus: encoder closed")
+	}
+
+	ret := opusccenc.Opus_opus_encoder_ctl(e.tls, e.st, request, 0)
+	if ret != opusccenc.OPUS_OK {
+		return fmt.Errorf("%w: %s (%d)", ErrCtlFailed, opusccencErrorString(e.tls, ret), ret)
+	}
+	return nil
+}
+
 // Lookahead returns the encoder lookahead in samples at 48 kHz.
 //
 // This is typically used as the OpusHead PreSkip value.
@@ -117,7 +168,7 @@ func (e *Encoder) Lookahead() (int, error) {
 	defer e.tls.Free(32)
 	// Store the output int32 in the second half to avoid overlap with VaList storage.
 	outPtr := bp + 16
-	*(*int32)(unsafe.Pointer(outPtr)) = 0
+	libc.StoreInt32(outPtr, 0)
 
 	ret := opusccenc.Opus_opus_encoder_ctl(
 		e.tls,
@@ -128,7 +179,7 @@ func (e *Encoder) Lookahead() (int, error) {
 	if ret != opusccenc.OPUS_OK {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrCtlFailed, opusccencErrorString(e.tls, ret), ret)
 	}
-	return int(*(*int32)(unsafe.Pointer(outPtr))), nil
+	return int(libc.LoadInt32(outPtr)), nil
 }
 
 func (e *Encoder) ctlInt32(request int32, value int32) error {

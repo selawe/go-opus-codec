@@ -218,20 +218,85 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 	return int(ret), nil
 }
 
+// Reset resets the internal decoder state (e.g. after seeking or stream discontinuity).
+func (d *Decoder) Reset() error {
+	return d.ctl(int32(opuscc.OPUS_RESET_STATE))
+}
+
+// SetGain sets the decoder output gain in Q7.8 dB units (RFC 7845 Section 5.1.1).
+// For example, 0 is 0 dB, 256 is +1 dB, -256 is -1 dB.
+func (d *Decoder) SetGain(gainQ8 int) error {
+	return d.ctlInt32(int32(opuscc.OPUS_SET_GAIN_REQUEST), int32(gainQ8))
+}
+
+func (d *Decoder) ctl(request int32) error {
+	if d == nil {
+		return errors.New("opus: decoder closed")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.tls == nil || d.st == 0 {
+		return errors.New("opus: decoder closed")
+	}
+
+	var ret int32
+	if d.multistream {
+		ret = opuscc.Opus_opus_multistream_decoder_ctl(d.tls, d.st, request, 0)
+	} else {
+		ret = opuscc.Opus_opus_decoder_ctl(d.tls, d.st, request, 0)
+	}
+	if ret != opuscc.OPUS_OK {
+		return fmt.Errorf("opus: decoder ctl failed: %s (%d)", opusccErrorString(ret), ret)
+	}
+	return nil
+}
+
+func (d *Decoder) ctlInt32(request int32, value int32) error {
+	if d == nil {
+		return errors.New("opus: decoder closed")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.tls == nil || d.st == 0 {
+		return errors.New("opus: decoder closed")
+	}
+
+	bp := d.tls.Alloc(16)
+	defer d.tls.Free(16)
+
+	var ret int32
+	if d.multistream {
+		ret = opuscc.Opus_opus_multistream_decoder_ctl(d.tls, d.st, request, libc.VaList(bp, value))
+	} else {
+		ret = opuscc.Opus_opus_decoder_ctl(d.tls, d.st, request, libc.VaList(bp, value))
+	}
+	if ret != opuscc.OPUS_OK {
+		return fmt.Errorf("opus: decoder ctl failed: %s (%d)", opusccErrorString(ret), ret)
+	}
+	return nil
+}
+
 // convenience function to decode an Ogg OpusAudioPacket
 func (decoder *Decoder) DecodePacket(packet *ogg.OpusAudioPacket, pcm []int16) ([]int16, int, error) {
-    const maxMsPerFrame = 120
-    maxSize := ogg.OpusSampleRateHz * maxMsPerFrame / 1000
-    if len(pcm) < maxSize * decoder.channels {
-        pcm = make([]int16, maxSize * decoder.channels)
-    }
+	const maxMsPerFrame = 120
+	maxSize := ogg.OpusSampleRateHz * maxMsPerFrame / 1000
+	if len(pcm) < maxSize*decoder.channels {
+		pcm = make([]int16, maxSize*decoder.channels)
+	}
 
-    n, err := decoder.Decode(packet.Data, pcm, maxSize, false)
-    if err != nil {
-        return nil, 0, err
-    }
+	var data []byte
+	if packet != nil {
+		data = packet.Data
+	}
 
-    return pcm[:n*decoder.channels], n, nil
+	n, err := decoder.Decode(data, pcm, maxSize, false)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return pcm[:n*decoder.channels], n, nil
 }
 
 // convenience function to decode an Ogg OpusAudioPacket
@@ -242,7 +307,12 @@ func (decoder *Decoder) DecodePacketF32(packet *ogg.OpusAudioPacket, pcm []float
 		pcm = make([]float32, maxSize*decoder.channels)
 	}
 
-	n, err := decoder.DecodeF32(packet.Data, pcm, maxSize, false)
+	var data []byte
+	if packet != nil {
+		data = packet.Data
+	}
+
+	n, err := decoder.DecodeF32(data, pcm, maxSize, false)
 	if err != nil {
 		return nil, 0, err
 	}
