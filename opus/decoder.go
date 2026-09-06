@@ -35,22 +35,37 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 	// RFC 7845: Opus is decoded at 48 kHz.
 	const fs = ogg.OpusSampleRateHz
 
+	var dec *Decoder
+	var err error
 	if head.ChannelMappingFamily == 0 {
 		if head.Channels != 1 && head.Channels != 2 {
 			return nil, fmt.Errorf("%w: mapping family 0 requires 1 or 2 channels, got %d", ErrUnsupportedMapping, head.Channels)
 		}
-		return NewDecoder(fs, int(head.Channels))
+		dec, err = NewDecoder(fs, int(head.Channels))
+	} else {
+		// Mapping family != 0 uses multistream.
+		if head.StreamCount == 0 {
+			return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
+		}
+		if int(head.Channels) != len(head.ChannelMapping) {
+			return nil, fmt.Errorf("%w: channel mapping length mismatch", ErrUnsupportedMapping)
+		}
+
+		dec, err = NewMultistreamDecoder(fs, int(head.Channels), int(head.StreamCount), int(head.CoupledStreamCount), head.ChannelMapping)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	// Mapping family != 0 uses multistream.
-	if head.StreamCount == 0 {
-		return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
-	}
-	if int(head.Channels) != len(head.ChannelMapping) {
-		return nil, fmt.Errorf("%w: channel mapping length mismatch", ErrUnsupportedMapping)
+	// RFC 7845 Section 5.1.1: Output gain in Q7.8 dB units must be applied by players/decoders.
+	if head.OutputGainQ8 != 0 {
+		if err := dec.SetGain(int(head.OutputGainQ8)); err != nil {
+			_ = dec.Close()
+			return nil, fmt.Errorf("opus: apply output gain: %w", err)
+		}
 	}
 
-	return NewMultistreamDecoder(fs, int(head.Channels), int(head.StreamCount), int(head.CoupledStreamCount), head.ChannelMapping)
+	return dec, nil
 }
 
 func NewDecoder(sampleRate, channels int) (*Decoder, error) {

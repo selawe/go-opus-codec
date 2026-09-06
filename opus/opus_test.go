@@ -4,6 +4,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"github.com/kazzmir/opus-go/ogg"
 )
 
 // generateSineWave generates interleaved stereo 16-bit PCM for testing.
@@ -223,3 +225,69 @@ func TestDecoderRobustnessFuzz(t *testing.T) {
 		_, _ = dec.Decode(junk, pcm, 960, false)
 	}
 }
+
+func TestNewDecoderFromHead_OutputGain(t *testing.T) {
+	enc, err := NewEncoder(48000, 1, ApplicationAudio)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	defer enc.Close()
+
+	pcm := generateSineWave(440, 48000, 1, 960)
+	packet := make([]byte, 1000)
+	nEnc, err := enc.Encode(pcm, 960, packet)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	headNoGain := ogg.OpusHead{
+		Version:              1,
+		Channels:             1,
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         0,
+		ChannelMappingFamily: 0,
+	}
+	decNoGain, err := NewDecoderFromHead(headNoGain)
+	if err != nil {
+		t.Fatalf("NewDecoderFromHead(headNoGain): %v", err)
+	}
+	defer decNoGain.Close()
+
+	headWithGain := ogg.OpusHead{
+		Version:              1,
+		Channels:             1,
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         768, // +3.0 dB gain (~1.41x amplitude)
+		ChannelMappingFamily: 0,
+	}
+	decWithGain, err := NewDecoderFromHead(headWithGain)
+	if err != nil {
+		t.Fatalf("NewDecoderFromHead(headWithGain): %v", err)
+	}
+	defer decWithGain.Close()
+
+	outNoGain := make([]int16, 960)
+	_, err = decNoGain.Decode(packet[:nEnc], outNoGain, 960, false)
+	if err != nil {
+		t.Fatalf("Decode no gain: %v", err)
+	}
+
+	outWithGain := make([]int16, 960)
+	_, err = decWithGain.Decode(packet[:nEnc], outWithGain, 960, false)
+	if err != nil {
+		t.Fatalf("Decode with gain: %v", err)
+	}
+
+	var energyNoGain, energyWithGain float64
+	for i := 100; i < 800; i++ {
+		energyNoGain += float64(outNoGain[i]) * float64(outNoGain[i])
+		energyWithGain += float64(outWithGain[i]) * float64(outWithGain[i])
+	}
+
+	if energyWithGain <= energyNoGain {
+		t.Fatalf("expected higher energy with +3dB gain: withGain=%f, noGain=%f", energyWithGain, energyNoGain)
+	}
+}
+
