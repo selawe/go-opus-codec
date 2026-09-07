@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kazzmir/opus-go/ogg"
-	"github.com/kazzmir/opus-go/opus"
-	"github.com/kazzmir/opus-go/wav"
+	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/opus"
+	"github.com/selawe/go-opus-codec/wav"
 )
 
 func TestOggOpus2Wav_EOSTrimming(t *testing.T) {

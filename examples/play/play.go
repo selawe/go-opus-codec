@@ -8,7 +8,7 @@ import (
     "log"
     "io"
 
-    "github.com/kazzmir/opus-go"
+    "github.com/selawe/go-opus-codec"
     "github.com/ebitengine/oto/v3"
 )
 

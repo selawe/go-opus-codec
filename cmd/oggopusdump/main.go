@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/kazzmir/opus-go/ogg"
+	"github.com/selawe/go-opus-codec/ogg"
 )
 
 func main() {

@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"unsafe"
 
-	libc "github.com/kazzmir/opus-go/libcshim"
+	libc "github.com/selawe/go-opus-codec/libcshim"
 )
 
 var _ reflect.Type

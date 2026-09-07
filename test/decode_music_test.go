@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kazzmir/opus-go/ogg"
-	"github.com/kazzmir/opus-go/opus"
+	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/opus"
 )
 
 func TestDecodeMusic64kbpsSampleCount(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"runtime"
 	"sync"
 
-	libc "github.com/kazzmir/opus-go/libcshim"
+	libc "github.com/selawe/go-opus-codec/libcshim"
 
-	"github.com/kazzmir/opus-go/opusccenc"
+	"github.com/selawe/go-opus-codec/opusccenc"
 )
 
 var (

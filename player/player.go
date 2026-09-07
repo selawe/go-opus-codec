@@ -22,8 +22,8 @@ import (
 	"time"
 	// "log"
 
-	"github.com/kazzmir/opus-go/ogg"
-	"github.com/kazzmir/opus-go/opus"
+	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/opus"
 )
 
 // ErrClosed is returned when an operation is attempted on a closed player.

@@ -6,9 +6,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/kazzmir/opus-go/ogg"
-	"github.com/kazzmir/opus-go/opus"
-	"github.com/kazzmir/opus-go/player"
+	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/opus"
+	"github.com/selawe/go-opus-codec/player"
 )
 
 // generateStereoTones generates a test audio signal with dual frequencies (440Hz and 880Hz).

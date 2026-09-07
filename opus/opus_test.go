@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/kazzmir/opus-go/ogg"
+	"github.com/selawe/go-opus-codec/ogg"
 )
 
 // generateSineWave generates interleaved stereo 16-bit PCM for testing.

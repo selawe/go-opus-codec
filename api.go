@@ -15,8 +15,8 @@ package opusgo
 import (
 	"io"
 
-	"github.com/kazzmir/opus-go/ogg"
-	"github.com/kazzmir/opus-go/player"
+	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/player"
 )
 
 // OpusPlayer is the high-level Ogg Opus audio player supporting int16 or float32 PCM.

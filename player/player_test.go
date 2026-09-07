@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kazzmir/opus-go/ogg"
+	"github.com/selawe/go-opus-codec/ogg"
 )
 
 const testFilePath = "../test/music_64kbps.opus"

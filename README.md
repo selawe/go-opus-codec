@@ -1,24 +1,56 @@
-# opusgo
+# go-opus-codec
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/kazzmir/opus-go.svg)](https://pkg.go.dev/github.com/kazzmir/opus-go)
+[![Go Reference](https://pkg.go.dev/badge/github.com/selawe/go-opus-codec.svg)](https://pkg.go.dev/github.com/selawe/go-opus-codec)
 
-This is a pure go implementation of an Ogg/Opus parser, decoder, and encoder. It was produced by transpiling the libopus C sources to Go using [ccgo](https://pkg.go.dev/modernc.org/ccgo/v4), as well as using GPT 5.2 help. No cgo is used.
+A pure Go implementation of an Ogg/Opus audio parser, decoder, and encoder without cgo (`CGO_ENABLED=0`). Transpiled from libopus C sources to Go using [ccgo](https://pkg.go.dev/modernc.org/ccgo/v4), with full RFC 6716, RFC 8251, RFC 7845, and RFC 3533 conformance, thread safety, and float32/int16 support.
 
-Directory structure:
+> [!IMPORTANT]
+> **Fork Attribution & Project Status**
+>
+> This project is an independent fork of [kazzmir/opus-go](https://github.com/kazzmir/opus-go) by Jon Rafkind, customized and tuned to support personal projects and specific audio pipeline requirements.
+>
+> **Key Modifications & Tuning in this Fork:**
+> - **Full RFC Conformance**: RFC 6716 / RFC 8251 (TOC parsing, frame demuxing, LBRR/FEC detection, safe PLC) and RFC 7845 (OutputGainQ8, header validations).
+> - **Multichannel Surround**: Support for 5.1 and 7.1 surround sound audio playback and decoding.
+> - **Concurrency Safety**: Full mutex synchronization across `opus.Decoder`, `opus.Encoder`, and `player.OpusPlayer`.
+> - **Memory Safety**: Heap staging buffers and chunked block allocator in `libcshim` to eliminate pointer instability.
+> - **Performance**: Slice-by-8 parallel CRC32, Ogg multi-packet page batching, and byte resynchronization.
+> - **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.
+> - **Compile-Time Guard**: Rejection of 32-bit builds to prevent runtime pointer misalignment.
+
+> [!WARNING]
+> **Notice & Usage Disclaimer for Third Parties**
+>
+> If you plan to use this library in your own projects, please be aware of the following:
+> 1. **Personal Project Focus**: This library is maintained primarily for personal project needs. APIs and internal behavior may evolve based on author requirements.
+> 2. **Not a Drop-in Replacement**: Due to extensive modifications, refactoring, and module rename, this library is not guaranteed to remain API-compatible with upstream `kazzmir/opus-go`.
+> 3. **Architecture Constraint**: Only **64-bit little-endian architectures** (`amd64`, `arm64`) are supported. 32-bit systems (`386`, `arm`, `wasm`) are intentionally blocked at compile time.
+> 4. **License & As-Is**: Provided under the original 2-Clause BSD License without warranties of any kind. Use at your own risk.
+
+## Installation
+
+```sh
+go get github.com/selawe/go-opus-codec
+```
+
+## Directory Structure
+
 - `cmd/oggopusdump`: command-line tool to dump Ogg/Opus headers and packet sizes
 - `cmd/oggopusextract`: command-line tool to extract Opus audio packets
 - `cmd/oggopus2wav`: command-line tool to decode Ogg/Opus
 - `cmd/wav2oggopus`: command-line tool to encode WAV to Ogg/Opus
-- `ogg` - Parser for the Ogg format and Opus packet reader
-- `opus` - Encoder and decoder opus API
+- `ogg` - RFC 3533 Ogg bitstream and RFC 7845 Ogg Opus container demuxer/muxer
+- `opus` - RFC 6716 / RFC 8251 encoder and decoder API with packet inspection and PLC
+- `player` - High-level streaming player with frame-accurate seeking
 - `opuscc` - Transpiled libopus C source of the decoder logic
 - `opusccenc` - Transpiled libopus C source of the encoder logic
-- `libcshim` - Small libc shim for the transpiled C code, replaces some modernc.org/libc functionality
+- `libcshim` - Small libc shim for the transpiled C code
+- `wav` - 16-bit linear PCM WAV parser and writer
 - `examples` - Example programs using the library
 
 ## Supported Platforms & Architecture
 
-`opus-go` is 100% pure Go with no C compiler, headers, or cgo needed (`CGO_ENABLED=0` friendly). It can be cross-compiled cleanly across all major operating systems.
+`go-opus-codec` is 100% pure Go with no C compiler, headers, or cgo needed (`CGO_ENABLED=0` friendly). It can be cross-compiled cleanly across all major operating systems.
 
 | Operating System | Architecture | Status | Notes |
 |---|---|:---:|---|
@@ -33,29 +65,57 @@ Directory structure:
 ## Minimal high level API example
 Decoding an opus file to get PCM samples. Note the sample rate of the PCM data is always 48000 Hz.
 ```go
-player, _ := opusgo.NewPlayerFromFile("file.opus", true) // true means stream from disk
-data := make([]byte, 48000*2*2) // 1 second buffer for stereo s16le
-io.ReadFull(player, data)
-// data now contains PCM samples
+package main
+
+import (
+    "io"
+
+    opusgo "github.com/selawe/go-opus-codec"
+)
+
+func main() {
+    player, _ := opusgo.NewPlayerFromFile("file.opus", true) // true means stream from disk
+    defer player.Close()
+
+    data := make([]byte, 48000*2*2) // 1 second buffer for stereo s16le
+    io.ReadFull(player, data)
+    // data now contains PCM samples
+}
 ```
 
 ## Minimal low level API example
 
 Decoding an opus file to get PCM samples. Note the sample rate of the PCM data is always 48000 Hz.
 ```go
-// error handling omitted for brevity
-input, _ := os.Open("file.opus")
-reader, _ := ogg.NewOpusReader(input) // input can be any io.Reader
-decoder, _ := opus.NewDecoderFromHead(reader.Head)
-for {
-  packet, err := reader.ReadAudioPacket()
-  if err != nil {
-    // no more audio packets
-    break
-  }
-  decoded, n, _ := decoder.DecodePacket(packet, nil) // nil can instead be a pre-allocated []int16, otherwise new memory is allocated
-  // decoded is an []int16 PCM audio buffer with n samples per channel, so total samples = n * reader.Head.Channels
-  // use decoded PCM samples...
+package main
+
+import (
+    "os"
+
+    "github.com/selawe/go-opus-codec/ogg"
+    "github.com/selawe/go-opus-codec/opus"
+)
+
+func main() {
+    // error handling omitted for brevity
+    input, _ := os.Open("file.opus")
+    defer input.Close()
+
+    reader, _ := ogg.NewOpusReader(input) // input can be any io.Reader
+    decoder, _ := opus.NewDecoderFromHead(reader.Head)
+    defer decoder.Close()
+
+    for {
+        packet, err := reader.ReadAudioPacket()
+        if err != nil {
+            // no more audio packets
+            break
+        }
+        decoded, n, _ := decoder.DecodePacket(packet, nil) // nil can instead be a pre-allocated []int16
+        // decoded is an []int16 PCM audio buffer with n samples per channel
+        _ = decoded
+        _ = n
+    }
 }
 ```
 

@@ -20,10 +20,10 @@ import (
 	"runtime"
 	"sync"
 
-	libc "github.com/kazzmir/opus-go/libcshim"
+	libc "github.com/selawe/go-opus-codec/libcshim"
 
-	"github.com/kazzmir/opus-go/ogg"
-	"github.com/kazzmir/opus-go/opuscc"
+	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/opuscc"
 )
 
 var (
