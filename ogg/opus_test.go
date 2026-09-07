@@ -2,6 +2,7 @@ package ogg
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"testing"
 )
@@ -231,5 +232,45 @@ func TestRFC7845_OpusReaderHeaderSequence(t *testing.T) {
 	}
 	if !pkt.EOS {
 		t.Fatal("expected EOS on last audio packet")
+	}
+}
+
+func TestRFC7845_OpusTags_OOM_DoS_Protection(t *testing.T) {
+	// A crafted OpusTags packet claiming 1,000,000 comments in a 20-byte packet
+	var buf bytes.Buffer
+	buf.Write([]byte("OpusTags"))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(4))
+	buf.WriteString("test")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(1_000_000)) // Claim 1 million comments!
+
+	_, err := parseOpusTags(buf.Bytes())
+	if !errors.Is(err, ErrBadOpusTags) {
+		t.Fatalf("expected ErrBadOpusTags on crafted huge comment count, got: %v", err)
+	}
+}
+
+func TestRFC7845_BuildOpusHeadValidation(t *testing.T) {
+	// Family 1 with stream count 0
+	_, err := BuildOpusHeadPacket(OpusHead{
+		Channels:             6,
+		ChannelMappingFamily: 1,
+		StreamCount:          0,
+		CoupledStreamCount:   0,
+		ChannelMapping:       []byte{0, 1, 2, 3, 4, 5},
+	})
+	if !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for StreamCount=0, got %v", err)
+	}
+
+	// Family 1 with CoupledStreamCount > StreamCount
+	_, err = BuildOpusHeadPacket(OpusHead{
+		Channels:             6,
+		ChannelMappingFamily: 1,
+		StreamCount:          2,
+		CoupledStreamCount:   3,
+		ChannelMapping:       []byte{0, 1, 2, 3, 4, 5},
+	})
+	if !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for CoupledStreamCount > StreamCount, got %v", err)
 	}
 }

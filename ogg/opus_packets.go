@@ -32,6 +32,15 @@ func BuildOpusHeadPacket(h OpusHead) ([]byte, error) {
 	if int(h.Channels) != len(h.ChannelMapping) {
 		return nil, fmt.Errorf("%w: mapping len mismatch", ErrBadOpusHead)
 	}
+	if h.StreamCount == 0 {
+		return nil, fmt.Errorf("%w: stream count cannot be 0", ErrBadOpusHead)
+	}
+	if h.CoupledStreamCount > h.StreamCount {
+		return nil, fmt.Errorf("%w: coupled stream count %d > stream count %d", ErrBadOpusHead, h.CoupledStreamCount, h.StreamCount)
+	}
+	if int(h.StreamCount)+int(h.CoupledStreamCount) > int(h.Channels) {
+		return nil, fmt.Errorf("%w: streams (%d+%d) > channels (%d)", ErrBadOpusHead, h.StreamCount, h.CoupledStreamCount, h.Channels)
+	}
 	b := make([]byte, 21+len(h.ChannelMapping))
 	copy(b[0:8], opusHeadMagic)
 	b[8] = h.Version

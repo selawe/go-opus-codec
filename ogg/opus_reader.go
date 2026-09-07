@@ -272,6 +272,10 @@ func parseOpusTags(b []byte) (OpusTags, error) {
 	}
 	count := int(binary.LittleEndian.Uint32(b[off : off+4]))
 	off += 4
+	maxPossibleComments := (len(b) - off) / 4
+	if count > maxPossibleComments {
+		return OpusTags{}, fmt.Errorf("%w: comment count %d exceeds payload capacity", ErrBadOpusTags, count)
+	}
 
 	comments := make([]string, 0, count)
 	for i := 0; i < count; i++ {
