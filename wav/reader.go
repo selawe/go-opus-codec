@@ -28,6 +28,7 @@ type Reader struct {
 	dataRemaining uint32
 }
 
+// NewReader creates a new WAV reader parsing the RIFF header from r.
 func NewReader(r io.Reader) (*Reader, error) {
 	wr := &Reader{br: bufio.NewReaderSize(r, 1<<20)}
 	if err := wr.readHeader(); err != nil {
@@ -36,7 +37,10 @@ func NewReader(r io.Reader) (*Reader, error) {
 	return wr, nil
 }
 
+// SampleRate returns the sample rate in Hz parsed from the WAV header.
 func (r *Reader) SampleRate() int { return r.sampleRate }
+
+// Channels returns the number of channels parsed from the WAV header.
 func (r *Reader) Channels() int   { return r.channels }
 
 // ReadInt16PCM reads up to len(dst) samples (not frames) into dst.

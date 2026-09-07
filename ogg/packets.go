@@ -40,6 +40,7 @@ type PacketReader struct {
 	queue       []*Packet
 }
 
+// NewPacketReader creates a new PacketReader that demuxes packets from the Ogg stream in r.
 func NewPacketReader(r io.Reader) *PacketReader {
 	return &PacketReader{
 		pr:     NewPageReader(r),

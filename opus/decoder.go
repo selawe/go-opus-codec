@@ -1,3 +1,17 @@
+// Package opus provides a pure-Go implementation of the Opus Interactive Audio Codec
+// (RFC 6716 and RFC 8251 errata), backed by transpiled libopus.
+//
+// The package supports high-performance encoding and decoding at sample rates up to
+// 48000 Hz, with support for mono, stereo, and multichannel surround (5.1 / 7.1) configurations.
+// Both 16-bit linear PCM and 32-bit floating-point PCM formats are supported.
+//
+// Key features:
+//   - Pure Go: 100% Go with no external C dependencies or cgo required.
+//   - Packet inspection: ParsePacketTOC, PacketFrames, PacketHasLBRR, PacketDuration,
+//     PacketChannels, PacketBandwidth, and PacketTotalSamples.
+//   - Safe Packet Loss Concealment (PLC): Decoding nil packets synthesizes missing audio.
+//   - Codec controls: Reset, SetGain, SetInBandFEC, SetDTX, SetPacketLossPerc, and SetBitrate.
+//   - Thread safety: All Decoder and Encoder methods are thread-safe and protected by mutexes.
 package opus
 
 import (
@@ -19,7 +33,8 @@ var (
 
 // Decoder is a pure-Go Opus decoder backed by ccgo-transpiled libopus.
 //
-// It supports both mapping family 0 (mono/stereo) and multistream mappings.
+// It supports both mapping family 0 (mono/stereo) and multistream mappings (surround 5.1 / 7.1).
+// All public methods on Decoder are thread-safe and protected by a mutex.
 type Decoder struct {
 	mu sync.Mutex
 
@@ -35,6 +50,9 @@ type Decoder struct {
 	pcmF32 []float32
 }
 
+// NewDecoderFromHead initializes an Opus decoder configured according to an Ogg OpusHead header.
+// It supports channel mapping family 0 (mono/stereo) and family 1 (multichannel surround),
+// and automatically applies the header's OutputGainQ8 per RFC 7845 Section 5.1.1.
 func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 	// RFC 7845: Opus is decoded at 48 kHz.
 	const fs = ogg.OpusSampleRateHz
@@ -72,6 +90,8 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 	return dec, nil
 }
 
+// NewDecoder creates a new Opus decoder for standard mono or stereo audio.
+// sampleRate is typically 48000, and channels must be 1 or 2.
 func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	tls := libc.NewTLS()
 	if tls == nil {
@@ -94,6 +114,8 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	return dec, nil
 }
 
+// NewMultistreamDecoder creates an Opus multistream decoder for multichannel surround audio
+// (such as 5.1 or 7.1 surround sound) using custom stream and coupled stream mapping tables.
 func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, mapping []uint8) (*Decoder, error) {
 	tls := libc.NewTLS()
 	if tls == nil {
@@ -125,6 +147,8 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 	return dec, nil
 }
 
+// Close closes the decoder and frees all associated C runtime and TLS memory.
+// It is safe to call Close multiple times or concurrently.
 func (d *Decoder) Close() error {
 	if d == nil {
 		return nil
@@ -150,7 +174,10 @@ func (d *Decoder) Close() error {
 	return nil
 }
 
+// SampleRate returns the sample rate in Hz (always 48000 for Opus).
 func (d *Decoder) SampleRate() int { return d.sampleRate }
+
+// Channels returns the number of channels decoded (1 for mono, 2 for stereo, up to 8 for surround).
 func (d *Decoder) Channels() int   { return d.channels }
 
 // Decode decodes a single Opus packet into interleaved signed 16-bit PCM.
@@ -268,6 +295,11 @@ func (d *Decoder) Reset() error {
 	return d.ctl(int32(opuscc.OPUS_RESET_STATE))
 }
 
+// ResetState resets the internal decoder state. It is an alias for Reset matching OPUS_RESET_STATE.
+func (d *Decoder) ResetState() error {
+	return d.Reset()
+}
+
 // SetGain sets the decoder output gain in Q7.8 dB units (RFC 7845 Section 5.1.1).
 // For example, 0 is 0 dB, 256 is +1 dB, -256 is -1 dB.
 func (d *Decoder) SetGain(gainQ8 int) error {
@@ -323,7 +355,10 @@ func (d *Decoder) ctlInt32(request int32, value int32) error {
 	return nil
 }
 
-// convenience function to decode an Ogg OpusAudioPacket
+// DecodePacket decodes an Ogg OpusAudioPacket into interleaved signed 16-bit PCM.
+// If pcm is nil or smaller than the maximum packet size (120ms at 48kHz), a new buffer is allocated.
+// If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4.
+// Returns the decoded sub-slice of pcm and the number of samples per channel.
 func (decoder *Decoder) DecodePacket(packet *ogg.OpusAudioPacket, pcm []int16) ([]int16, int, error) {
 	const maxMsPerFrame = 120
 	maxSize := ogg.OpusSampleRateHz * maxMsPerFrame / 1000
@@ -344,7 +379,10 @@ func (decoder *Decoder) DecodePacket(packet *ogg.OpusAudioPacket, pcm []int16) (
 	return pcm[:n*decoder.channels], n, nil
 }
 
-// convenience function to decode an Ogg OpusAudioPacket
+// DecodePacketF32 decodes an Ogg OpusAudioPacket into interleaved 32-bit float PCM.
+// If pcm is nil or smaller than the maximum packet size (120ms at 48kHz), a new buffer is allocated.
+// If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4.
+// Returns the decoded sub-slice of pcm and the number of samples per channel.
 func (decoder *Decoder) DecodePacketF32(packet *ogg.OpusAudioPacket, pcm []float32) ([]float32, int, error) {
 	const maxMsPerFrame = 120
 	maxSize := ogg.OpusSampleRateHz * maxMsPerFrame / 1000

@@ -31,6 +31,7 @@ type PacketWriter struct {
 	hasPendingPage bool
 }
 
+// NewPacketWriter creates a new PacketWriter that serializes packets into Ogg pages using the given bitstream serial.
 func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
 	bw, ok := w.(*bufio.Writer)
 	if !ok {

@@ -42,6 +42,9 @@ type Encoder struct {
 	pcmF32 []float32
 }
 
+// NewEncoder creates a new pure-Go Opus encoder.
+// sampleRate must be 8000, 12000, 16000, 24000, or 48000 Hz. channels must be 1 (mono) or 2 (stereo).
+// application is one of ApplicationVoIP, ApplicationAudio, or ApplicationRestrictedLowDelay.
 func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
 	tls := libc.NewTLS()
 	if tls == nil {
@@ -66,6 +69,8 @@ func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
 	return enc, nil
 }
 
+// Close closes the encoder and frees all associated C runtime and TLS memory.
+// It is safe to call Close multiple times or concurrently.
 func (e *Encoder) Close() error {
 	if e == nil {
 		return nil
@@ -87,14 +92,21 @@ func (e *Encoder) Close() error {
 	return nil
 }
 
+// SampleRate returns the encoder input sample rate in Hz.
 func (e *Encoder) SampleRate() int  { return e.sampleRate }
+
+// Channels returns the number of input channels (1 or 2).
 func (e *Encoder) Channels() int    { return e.channels }
+
+// Application returns the configured Opus application mode.
 func (e *Encoder) Application() int { return e.application }
 
+// SetBitrate sets the target bitrate in bits per second (e.g. 64000 or 96000).
 func (e *Encoder) SetBitrate(bps int) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_BITRATE_REQUEST), int32(bps))
 }
 
+// SetVBR enables or disables Variable Bitrate (VBR) mode.
 func (e *Encoder) SetVBR(enabled bool) error {
 	var v int32
 	if enabled {
@@ -103,16 +115,23 @@ func (e *Encoder) SetVBR(enabled bool) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_VBR_REQUEST), v)
 }
 
+// SetComplexity sets the encoder computational complexity (0..10, where 10 gives highest audio quality).
 func (e *Encoder) SetComplexity(complexity int) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_COMPLEXITY_REQUEST), int32(complexity))
 }
 
-// Reset resets the internal encoder state.
+// Reset resets the internal encoder state (e.g. between independent audio streams).
 func (e *Encoder) Reset() error {
 	return e.ctl(int32(opusccenc.OPUS_RESET_STATE))
 }
 
-// SetDTX configures the encoder's Discontinuous Transmission (DTX) mode (RFC 6716).
+// ResetState resets the internal encoder state. It is an alias for Reset matching OPUS_RESET_STATE.
+func (e *Encoder) ResetState() error {
+	return e.Reset()
+}
+
+// SetDTX configures Discontinuous Transmission (DTX) mode (RFC 6716).
+// When enabled, silence or background noise frames are transmitted with minimal bitrate or omitted.
 func (e *Encoder) SetDTX(enabled bool) error {
 	var v int32
 	if enabled {
@@ -121,7 +140,8 @@ func (e *Encoder) SetDTX(enabled bool) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_DTX_REQUEST), v)
 }
 
-// SetInbandFEC enables or disables the encoder's inband Forward Error Correction (FEC).
+// SetInbandFEC enables or disables in-band Forward Error Correction (FEC).
+// When enabled, the encoder adds redundant data into subsequent frames to recover lost packets.
 func (e *Encoder) SetInbandFEC(enabled bool) error {
 	var v int32
 	if enabled {
@@ -130,7 +150,8 @@ func (e *Encoder) SetInbandFEC(enabled bool) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_INBAND_FEC_REQUEST), v)
 }
 
-// SetPacketLossPerc configures the encoder's expected packet loss percentage (0-100).
+// SetPacketLossPerc configures the expected percentage of packet loss in the network (0 to 100).
+// Higher values instruct the encoder to dedicate more bitrate to FEC redundancy.
 func (e *Encoder) SetPacketLossPerc(percentage int) error {
 	if percentage < 0 {
 		percentage = 0

@@ -1,3 +1,12 @@
+// Package ogg implements reading and writing of Ogg bitstreams (RFC 3533)
+// and Ogg Opus audio stream encapsulation (RFC 7845).
+//
+// Key features:
+//   - PageReader: Reads Ogg pages with stream byte resynchronization (RFC 3533 §4).
+//   - PacketReader: Reassembles Ogg packets across page boundaries using lacing rules.
+//   - PacketWriter: Serializes packets to Ogg pages with multi-packet batching support.
+//   - OpusReader: Parses OpusHead identification and OpusTags comment headers.
+//   - Slice-by-8 CRC32: Precomputed 8-way parallel tables for high-throughput checksumming.
 package ogg
 
 import (
@@ -33,8 +42,13 @@ type Page struct {
 	RawPageBytesSize int
 }
 
+// IsContinuedPacket reports whether the first packet on this page is a continuation of a packet from the previous page.
 func (p *Page) IsContinuedPacket() bool { return p.HeaderType&0x01 != 0 }
+
+// IsBOS reports whether this page is the Beginning of Stream (BOS).
 func (p *Page) IsBOS() bool             { return p.HeaderType&0x02 != 0 }
+
+// IsEOS reports whether this page is the End of Stream (EOS).
 func (p *Page) IsEOS() bool             { return p.HeaderType&0x04 != 0 }
 
 // PageReader reads Ogg pages from an io.Reader.
@@ -71,6 +85,7 @@ var crcTable8 = func() [8][256]uint32 {
 	return tbl
 }()
 
+// NewPageReader creates a new PageReader wrapping an io.Reader with CRC verification and stream resync enabled.
 func NewPageReader(r io.Reader) *PageReader {
 	return &PageReader{
 		r:         bufio.NewReaderSize(r, 128*1024),

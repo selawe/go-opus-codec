@@ -74,12 +74,13 @@ func (t OpusTags) GetAll(key string) []string {
 	return matches
 }
 
+// OpusAudioPacket represents an extracted Opus audio payload with container metadata.
 type OpusAudioPacket struct {
-	Data         []byte
-	GranulePos   uint64
-	GranuleValid bool
-	EOS          bool
-	PageSequence uint32
+	Data         []byte // Encoded Opus packet bytes
+	GranulePos   uint64 // Ogg granule position
+	GranuleValid bool   // True if the packet finishes on a page with a valid granule position
+	EOS          bool   // True if this is the final packet (End of Stream)
+	PageSequence uint32 // Ogg page sequence number
 }
 
 // OpusReader reads an Ogg Opus file/stream and yields Opus audio packets.
@@ -100,6 +101,7 @@ type OpusReader struct {
 // OpusSampleRateHz is the Opus decoding sample rate (RFC 7845).
 const OpusSampleRateHz = 48000
 
+// NewOpusReader creates a new OpusReader reading from r, parsing the mandatory OpusHead and OpusTags headers.
 func NewOpusReader(r io.Reader) (*OpusReader, error) {
 	or := &OpusReader{pr: NewPacketReader(r)}
 	if err := or.readHeaders(); err != nil {
@@ -108,6 +110,7 @@ func NewOpusReader(r io.Reader) (*OpusReader, error) {
 	return or, nil
 }
 
+// SetVerifyCRC enables or disables CRC checksum verification for read pages.
 func (r *OpusReader) SetVerifyCRC(v bool) {
 	if r != nil && r.pr != nil {
 		r.pr.SetVerifyCRC(v)
@@ -170,14 +173,14 @@ func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 	}, nil
 }
 
-// returns the granule position of the sequence just before the requested granule position
+// SeekToPage seeks the stream to the page containing or immediately preceding the requested granule position.
+// Returns the granule position of the page seeked to.
 func (r *OpusReader) SeekToPage(granulePos uint64) (uint64, error) {
 	return r.pr.SeekToPage(granulePos)
 }
 
-// return the total number of samples in the stream, derived from the last page granule position.
-// Note: this method is destructive in that it reads packets. Subsequent calls to ReadAudioPacket may return EOF.
-// if the underlying reader is seekable, you may want to seek back to the start after calling this method.
+// TotalSamples returns the total number of audio samples in the stream, derived from the final page granule position.
+// Note: If the underlying stream is not seekable, this reads through to the end and caches the result.
 func (r *OpusReader) TotalSamples() (int64, error) {
 	// only compute one time
 	r.cachedTotalOnce.Do(func() {

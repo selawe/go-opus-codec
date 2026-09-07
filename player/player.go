@@ -1,5 +1,12 @@
-// OpusPlayer is a high level API for decoding Ogg Opus audio streams.
-// The main method is Read, which reads decoded PCM data into a byte slice.
+// Package player provides a high-level, thread-safe streaming audio player
+// for decoding Ogg Opus audio streams into int16 or float32 PCM.
+//
+// OpusPlayer implements io.Reader, io.Seeker, and io.Closer, supporting:
+//   - Frame-accurate seeking (io.SeekStart, io.SeekCurrent, io.SeekEnd).
+//   - Automatic preskip discarding per RFC 7845 §5.1.
+//   - Multichannel surround audio (mono, stereo, quad, 5.1, and 7.1).
+//   - Stream playback from disk or arbitrary io.Reader streams.
+//   - Concurrent thread-safe access across multiple goroutines.
 package player
 
 import (

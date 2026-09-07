@@ -1,3 +1,6 @@
+// Package wav implements reading and writing of RIFF/WAVE uncompressed PCM audio files.
+//
+// It supports 16-bit linear PCM audio across mono, stereo, and multichannel configurations.
 package wav
 
 import (
@@ -21,6 +24,7 @@ type Writer struct {
 	closed    bool
 }
 
+// NewWriter creates a new WAV writer that outputs to an io.WriteSeeker with the given sample rate and channel count.
 func NewWriter(w io.WriteSeeker, sampleRate int, channels int) (*Writer, error) {
 	wr := &Writer{
 		w:          w,
