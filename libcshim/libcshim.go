@@ -14,6 +14,12 @@ import (
 //
 // It is stdlib-only and intentionally small; it is not a general-purpose libc.
 
+// Compile-time assertion: opus-go requires a 64-bit architecture (such as amd64 or arm64).
+// The transpiled libopus C structures in opuscc and opusccenc use a 64-bit memory model (LP64).
+// On 32-bit systems (where unsafe.Sizeof(uintptr(0)) == 4), this constant expression underflows
+// uint and fails compilation immediately: "constant -4 overflows uint".
+const _ = uint(unsafe.Sizeof(uintptr(0))) - 8
+
 type Tpthread_key_t = uint32
 
 // TLS is a per-decoder state object used by ccgo-generated code.

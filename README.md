@@ -16,6 +16,20 @@ Directory structure:
 - `libcshim` - Small libc shim for the transpiled C code, replaces some modernc.org/libc functionality
 - `examples` - Example programs using the library
 
+## Supported Platforms & Architecture
+
+`opus-go` is 100% pure Go with no C compiler, headers, or cgo needed (`CGO_ENABLED=0` friendly). It can be cross-compiled cleanly across all major operating systems.
+
+| Operating System | Architecture | Status | Notes |
+|---|---|:---:|---|
+| **Linux** | `amd64`, `arm64` | ✅ Supported | Full support (x86-64, AWS Graviton, Raspberry Pi 4/5) |
+| **macOS (Darwin)** | `arm64`, `amd64` | ✅ Supported | Full support (Apple Silicon M1-M4 and Intel Macs) |
+| **Windows** | `amd64`, `arm64` | ✅ Supported | Full support (Windows 64-bit and Windows on ARM) |
+| **FreeBSD** | `amd64` | ✅ Supported | Full support |
+
+> [!NOTE]
+> **Architecture Requirement**: The underlying transpiled libopus code targets 64-bit little-endian systems (LP64). Attempting to build for 32-bit architectures (such as `386` or `arm`) is guarded against at compile time to prevent runtime pointer misalignment.
+
 ## Minimal high level API example
 Decoding an opus file to get PCM samples. Note the sample rate of the PCM data is always 48000 Hz.
 ```go
