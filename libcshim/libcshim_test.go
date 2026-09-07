@@ -233,6 +233,13 @@ func TestPointerAndLoadStoreHelpers(t *testing.T) {
 	if LoadInt32(pVal) != 999 {
 		t.Fatalf("expected 999, got %d", LoadInt32(pVal))
 	}
+
+	var uval uint32 = 0
+	pUVal := uintptr(unsafe.Pointer(&uval))
+	StoreUint32(pUVal, 0xDeadBeef)
+	if LoadUint32(pUVal) != 0xDeadBeef {
+		t.Fatalf("expected 0xDeadBeef, got 0x%x", LoadUint32(pUVal))
+	}
 }
 
 func TestGoString(t *testing.T) {

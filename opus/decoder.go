@@ -355,6 +355,38 @@ func (d *Decoder) ctlInt32(request int32, value int32) error {
 	return nil
 }
 
+// FinalRange returns the final range of the entropy decoder from the most recently decoded frame.
+// In RFC 6716 Section 6, this value is compared against the expected final range to verify bit-exact
+// entropy decoding conformance.
+func (d *Decoder) FinalRange() (uint32, error) {
+	if d == nil {
+		return 0, errors.New("opus: decoder closed")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.tls == nil || d.st == 0 {
+		return 0, errors.New("opus: decoder closed")
+	}
+
+	bp := d.tls.Alloc(32)
+	defer d.tls.Free(32)
+
+	outPtr := bp + 16
+	libc.StoreUint32(outPtr, 0)
+
+	var ret int32
+	if d.multistream {
+		ret = opuscc.Opus_opus_multistream_decoder_ctl(d.tls, d.st, int32(opuscc.OPUS_GET_FINAL_RANGE_REQUEST), libc.VaList(bp, uintptr(outPtr)))
+	} else {
+		ret = opuscc.Opus_opus_decoder_ctl(d.tls, d.st, int32(opuscc.OPUS_GET_FINAL_RANGE_REQUEST), libc.VaList(bp, uintptr(outPtr)))
+	}
+	if ret != opuscc.OPUS_OK {
+		return 0, fmt.Errorf("opus: get final range failed: %s (%d)", opusccErrorString(ret), ret)
+	}
+	return libc.LoadUint32(outPtr), nil
+}
+
 // DecodePacket decodes an Ogg OpusAudioPacket into interleaved signed 16-bit PCM.
 // If pcm is nil or smaller than the maximum packet size (120ms at 48kHz), a new buffer is allocated.
 // If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4.

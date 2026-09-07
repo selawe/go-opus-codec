@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/selawe/go-opus-codec.svg)](https://pkg.go.dev/github.com/selawe/go-opus-codec)
 
-A pure Go implementation of an Ogg/Opus audio parser, decoder, and encoder without cgo (`CGO_ENABLED=0`). Transpiled from libopus C sources to Go using [ccgo](https://pkg.go.dev/modernc.org/ccgo/v4), with full RFC 6716, RFC 8251, RFC 7845, and RFC 3533 conformance, thread safety, and float32/int16 support.
+A pure Go implementation of an Ogg/Opus audio parser, decoder, and encoder without cgo (`CGO_ENABLED=0`). The underlying DSP codec logic was originally transpiled from reference libopus 1.6.1 C source using [ccgo](https://pkg.go.dev/modernc.org/ccgo/v4); subsequent development, extensions, and hardening are written purely in Go following the official IETF RFC specifications (RFC 6716, RFC 8251, RFC 7845, RFC 3533).
 
 > [!IMPORTANT]
 > **Fork Attribution & Project Status**
@@ -10,9 +10,11 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, and encoder witho
 > This project is an independent fork of [kazzmir/opus-go](https://github.com/kazzmir/opus-go) by Jon Rafkind, customized and tuned to support personal projects and specific audio pipeline requirements.
 >
 > **Key Modifications & Tuning in this Fork:**
-> - **Full RFC Conformance**: RFC 6716 / RFC 8251 (TOC parsing, frame demuxing, LBRR/FEC detection, safe PLC) and RFC 7845 (OutputGainQ8, header validations).
+> - **Full RFC Conformance**: RFC 6716 / RFC 8251 (TOC parsing, frame demuxing, LBRR/FEC detection, safe PLC, and FinalRange entropy range checking) and RFC 7845 (OutputGainQ8, header validations).
+> - **Repacketizer & Packet Padding**: Merging and splitting of Opus frames without decoding/re-encoding, along with CBR packet padding for single-stream and multistream audio.
+> - **Soft Clipping**: Non-linear dynamic range compression for float32 PCM (`SoftClip` and `SoftClipper`) to prevent harsh clipping distortion.
 > - **Multichannel Surround**: Support for 5.1 and 7.1 surround sound audio playback and decoding.
-> - **Concurrency Safety**: Full mutex synchronization across `opus.Decoder`, `opus.Encoder`, and `player.OpusPlayer`.
+> - **Concurrency Safety**: Full mutex synchronization across `opus.Decoder`, `opus.Encoder`, `opus.Repacketizer`, and `player.OpusPlayer`.
 > - **Memory Safety**: Heap staging buffers and chunked block allocator in `libcshim` to eliminate pointer instability.
 > - **Performance**: Slice-by-8 parallel CRC32, Ogg multi-packet page batching, and byte resynchronization.
 > - **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.

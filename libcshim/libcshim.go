@@ -482,6 +482,20 @@ func StoreInt32(p uintptr, v int32) {
 	*(*int32)(unsafe.Pointer(p)) = v
 }
 
+func LoadUint32(p uintptr) uint32 {
+	if p == 0 {
+		return 0
+	}
+	return *(*uint32)(unsafe.Pointer(p))
+}
+
+func StoreUint32(p uintptr, v uint32) {
+	if p == 0 {
+		return
+	}
+	*(*uint32)(unsafe.Pointer(p)) = v
+}
+
 func LoadUintptr(p uintptr) uintptr {
 	if p == 0 {
 		return 0

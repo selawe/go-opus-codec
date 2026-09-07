@@ -211,6 +211,36 @@ func (e *Encoder) Lookahead() (int, error) {
 	return int(libc.LoadInt32(outPtr)), nil
 }
 
+// FinalRange returns the final range of the entropy encoder from the most recently encoded frame.
+func (e *Encoder) FinalRange() (uint32, error) {
+	if e == nil {
+		return 0, errors.New("opus: encoder closed")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.tls == nil || e.st == 0 {
+		return 0, errors.New("opus: encoder closed")
+	}
+
+	bp := e.tls.Alloc(32)
+	defer e.tls.Free(32)
+
+	outPtr := bp + 16
+	libc.StoreUint32(outPtr, 0)
+
+	ret := opusccenc.Opus_opus_encoder_ctl(
+		e.tls,
+		e.st,
+		int32(opusccenc.OPUS_GET_FINAL_RANGE_REQUEST),
+		libc.VaList(bp, uintptr(outPtr)),
+	)
+	if ret != opusccenc.OPUS_OK {
+		return 0, fmt.Errorf("%w: %s (%d)", ErrCtlFailed, opusccencErrorString(e.tls, ret), ret)
+	}
+	return libc.LoadUint32(outPtr), nil
+}
+
 func (e *Encoder) ctlInt32(request int32, value int32) error {
 	if e == nil {
 		return errors.New("opus: encoder closed")
