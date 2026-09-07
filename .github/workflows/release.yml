@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify Unit & Conformance Tests
+        run: go test -v ./...
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## go-opus-codec ${{ github.ref_name }}
+
+            A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repacketizer without cgo (`CGO_ENABLED=0`).
+
+            ### Highlights
+            - **100% Pure Go**: Zero C compiler or cgo required, no external C runtime libraries (`CGO_ENABLED=0` friendly).
+            - **RFC 6716 & RFC 8251 Conformance**: 120 / 120 tests passed (100.0%) against official IETF test vectors.
+            - **64-bit Architecture Support**: Tested on Linux, macOS (Apple Silicon & Intel), Windows, and FreeBSD (`amd64`, `arm64`).
+            - **Repacketizer API**: Merge multiple Opus frames (up to 120 ms) into a single packet without re-encoding (`opus.Repacketizer`).
+            - **CBR Packet Padding**: Pad and unpad Opus packets to fixed sizes (`opus.PacketPad`, `opus.PacketUnpad`).
+            - **Soft Clipping**: Non-linear dynamic range compression for float32 PCM (`opus.SoftClip`, `opus.SoftClipper`).
+            - **Container Demuxer & Muxer**: RFC 7845 / RFC 3533 Ogg Opus muxing (`ogg.PacketWriter`) and demuxing (`ogg.OpusReader`).
+            - **Comprehensive Examples**: 8 complete examples in `examples/` with dedicated documentation.
+
+            ### Installation
+            ```bash
+            go get github.com/selawe/go-opus-codec@${{ github.ref_name }}
+            ```
+
+            See [conformance_matrix.md](conformance_matrix.md) for full RFC conformance details.
