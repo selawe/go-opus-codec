@@ -6,6 +6,7 @@ import (
 	_ "fmt"
 	"io"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,4 +336,68 @@ func TestMultichannelPlayer(t *testing.T) {
 		t.Fatalf("expected 6 channels for 5.1 player, got %d", p.Channels())
 	}
 }
+
+func TestPlayer_ConcurrentAccess(t *testing.T) {
+	player, err := NewPlayerFromFile(testFilePath, false) // in-memory seekable
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer player.Close()
+
+	var wg sync.WaitGroup
+	// 4 concurrent goroutines reading and querying player state
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			buf := make([]byte, 1024)
+			for j := 0; j < 50; j++ {
+				_, _ = player.Read(buf)
+				_ = player.CurrentSample()
+				_ = player.CurrentTime()
+				_ = player.IsFinished()
+				if j%10 == 0 {
+					_ = player.SeekSample(uint64(j * 100))
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestPlayer_Close(t *testing.T) {
+	player, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+
+	buf := make([]byte, 512)
+	n, err := player.Read(buf)
+	if err != nil || n == 0 {
+		t.Fatalf("expected to read before close, n=%d, err=%v", n, err)
+	}
+
+	// Close the player
+	if err := player.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Multiple calls to Close should be safe
+	if err := player.Close(); err != nil {
+		t.Fatalf("Second Close failed: %v", err)
+	}
+
+	// Read after Close should return ErrClosed
+	_, err = player.Read(buf)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("expected ErrClosed on Read after Close, got: %v", err)
+	}
+
+	// Seek after Close should return ErrClosed
+	_, err = player.Seek(0, io.SeekStart)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("expected ErrClosed on Seek after Close, got: %v", err)
+	}
+}
+
 

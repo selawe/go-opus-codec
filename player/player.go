@@ -5,16 +5,22 @@ package player
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"runtime"
+	"sync"
 	"time"
 	// "log"
 
 	"github.com/kazzmir/opus-go/ogg"
 	"github.com/kazzmir/opus-go/opus"
 )
+
+// ErrClosed is returned when an operation is attempted on a closed player.
+var ErrClosed = errors.New("opus player is closed")
 
 type DataType interface {
 	int16 | float32
@@ -32,6 +38,9 @@ func dataSize[T DataType](zero T) int {
 }
 
 type OpusPlayer[SampleT DataType] struct {
+	mu               sync.Mutex
+	closer           io.Closer
+	closed           bool
 	reader           *ogg.OpusReader
 	decoder          *opus.Decoder
 	bufferInt16      []int16
@@ -58,14 +67,18 @@ func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
 
 	var zero T
 
-	return &OpusPlayer[T]{
+	player := &OpusPlayer[T]{
 		reader:           opusReader,
 		decoder:          decoder,
 		preskipRemaining: int64(opusReader.Head.PreSkip),
 		position:         0,
 		bytesPerSample:   dataSize(zero),
 		// buffer does not need to be initialized here because it will be allocated on first read
-	}, nil
+	}
+	runtime.SetFinalizer(player, func(p *OpusPlayer[T]) {
+		_ = p.Close()
+	})
+	return player, nil
 }
 
 // Create a new OpusPlayer from an io.Reader. If the reader is seekable,
@@ -91,8 +104,13 @@ func newPlayerFromFile[T DataType](path string, stream bool) (*OpusPlayer[T], er
 
 	if stream {
 		// dont need bufio here because OggOpusReader already uses bufio internally
-		// note that we rely on the garbage collector to close the file when the player is done with it
-		return newPlayerFromReader[T](file)
+		p, err := newPlayerFromReader[T](file)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		p.closer = file
+		return p, nil
 	} else {
 		defer file.Close()
 		var data bytes.Buffer
@@ -117,9 +135,38 @@ func NewPlayerF32FromFile(path string, stream bool) (*OpusPlayer[float32], error
 	return newPlayerFromFile[float32](path, stream)
 }
 
+// Close closes the underlying decoder and any opened file streams.
+// It is safe to call Close multiple times or concurrently.
+func (player *OpusPlayer[T]) Close() error {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+
+	if player.closed {
+		return nil
+	}
+	player.closed = true
+
+	var err error
+	if player.decoder != nil {
+		player.decoder.Close()
+		player.decoder = nil
+	}
+	if player.closer != nil {
+		err = player.closer.Close()
+		player.closer = nil
+	}
+	return err
+}
+
 // Returns true when the stream has finished and all bytes decoded
 // have been read, meaning when the internal buffer is empty.
 func (player *OpusPlayer[SampleT]) IsFinished() bool {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+	return player.isFinishedLocked()
+}
+
+func (player *OpusPlayer[SampleT]) isFinishedLocked() bool {
 	var zero SampleT
 	switch any(zero).(type) {
 	case int16:
@@ -134,9 +181,20 @@ func (player *OpusPlayer[SampleT]) IsFinished() bool {
 // Read as much data as possible into p. Returns the number of bytes read, and io.EOF
 // if there is no more output available.
 func (player *OpusPlayer[SampleT]) Read(p []byte) (int, error) {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+
+	if player.closed {
+		return 0, ErrClosed
+	}
+
+	return player.readLocked(p)
+}
+
+func (player *OpusPlayer[SampleT]) readLocked(p []byte) (int, error) {
 	total := 0
 	for total < len(p) {
-		n, err := player.ReadPacket(p[total:])
+		n, err := player.readPacketLocked(p[total:])
 		total += n
 		if err != nil {
 			return total, err
@@ -150,13 +208,17 @@ func (player *OpusPlayer[SampleT]) Read(p []byte) (int, error) {
 // The length of p should not be less than 4 if the opus stream is mono,
 // and should not be less than 2 if the opus stream is stereo.
 func (player *OpusPlayer[SampleT]) ReadPacket(p []byte) (int, error) {
-	// we have len(p) bytes to fill up, which is len(p)/2 int16 samples
-	// we are going to produce stereo audio, so the number of samples read per channel will be len(p)/4
+	player.mu.Lock()
+	defer player.mu.Unlock()
 
-	// log.Printf("OpusPlayer read: p=%d position=%d buffer=%d finished=%v", len(p), player.position, len(player.buffer), player.finished)
+	if player.closed {
+		return 0, ErrClosed
+	}
 
-	// fmt.Printf("Current sample: %v\n", player.totalSamples)
+	return player.readPacketLocked(p)
+}
 
+func (player *OpusPlayer[SampleT]) readPacketLocked(p []byte) (int, error) {
 	var zero SampleT
 	switch any(zero).(type) {
 	case int16:
@@ -387,6 +449,13 @@ func (player *OpusPlayer[T]) SampleRate() int {
 //
 // Returns the new offset in bytes from the start of the stream.
 func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+
+	if player.closed {
+		return 0, ErrClosed
+	}
+
 	bytesPerSample := int64(player.bytesPerSample * player.Channels())
 	byteToSample := func(b int64) int64 {
 		return b / bytesPerSample
@@ -398,14 +467,14 @@ func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
 
 	switch whence {
 	case io.SeekStart:
-		err = player.SeekSample(uint64(offset))
+		err = player.seekSampleLocked(uint64(offset))
 	case io.SeekCurrent:
 		n := max(0, offset+player.totalSamples)
-		err = player.SeekSample(uint64(n))
+		err = player.seekSampleLocked(uint64(n))
 	case io.SeekEnd:
-		length := byteToSample(player.Length())
+		length := byteToSample(player.lengthLocked())
 		n := max(0, offset+length)
-		err = player.SeekSample(uint64(n))
+		err = player.seekSampleLocked(uint64(n))
 	default:
 		return 0, fmt.Errorf("invalid whence: %d", whence)
 	}
@@ -423,6 +492,12 @@ func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
 // if the underlying reader is seekable, you may want to seek back to the start after calling this method.
 // the length is cached, however, so it is safe and efficient to call multiple times on the same stream.
 func (player *OpusPlayer[T]) Length() int64 {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+	return player.lengthLocked()
+}
+
+func (player *OpusPlayer[T]) lengthLocked() int64 {
 	total, err := player.reader.TotalSamples()
 	if err != nil {
 		return 0
@@ -435,6 +510,17 @@ func (player *OpusPlayer[T]) Length() int64 {
 // e.g., 0 is the start of the stream (after preskip), and the last available position is
 // the total samples - 1 (which is the same as the last granule position - preskip)
 func (player *OpusPlayer[T]) SeekSample(position uint64) error {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+
+	if player.closed {
+		return ErrClosed
+	}
+
+	return player.seekSampleLocked(position)
+}
+
+func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 	// granule positions must take preskip into account
 	position += uint64(player.reader.Head.PreSkip)
 
@@ -452,6 +538,9 @@ func (player *OpusPlayer[T]) SeekSample(position uint64) error {
 	decoder, err := opus.NewDecoderFromHead(player.reader.Head)
 	if err != nil {
 		return err
+	}
+	if player.decoder != nil {
+		player.decoder.Close()
 	}
 	player.decoder = decoder
 
@@ -471,36 +560,60 @@ func (player *OpusPlayer[T]) SeekSample(position uint64) error {
 	player.bufferInt16 = player.bufferInt16[:0]
 	player.bufferFloat32 = player.bufferFloat32[:0]
 
-	_, err = io.CopyN(io.Discard, player, int64(skipSamples*uint64(player.bytesPerSample)*uint64(player.Channels())))
-	return err
+	skipBytes := int64(skipSamples * uint64(player.bytesPerSample) * uint64(player.Channels()))
+	var scratch [4096]byte
+	for skipBytes > 0 {
+		toRead := min(skipBytes, int64(len(scratch)))
+		n, rerr := player.readLocked(scratch[:toRead])
+		skipBytes -= int64(n)
+		if rerr != nil {
+			return rerr
+		}
+	}
+	return nil
 }
 
 // Seek to the position specified by the argument in terms of time.
 func (player *OpusPlayer[T]) SeekTime(when time.Duration) error {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+
+	if player.closed {
+		return ErrClosed
+	}
+
 	samples := uint64(when * time.Duration(ogg.OpusSampleRateHz) / time.Second)
-	return player.SeekSample(samples)
+	return player.seekSampleLocked(samples)
 }
 
 // Current position in terms of how many samples have been rendered. This is independent of the number of channels the
 // underlying opus stream has. Basically this is the number of stereo samples in the
 // decoded PCM stream. Seeking to the beginning of the stream will reset this to zero.
 func (player *OpusPlayer[T]) CurrentSample() int64 {
+	player.mu.Lock()
+	defer player.mu.Unlock()
 	return player.totalSamples
 }
 
 // Current position in terms of time from when the player started.
 func (player *OpusPlayer[T]) CurrentTime() time.Duration {
+	player.mu.Lock()
+	defer player.mu.Unlock()
 	return time.Duration(player.totalSamples) * time.Second / time.Duration(ogg.OpusSampleRateHz)
 }
 
 // Return the total number of samples in the stream per channel. This is a destructive operation,
 // so you should seek back to the start if you need to read the stream again.
 func (player *OpusPlayer[T]) TotalSamples() (int64, error) {
+	player.mu.Lock()
+	defer player.mu.Unlock()
 	return player.reader.TotalSamples()
 }
 
 // Return the total duration of the stream. This is a destructive operation, similar to TotalSamples.
 func (player *OpusPlayer[T]) TotalDuration() (time.Duration, error) {
+	player.mu.Lock()
+	defer player.mu.Unlock()
 	return player.reader.TotalDuration()
 }
 
@@ -508,6 +621,8 @@ func (player *OpusPlayer[T]) TotalDuration() (time.Duration, error) {
 // This is the granule position of the last packet in opus terms. This can be different from CurrentTime()
 // when the stream being played is a network stream that started in the past.
 func (player *OpusPlayer[T]) CurrentStreamTimestamp() time.Duration {
+	player.mu.Lock()
+	defer player.mu.Unlock()
 	return player.lastTimestamp
 }
 
