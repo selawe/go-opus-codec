@@ -236,8 +236,12 @@ func Xmemset(_ *TLS, s uintptr, c int32, n uint64) uintptr {
 	}
 	b := unsafe.Slice((*byte)(unsafe.Pointer(s)), int(n))
 	fill := byte(c)
-	for i := range b {
-		b[i] = fill
+	if fill == 0 {
+		clear(b)
+	} else {
+		for i := range b {
+			b[i] = fill
+		}
 	}
 	return s
 }

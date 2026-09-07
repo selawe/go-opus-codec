@@ -3,6 +3,7 @@ package opus
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 
 	libc "github.com/kazzmir/opus-go/libcshim"
@@ -29,6 +30,9 @@ type Decoder struct {
 	channels   int
 
 	multistream bool
+
+	pcmI16 []int16
+	pcmF32 []float32
 }
 
 func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
@@ -85,7 +89,9 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 		return nil, fmt.Errorf("opus: decoder_create failed: %w", err)
 	}
 
-	return &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels}, nil
+	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels}
+	runtime.SetFinalizer(dec, (*Decoder).Close)
+	return dec, nil
 }
 
 func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, mapping []uint8) (*Decoder, error) {
@@ -114,7 +120,9 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 		return nil, fmt.Errorf("opus: multistream_decoder_create failed: %w", err)
 	}
 
-	return &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, multistream: true}, nil
+	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, multistream: true}
+	runtime.SetFinalizer(dec, (*Decoder).Close)
+	return dec, nil
 }
 
 func (d *Decoder) Close() error {
@@ -123,6 +131,8 @@ func (d *Decoder) Close() error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	runtime.SetFinalizer(d, nil)
 
 	if d.tls != nil {
 		if d.st != 0 {
@@ -167,9 +177,17 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 		return 0, fmt.Errorf("opus: pcm buffer too small: need %d samples, have %d", nNeeded, len(pcm))
 	}
 
+	// Use heap-backed staging buffer so pointers passed to ccgo remain valid
+	// even if the caller's slice was stack-allocated and moved during stack growth.
+	if cap(d.pcmI16) < nNeeded {
+		d.pcmI16 = make([]int16, nNeeded)
+	} else {
+		d.pcmI16 = d.pcmI16[:nNeeded]
+	}
+
 	dataPtr := libc.PtrByte(packet)
 	dataLen := int32(len(packet))
-	pcmPtr := libc.PtrInt16(pcm)
+	pcmPtr := libc.PtrInt16(d.pcmI16)
 	fec := int32(0)
 	if decodeFEC {
 		fec = 1
@@ -185,6 +203,8 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 	if ret < 0 {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrBadPacket, opusccErrorString(ret), ret)
 	}
+	nDecoded := int(ret) * d.channels
+	copy(pcm[:nDecoded], d.pcmI16[:nDecoded])
 	return int(ret), nil
 }
 
@@ -212,9 +232,17 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 		return 0, fmt.Errorf("opus: pcm buffer too small: need %d samples, have %d", nNeeded, len(pcm))
 	}
 
+	// Use heap-backed staging buffer so pointers passed to ccgo remain valid
+	// even if the caller's slice was stack-allocated and moved during stack growth.
+	if cap(d.pcmF32) < nNeeded {
+		d.pcmF32 = make([]float32, nNeeded)
+	} else {
+		d.pcmF32 = d.pcmF32[:nNeeded]
+	}
+
 	dataPtr := libc.PtrByte(packet)
 	dataLen := int32(len(packet))
-	pcmPtr := libc.PtrFloat32(pcm)
+	pcmPtr := libc.PtrFloat32(d.pcmF32)
 	fec := int32(0)
 	if decodeFEC {
 		fec = 1
@@ -230,6 +258,8 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 	if ret < 0 {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrBadPacket, opusccErrorString(ret), ret)
 	}
+	nDecoded := int(ret) * d.channels
+	copy(pcm[:nDecoded], d.pcmF32[:nDecoded])
 	return int(ret), nil
 }
 

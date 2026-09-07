@@ -3,6 +3,7 @@ package opus
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 
 	libc "github.com/kazzmir/opus-go/libcshim"
@@ -60,7 +61,9 @@ func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
 		return nil, fmt.Errorf("opus: encoder_create failed: %w", err)
 	}
 
-	return &Encoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, application: application}, nil
+	enc := &Encoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, application: application}
+	runtime.SetFinalizer(enc, (*Encoder).Close)
+	return enc, nil
 }
 
 func (e *Encoder) Close() error {
@@ -69,6 +72,8 @@ func (e *Encoder) Close() error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	runtime.SetFinalizer(e, nil)
 
 	if e.tls != nil {
 		if e.st != 0 {
