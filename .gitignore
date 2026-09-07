@@ -1,0 +1,15 @@
+# Test vectors archive and extracted files (39+ MB)
+testvectors/
+*.tar.gz
+
+# Test artifacts and outputs
+*.pcm
+*.pprof
+out.wav
+test_out.wav
+scratch/
+
+# OS / Editor artifacts
+.DS_Store
+*.swp
+*~
