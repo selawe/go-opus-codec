@@ -211,3 +211,186 @@ func PacketDuration(packet []byte) (time.Duration, error) {
 	}
 	return total, nil
 }
+
+// PacketFrames extracts and returns the individual Opus frames from a packet
+// according to RFC 6716 Section 3.2 and RFC 8251 Section 3.2.5.
+//
+// The returned slices reference the underlying packet byte array.
+// Returns an error if the packet is malformed, truncated, or exceeds RFC limits (e.g. >120 ms).
+func PacketFrames(packet []byte) ([][]byte, error) {
+	if len(packet) < 1 {
+		return nil, ErrPacketTooShort
+	}
+
+	code := int(packet[0] & 0x03)
+	switch code {
+	case 0:
+		// Code 0: exactly 1 frame (RFC 6716 Section 3.2.2)
+		return [][]byte{packet[1:]}, nil
+
+	case 1:
+		// Code 1: two CBR frames of equal size (RFC 6716 Section 3.2.3)
+		payload := packet[1:]
+		if len(payload)%2 != 0 {
+			return nil, fmt.Errorf("%w: code 1 packet has odd payload length %d", ErrPacketInvalid, len(payload))
+		}
+		frameSize := len(payload) / 2
+		return [][]byte{payload[:frameSize], payload[frameSize:]}, nil
+
+	case 2:
+		// Code 2: two VBR frames (RFC 6716 Section 3.2.4)
+		payload := packet[1:]
+		if len(payload) < 1 {
+			return nil, fmt.Errorf("%w: missing frame 0 size in code 2 packet", ErrPacketTooShort)
+		}
+		frame0Size, headerBytes, err := parseFrameSize(payload)
+		if err != nil {
+			return nil, err
+		}
+		if len(payload) < headerBytes+frame0Size {
+			return nil, fmt.Errorf("%w: code 2 frame 0 exceeds packet length", ErrPacketInvalid)
+		}
+		frame0 := payload[headerBytes : headerBytes+frame0Size]
+		frame1 := payload[headerBytes+frame0Size:]
+		return [][]byte{frame0, frame1}, nil
+
+	case 3:
+		// Code 3: arbitrary number of frames (RFC 6716 Section 3.2.5 & RFC 8251)
+		if len(packet) < 2 {
+			return nil, fmt.Errorf("%w: missing frame count byte", ErrPacketTooShort)
+		}
+		frameByte := packet[1]
+		count := int(frameByte & 0x3F)
+		if count < 1 || count > 48 {
+			return nil, fmt.Errorf("%w: invalid frame count %d (must be 1..48)", ErrPacketInvalid, count)
+		}
+
+		// Verify 120ms limit per RFC 6716 Section 3.2.5
+		samplesPerFrame := PacketSamplesPerFrame(packet, 48000)
+		if samplesPerFrame*count > 5760 {
+			return nil, fmt.Errorf("%w: packet duration %d samples exceeds 120ms (5760 samples)", ErrPacketExcessFrames, samplesPerFrame*count)
+		}
+
+		hasPadding := (frameByte & 0x40) != 0
+		isVBR := (frameByte & 0x80) != 0
+
+		offset := 2
+		totalPadding := 0
+		if hasPadding {
+			for {
+				if offset >= len(packet) {
+					return nil, fmt.Errorf("%w: truncated padding length sequence", ErrPacketTooShort)
+				}
+				p := int(packet[offset])
+				offset++
+				if p == 255 {
+					totalPadding += 254
+				} else {
+					totalPadding += p
+					break
+				}
+			}
+		}
+
+		if offset+totalPadding > len(packet) {
+			return nil, fmt.Errorf("%w: padding %d exceeds packet remaining payload %d", ErrPacketInvalid, totalPadding, len(packet)-offset)
+		}
+
+		payloadLen := len(packet) - offset - totalPadding
+		payload := packet[offset : offset+payloadLen]
+
+		if !isVBR {
+			// CBR frames
+			if payloadLen%count != 0 {
+				return nil, fmt.Errorf("%w: CBR payload %d not evenly divisible by frame count %d", ErrPacketInvalid, payloadLen, count)
+			}
+			frameSize := payloadLen / count
+			frames := make([][]byte, count)
+			for i := 0; i < count; i++ {
+				frames[i] = payload[i*frameSize : (i+1)*frameSize]
+			}
+			return frames, nil
+		}
+
+		// VBR frames
+		frames := make([][]byte, count)
+		curr := payload
+		for i := 0; i < count-1; i++ {
+			frameSize, hdrBytes, err := parseFrameSize(curr)
+			if err != nil {
+				return nil, err
+			}
+			curr = curr[hdrBytes:]
+			if len(curr) < frameSize {
+				return nil, fmt.Errorf("%w: VBR frame %d length %d exceeds remaining payload %d", ErrPacketInvalid, i, frameSize, len(curr))
+			}
+			frames[i] = curr[:frameSize]
+			curr = curr[frameSize:]
+		}
+		// Last frame receives remaining payload bytes
+		frames[count-1] = curr
+		return frames, nil
+
+	default:
+		return nil, ErrPacketInvalid
+	}
+}
+
+func parseFrameSize(data []byte) (int, int, error) {
+	if len(data) < 1 {
+		return 0, 0, ErrPacketTooShort
+	}
+	b0 := int(data[0])
+	if b0 < 252 {
+		return b0, 1, nil
+	}
+	if len(data) < 2 {
+		return 0, 0, ErrPacketTooShort
+	}
+	b1 := int(data[1])
+	return 4*b1 + b0, 2, nil
+}
+
+// PacketHasLBRR reports whether the Opus packet contains Low Bit-Rate Redundancy
+// (in-band Forward Error Correction, FEC) for SILK/Hybrid modes (RFC 6716 Section 4.5.2).
+func PacketHasLBRR(packet []byte) (bool, error) {
+	if len(packet) < 1 {
+		return false, ErrPacketTooShort
+	}
+
+	mode, _, _, _, _ := ParsePacketTOC(packet[0])
+	if mode == ModeCelt {
+		// CELT frames do not contain SILK LBRR data
+		return false, nil
+	}
+
+	frames, err := PacketFrames(packet)
+	if err != nil {
+		return false, err
+	}
+	if len(frames) == 0 || len(frames[0]) == 0 {
+		return false, nil
+	}
+
+	// Determine number of 20ms SILK sub-frames per frame (1..3)
+	samplesPerFrame := PacketSamplesPerFrame(packet, 48000)
+	nbFrames := 1
+	if samplesPerFrame > 960 {
+		nbFrames = samplesPerFrame / 960
+	}
+	if nbFrames > 3 {
+		nbFrames = 3
+	}
+
+	channels := PacketChannels(packet)
+	firstByte := int(frames[0][0])
+
+	// RFC 6716 Section 4.2.2: LBRR flag for primary channel is at bit (7 - nbFrames)
+	lbrr := (firstByte >> (7 - nbFrames) & 0x01) != 0
+	if channels == 2 {
+		// Stereo channel LBRR flag is at bit (6 - 2*nbFrames)
+		lbrr = lbrr || ((firstByte >> (6 - 2*nbFrames) & 0x01) != 0)
+	}
+
+	return lbrr, nil
+}

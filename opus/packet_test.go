@@ -1,6 +1,7 @@
 package opus
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"time"
@@ -205,3 +206,142 @@ func TestRFC6716_PacketInspectionHelpers(t *testing.T) {
 		t.Fatalf("PacketDuration: got %v, want 20ms", dur)
 	}
 }
+
+func TestPacketFrames_Code0(t *testing.T) {
+	pkt := []byte{0x00, 0x11, 0x22, 0x33}
+	frames, err := PacketFrames(pkt)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 0: %v", err)
+	}
+	if len(frames) != 1 || !bytes.Equal(frames[0], []byte{0x11, 0x22, 0x33}) {
+		t.Fatalf("unexpected frames: %v", frames)
+	}
+}
+
+func TestPacketFrames_Code1_CBR(t *testing.T) {
+	// Even payload: 4 bytes -> 2 frames of 2 bytes
+	pkt := []byte{0x01, 0x11, 0x22, 0x33, 0x44}
+	frames, err := PacketFrames(pkt)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 1: %v", err)
+	}
+	if len(frames) != 2 || !bytes.Equal(frames[0], []byte{0x11, 0x22}) || !bytes.Equal(frames[1], []byte{0x33, 0x44}) {
+		t.Fatalf("unexpected frames: %v", frames)
+	}
+
+	// Odd payload: should return ErrPacketInvalid
+	pktOdd := []byte{0x01, 0x11, 0x22, 0x33}
+	if _, err := PacketFrames(pktOdd); !errors.Is(err, ErrPacketInvalid) {
+		t.Fatalf("expected ErrPacketInvalid for odd Code 1 payload, got: %v", err)
+	}
+}
+
+func TestPacketFrames_Code2_VBR(t *testing.T) {
+	// Frame 0 size = 3 (1-byte header: 0x03), Frame 1 size = 2
+	pkt := []byte{0x02, 0x03, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE}
+	frames, err := PacketFrames(pkt)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 2: %v", err)
+	}
+	if len(frames) != 2 || !bytes.Equal(frames[0], []byte{0xAA, 0xBB, 0xCC}) || !bytes.Equal(frames[1], []byte{0xDD, 0xEE}) {
+		t.Fatalf("unexpected frames: %v", frames)
+	}
+
+	// 2-byte size header: 252 + 4*1 = 256 bytes for frame 0
+	frame0 := bytes.Repeat([]byte{0xA5}, 256)
+	frame1 := []byte{0x01, 0x02, 0x03}
+	pkt2 := append([]byte{0x02, 252, 1}, frame0...)
+	pkt2 = append(pkt2, frame1...)
+	frames2, err := PacketFrames(pkt2)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 2 (2-byte header): %v", err)
+	}
+	if len(frames2) != 2 || !bytes.Equal(frames2[0], frame0) || !bytes.Equal(frames2[1], frame1) {
+		t.Fatalf("unexpected frames2: frame0 len=%d, frame1 len=%d", len(frames2[0]), len(frames2[1]))
+	}
+
+	// Truncated size header
+	if _, err := PacketFrames([]byte{0x02}); !errors.Is(err, ErrPacketTooShort) {
+		t.Fatalf("expected ErrPacketTooShort for truncated Code 2, got: %v", err)
+	}
+}
+
+func TestPacketFrames_Code3_CBR(t *testing.T) {
+	// 3 frames, CBR, no padding: count=3, payload len=6 -> 2 bytes per frame
+	pkt := []byte{0x03, 3, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06}
+	frames, err := PacketFrames(pkt)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 3 CBR: %v", err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("expected 3 frames, got %d", len(frames))
+	}
+	if !bytes.Equal(frames[0], []byte{0x01, 0x02}) ||
+		!bytes.Equal(frames[1], []byte{0x03, 0x04}) ||
+		!bytes.Equal(frames[2], []byte{0x05, 0x06}) {
+		t.Fatalf("unexpected frames content: %v", frames)
+	}
+
+	// Undivisible payload
+	pktBad := []byte{0x03, 3, 0x01, 0x02, 0x03, 0x04}
+	if _, err := PacketFrames(pktBad); !errors.Is(err, ErrPacketInvalid) {
+		t.Fatalf("expected ErrPacketInvalid for indivisible CBR, got: %v", err)
+	}
+}
+
+func TestPacketFrames_Code3_VBR(t *testing.T) {
+	// 3 frames, VBR (bit 7 set: 0x83), frame 0 size=2, frame 1 size=3, frame 2=remainder (4 bytes)
+	pkt := []byte{0x03, 0x83, 2, 0x10, 0x11, 3, 0x20, 0x21, 0x22, 0x30, 0x31, 0x32, 0x33}
+	frames, err := PacketFrames(pkt)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 3 VBR: %v", err)
+	}
+	if len(frames) != 3 {
+		t.Fatalf("expected 3 frames, got %d", len(frames))
+	}
+	if !bytes.Equal(frames[0], []byte{0x10, 0x11}) ||
+		!bytes.Equal(frames[1], []byte{0x20, 0x21, 0x22}) ||
+		!bytes.Equal(frames[2], []byte{0x30, 0x31, 0x32, 0x33}) {
+		t.Fatalf("unexpected VBR frames: %v", frames)
+	}
+}
+
+func TestPacketFrames_Code3_Padding(t *testing.T) {
+	// 2 frames, CBR with padding (bit 6 set: 0x42)
+	// Padding bytes: 255, 3 -> 254 + 3 = 257 bytes of padding at end
+	padding := make([]byte, 257)
+	pkt := []byte{0x03, 0x42, 255, 3, 0xAA, 0xBB, 0xCC, 0xDD}
+	pkt = append(pkt, padding...)
+
+	frames, err := PacketFrames(pkt)
+	if err != nil {
+		t.Fatalf("PacketFrames Code 3 padded: %v", err)
+	}
+	if len(frames) != 2 || !bytes.Equal(frames[0], []byte{0xAA, 0xBB}) || !bytes.Equal(frames[1], []byte{0xCC, 0xDD}) {
+		t.Fatalf("unexpected padded frames: %v", frames)
+	}
+}
+
+func TestPacketHasLBRR(t *testing.T) {
+	// CELT packet (config 20): LBRR is always false
+	celtPkt := []byte{20 << 3, 0x11, 0x22}
+	has, err := PacketHasLBRR(celtPkt)
+	if err != nil || has {
+		t.Fatalf("CELT packet: want false, got %v err %v", has, err)
+	}
+
+	// SILK 20ms mono packet (config 1, nbFrames=1)
+	// LBRR bit for mono 20ms is bit (7-1) = bit 6 (0x40)
+	silkWithLBRR := []byte{1 << 3, 0x40, 0x12, 0x34}
+	has, err = PacketHasLBRR(silkWithLBRR)
+	if err != nil || !has {
+		t.Fatalf("SILK with LBRR: want true, got %v err %v", has, err)
+	}
+
+	silkWithoutLBRR := []byte{1 << 3, 0x00, 0x12, 0x34}
+	has, err = PacketHasLBRR(silkWithoutLBRR)
+	if err != nil || has {
+		t.Fatalf("SILK without LBRR: want false, got %v err %v", has, err)
+	}
+}
+
