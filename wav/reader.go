@@ -25,6 +25,7 @@ type Reader struct {
 	sampleRate int
 	channels   int
 
+	buf           []byte
 	dataRemaining uint32
 }
 
@@ -63,14 +64,18 @@ func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
 		n = maxSamples
 	}
 
-	buf := make([]byte, n*2)
+	nBytes := n * 2
+	if cap(r.buf) < nBytes {
+		r.buf = make([]byte, nBytes)
+	}
+	buf := r.buf[:nBytes]
 	if _, err := io.ReadFull(r.br, buf); err != nil {
 		return 0, err
 	}
 	for i := 0; i < n; i++ {
 		dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
 	}
-	r.dataRemaining -= uint32(n * 2)
+	r.dataRemaining -= uint32(nBytes)
 	return n, nil
 }
 

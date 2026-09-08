@@ -75,6 +75,9 @@ func main() {
 	if wr.SampleRate() != 48000 {
 		fatal(fmt.Errorf("only 48kHz WAV supported currently (got %d)", wr.SampleRate()))
 	}
+	if wr.Channels() < 1 || wr.Channels() > 2 {
+		fatal(fmt.Errorf("only mono and stereo (1 or 2 channels) WAV files supported currently (got %d)", wr.Channels()))
+	}
 
 	enc, err := opus.NewEncoder(wr.SampleRate(), wr.Channels(), app)
 	if err != nil {

@@ -212,3 +212,32 @@ func TestWAVReader_OOMProtection(t *testing.T) {
 	}
 }
 
+func BenchmarkWAVReader_ReadInt16PCM(b *testing.B) {
+	ws := &memoryWriteSeeker{}
+	writer, err := NewWriter(ws, 48000, 2)
+	if err != nil {
+		b.Fatalf("NewWriter: %v", err)
+	}
+	pcm := make([]int16, 960*2)
+	for i := 0; i < 50; i++ {
+		_ = writer.WriteInt16PCM(pcm)
+	}
+	_ = writer.Close()
+
+	wavBytes := ws.buf
+	dst := make([]int16, 960*2)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		reader, _ := NewReader(bytes.NewReader(wavBytes))
+		for {
+			n, err := reader.ReadInt16PCM(dst)
+			if n == 0 || err != nil {
+				break
+			}
+		}
+	}
+}
+
+
