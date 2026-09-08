@@ -1,8 +1,11 @@
-// Package opusgo provides a high-level, pure-Go API for decoding and playing
-// Ogg Opus audio streams without cgo or external C libraries.
+// Package opusgo provides a high-level, pure-Go API for encoding, decoding,
+// and playing Ogg Opus audio streams without cgo or external C libraries.
 //
-// It re-exports player.OpusPlayer for straightforward playback,
-// frame-accurate seeking, and streaming of Opus audio files and streams.
+// It provides:
+//   - High-level conversion helpers (EncodeWAVToOggOpus, DecodeOggOpusToWAV,
+//     ConvertWAVFileToOggOpus, and ConvertOggOpusFileToWAV).
+//   - OpusPlayer for straightforward playback, frame-accurate seeking, and streaming
+//     of Opus audio files and streams.
 //
 // For lower-level access to Opus decoding, encoding, and packet inspection,
 // see the sub-packages:
