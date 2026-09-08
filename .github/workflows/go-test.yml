@@ -1,11 +1,18 @@
-name: Go test
+name: CI
 
 on:
   push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
 
 jobs:
   test:
-    name: go test (${{ matrix.os }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -14,9 +21,10 @@ jobs:
           - ubuntu-latest
           - ubuntu-24.04-arm
           - macos-latest
+          - windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Go
@@ -25,5 +33,68 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run tests
-        run: go test ./...
+      - name: Run Unit Tests (CGO_ENABLED=0)
+        env:
+          CGO_ENABLED: 0
+        run: go test -v ./...
+
+      - name: Run Race Detector (Unix only)
+        if: runner.os != 'Windows'
+        run: go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus
+
+      - name: Build CLI Tools
+        env:
+          CGO_ENABLED: 0
+        run: go build -v ./cmd/...
+
+  cross-compile:
+    name: Cross-Compile (${{ matrix.target.goos }}/${{ matrix.target.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: freebsd, goarch: amd64 }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify Build
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: 0
+        run: go build -v ./...
+
+  examples:
+    name: Build Examples
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build all example modules
+        run: |
+          for dir in examples/*/; do
+            echo "Building $dir..."
+            (cd "$dir" && go build -o /dev/null .) || exit 1
+          done

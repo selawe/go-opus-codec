@@ -10,8 +10,8 @@ import (
 
 func main() {
 	const (
-		sampleRate   = 48000
-		channels     = 2
+		sampleRate    = 48000
+		channels      = 2
 		frameSize20ms = sampleRate / 50 // 960 samples per channel = 20ms
 	)
 
@@ -40,8 +40,8 @@ func main() {
 		for s := 0; s < frameSize20ms; s++ {
 			t := float64(i*frameSize20ms+s) / float64(sampleRate)
 			val := int16(math.Sin(2*math.Pi*440.0*t) * 16000)
-			pcm[s*channels] = val     // Left channel
-			pcm[s*channels+1] = val   // Right channel
+			pcm[s*channels] = val   // Left channel
+			pcm[s*channels+1] = val // Right channel
 		}
 
 		pktBuf := make([]byte, 1275)

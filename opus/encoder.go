@@ -197,7 +197,7 @@ func (e *Encoder) Close() error {
 }
 
 // SampleRate returns the encoder input sample rate in Hz.
-func (e *Encoder) SampleRate() int  { return e.sampleRate }
+func (e *Encoder) SampleRate() int { return e.sampleRate }
 
 // Channels returns the number of input channels (1 or 2 for basic encoder, up to 255 for multistream).
 func (e *Encoder) Channels() int { return e.channels }

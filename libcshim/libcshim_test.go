@@ -260,4 +260,3 @@ func TestLoadStoreUintptrAtNullBase(t *testing.T) {
 	}
 	StoreUintptrAt(0, 16, 0x1234)
 }
-

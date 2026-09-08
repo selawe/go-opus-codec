@@ -290,4 +290,3 @@ func TestNewDecoderFromHead_OutputGain(t *testing.T) {
 		t.Fatalf("expected higher energy with +3dB gain: withGain=%f, noGain=%f", energyWithGain, energyNoGain)
 	}
 }
-

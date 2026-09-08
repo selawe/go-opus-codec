@@ -46,10 +46,10 @@ type Page struct {
 func (p *Page) IsContinuedPacket() bool { return p.HeaderType&0x01 != 0 }
 
 // IsBOS reports whether this page is the Beginning of Stream (BOS).
-func (p *Page) IsBOS() bool             { return p.HeaderType&0x02 != 0 }
+func (p *Page) IsBOS() bool { return p.HeaderType&0x02 != 0 }
 
 // IsEOS reports whether this page is the End of Stream (EOS).
-func (p *Page) IsEOS() bool             { return p.HeaderType&0x04 != 0 }
+func (p *Page) IsEOS() bool { return p.HeaderType&0x04 != 0 }
 
 // PageReader reads Ogg pages from an io.Reader.
 type PageReader struct {

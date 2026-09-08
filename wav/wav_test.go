@@ -159,15 +159,15 @@ func TestWAVReader_OddFmtChunk(t *testing.T) {
 
 	// "fmt " chunk with size 17
 	b.WriteString("fmt ")
-	b.Write([]byte{17, 0, 0, 0})       // sz = 17
-	b.Write([]byte{1, 0})              // audio format = 1 (PCM)
-	b.Write([]byte{1, 0})              // channels = 1
-	b.Write([]byte{0x80, 0x3e, 0, 0})  // sample rate = 16000
-	b.Write([]byte{0x00, 0x7d, 0, 0})  // byte rate = 32000
-	b.Write([]byte{2, 0})              // block align = 2
-	b.Write([]byte{16, 0})             // bits per sample = 16
-	b.WriteByte(0)                     // 17th byte (extra byte)
-	b.WriteByte(0)                     // RIFF word padding byte (must be skipped)
+	b.Write([]byte{17, 0, 0, 0})      // sz = 17
+	b.Write([]byte{1, 0})             // audio format = 1 (PCM)
+	b.Write([]byte{1, 0})             // channels = 1
+	b.Write([]byte{0x80, 0x3e, 0, 0}) // sample rate = 16000
+	b.Write([]byte{0x00, 0x7d, 0, 0}) // byte rate = 32000
+	b.Write([]byte{2, 0})             // block align = 2
+	b.Write([]byte{16, 0})            // bits per sample = 16
+	b.WriteByte(0)                    // 17th byte (extra byte)
+	b.WriteByte(0)                    // RIFF word padding byte (must be skipped)
 
 	// "data" chunk with 4 bytes (2 int16 samples: 1234, 5678)
 	b.WriteString("data")
@@ -239,5 +239,3 @@ func BenchmarkWAVReader_ReadInt16PCM(b *testing.B) {
 		}
 	}
 }
-
-

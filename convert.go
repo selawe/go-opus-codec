@@ -244,7 +244,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh
 
 			for encodedSamplesPerCh < targetSamplesPerCh {
-				isLast := (encodedSamplesPerCh + uint64(frameSize) >= targetSamplesPerCh)
+				isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
 
 				toCopy := len(pending)
 				if toCopy > frameSamples {

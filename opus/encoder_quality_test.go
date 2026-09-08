@@ -260,7 +260,7 @@ func computeSNRWithLag(original, decoded []float32, lag int) float64 {
 		return 100.0
 	}
 
-	return 10 * math.Log10(signalPower / noisePower)
+	return 10 * math.Log10(signalPower/noisePower)
 }
 
 func computeSNR(original, decoded []float32) float64 {

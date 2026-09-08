@@ -42,7 +42,7 @@ func NewReader(r io.Reader) (*Reader, error) {
 func (r *Reader) SampleRate() int { return r.sampleRate }
 
 // Channels returns the number of channels parsed from the WAV header.
-func (r *Reader) Channels() int   { return r.channels }
+func (r *Reader) Channels() int { return r.channels }
 
 // ReadInt16PCM reads up to len(dst) samples (not frames) into dst.
 // Returns number of samples read.

@@ -78,4 +78,3 @@ func BenchmarkPacketWriter_Streaming(b *testing.B) {
 	}
 	_ = pw.Flush()
 }
-

@@ -344,4 +344,3 @@ func TestPacketHasLBRR(t *testing.T) {
 		t.Fatalf("SILK without LBRR: want false, got %v err %v", has, err)
 	}
 }
-

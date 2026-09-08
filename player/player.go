@@ -779,4 +779,3 @@ func (player *OpusPlayer[T]) Gain() float64 {
 	}
 	return 20.0 * math.Log10(player.volume)
 }
-
