@@ -31,7 +31,10 @@ func PacketPad(packet []byte, newLen int) ([]byte, error) {
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
 	}
-	defer tls.Close()
+	defer func() {
+		opusccenc.FreePseudostackTLS(tls)
+		tls.Close()
+	}()
 
 	ret := opusccenc.Opus_opus_packet_pad(tls, libc.PtrByte(buf), int32(len(packet)), int32(newLen))
 	if ret != opusccenc.OPUS_OK {
@@ -53,7 +56,10 @@ func PacketUnpad(packet []byte) ([]byte, error) {
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
 	}
-	defer tls.Close()
+	defer func() {
+		opusccenc.FreePseudostackTLS(tls)
+		tls.Close()
+	}()
 
 	ret := opusccenc.Opus_opus_packet_unpad(tls, libc.PtrByte(buf), int32(len(buf)))
 	if ret < 0 {
@@ -88,7 +94,10 @@ func MultistreamPacketPad(packet []byte, newLen int, nbStreams int) ([]byte, err
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
 	}
-	defer tls.Close()
+	defer func() {
+		opusccenc.FreePseudostackTLS(tls)
+		tls.Close()
+	}()
 
 	ret := opusccenc.Opus_opus_multistream_packet_pad(tls, libc.PtrByte(buf), int32(len(packet)), int32(newLen), int32(nbStreams))
 	if ret != opusccenc.OPUS_OK {
@@ -113,7 +122,10 @@ func MultistreamPacketUnpad(packet []byte, nbStreams int) ([]byte, error) {
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
 	}
-	defer tls.Close()
+	defer func() {
+		opusccenc.FreePseudostackTLS(tls)
+		tls.Close()
+	}()
 
 	ret := opusccenc.Opus_opus_multistream_packet_unpad(tls, libc.PtrByte(buf), int32(len(buf)), int32(nbStreams))
 	if ret < 0 {

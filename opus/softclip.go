@@ -63,6 +63,7 @@ func (sc *SoftClipper) Process(pcm []float32) error {
 	memPtr := libc.PtrFloat32(sc.mem)
 
 	opuscc.Opus_opus_pcm_soft_clip(sc.tls, dataPtr, nbSamples, int32(sc.channels), memPtr)
+	runtime.KeepAlive(sc)
 	return nil
 }
 
@@ -85,6 +86,7 @@ func (sc *SoftClipper) Close() error {
 	defer sc.mu.Unlock()
 	runtime.SetFinalizer(sc, nil)
 	if sc.tls != nil {
+		opuscc.FreePseudostackTLS(sc.tls)
 		sc.tls.Close()
 		sc.tls = nil
 	}
@@ -106,7 +108,10 @@ func SoftClip(pcm []float32, channels int) error {
 	if tls == nil {
 		return errors.New("opus: failed to allocate TLS")
 	}
-	defer tls.Close()
+	defer func() {
+		opuscc.FreePseudostackTLS(tls)
+		tls.Close()
+	}()
 
 	mem := make([]float32, channels)
 	nbSamples := int32(len(pcm) / channels)

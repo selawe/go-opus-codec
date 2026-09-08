@@ -102,6 +102,7 @@ func (rp *Repacketizer) Cat(packet []byte) error {
 	if ret != opusccenc.OPUS_OK {
 		return fmt.Errorf("opus: repacketizer_cat failed: %s (%d)", opusccencErrorString(rp.tls, ret), ret)
 	}
+	runtime.KeepAlive(rp)
 	return nil
 }
 
@@ -116,7 +117,9 @@ func (rp *Repacketizer) Frames() int {
 	if rp.tls == nil || rp.st == 0 {
 		return 0
 	}
-	return int(opusccenc.Opus_opus_repacketizer_get_nb_frames(rp.tls, rp.st))
+	n := int(opusccenc.Opus_opus_repacketizer_get_nb_frames(rp.tls, rp.st))
+	runtime.KeepAlive(rp)
+	return n
 }
 
 // Out outputs the combined repacketized packet into dst and returns the number of bytes written.
@@ -139,6 +142,7 @@ func (rp *Repacketizer) Out(dst []byte) (int, error) {
 	if ret < 0 {
 		return 0, fmt.Errorf("opus: repacketizer_out failed: %s (%d)", opusccencErrorString(rp.tls, ret), ret)
 	}
+	runtime.KeepAlive(rp)
 	return int(ret), nil
 }
 
@@ -165,5 +169,6 @@ func (rp *Repacketizer) OutRange(begin, end int, dst []byte) (int, error) {
 	if ret < 0 {
 		return 0, fmt.Errorf("opus: repacketizer_out_range failed: %s (%d)", opusccencErrorString(rp.tls, ret), ret)
 	}
+	runtime.KeepAlive(rp)
 	return int(ret), nil
 }

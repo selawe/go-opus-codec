@@ -307,6 +307,7 @@ func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (int, error)
 		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, int32(ret)), ret)
 	}
 	copy(packet, e.encBuf[:ret])
+	runtime.KeepAlive(e)
 	return int(ret), nil
 }
 
@@ -366,6 +367,7 @@ func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (int, e
 		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, int32(ret)), ret)
 	}
 	copy(packet, e.encBuf[:ret])
+	runtime.KeepAlive(e)
 	return int(ret), nil
 }
 

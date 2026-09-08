@@ -232,6 +232,7 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 	}
 	nDecoded := int(ret) * d.channels
 	copy(pcm[:nDecoded], d.pcmI16[:nDecoded])
+	runtime.KeepAlive(d)
 	return int(ret), nil
 }
 
@@ -287,6 +288,7 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 	}
 	nDecoded := int(ret) * d.channels
 	copy(pcm[:nDecoded], d.pcmF32[:nDecoded])
+	runtime.KeepAlive(d)
 	return int(ret), nil
 }
 

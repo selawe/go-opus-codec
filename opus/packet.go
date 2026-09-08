@@ -289,6 +289,9 @@ func PacketFrames(packet []byte) ([][]byte, error) {
 					totalPadding += p
 					break
 				}
+				if offset+totalPadding > len(packet) {
+					return nil, fmt.Errorf("%w: padding %d exceeds packet remaining payload %d", ErrPacketInvalid, totalPadding, len(packet)-offset)
+				}
 			}
 		}
 
