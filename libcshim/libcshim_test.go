@@ -252,3 +252,12 @@ func TestGoString(t *testing.T) {
 		t.Fatal("expected empty string for nil pointer")
 	}
 }
+
+func TestLoadStoreUintptrAtNullBase(t *testing.T) {
+	// Must safely return 0 / no-op when base pointer is 0, without crashing
+	if val := LoadUintptrAt(0, 16); val != 0 {
+		t.Fatalf("expected 0 from LoadUintptrAt(0, 16), got %x", val)
+	}
+	StoreUintptrAt(0, 16, 0x1234)
+}
+

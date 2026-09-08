@@ -632,5 +632,5 @@ func (player *OpusPlayer[T]) CurrentStreamTimestamp() time.Duration {
 }
 
 func (player *OpusPlayer[T]) updateTimestamp(granule uint64) {
-	player.lastTimestamp = time.Duration(granule) / time.Duration(ogg.OpusSampleRateHz) * time.Second
+	player.lastTimestamp = time.Duration(granule) * time.Second / time.Duration(ogg.OpusSampleRateHz)
 }

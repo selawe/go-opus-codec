@@ -511,9 +511,15 @@ func StoreUintptr(p uintptr, v uintptr) {
 }
 
 func LoadUintptrAt(base uintptr, off uintptr) uintptr {
+	if base == 0 {
+		return 0
+	}
 	return LoadUintptr(base + off)
 }
 
 func StoreUintptrAt(base uintptr, off uintptr, v uintptr) {
+	if base == 0 {
+		return
+	}
 	StoreUintptr(base+off, v)
 }

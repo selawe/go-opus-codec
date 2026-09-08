@@ -462,4 +462,27 @@ func TestPlayer_ShortAndUnalignedReads(t *testing.T) {
 	}
 }
 
+func TestPlayer_TimestampSubsecondPrecision(t *testing.T) {
+	player, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer player.Close()
+
+	// Update timestamp with 24000 samples (0.5 seconds = 500ms).
+	// Previously, 24000 / 48000 * 1s truncated to 0s!
+	player.updateTimestamp(24000)
+	ts := player.CurrentStreamTimestamp()
+	if ts != 500*time.Millisecond {
+		t.Fatalf("expected 500ms, got %v", ts)
+	}
+
+	player.updateTimestamp(960) // 20ms
+	ts = player.CurrentStreamTimestamp()
+	if ts != 20*time.Millisecond {
+		t.Fatalf("expected 20ms, got %v", ts)
+	}
+}
+
+
 
