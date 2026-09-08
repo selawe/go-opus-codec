@@ -59,6 +59,7 @@ type OpusPlayer[SampleT DataType] struct {
 	// how many samples have been read so far
 	totalSamples  int64
 	lastTimestamp time.Duration
+	volume        float64
 }
 
 func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
@@ -80,6 +81,7 @@ func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
 		preskipRemaining: int64(opusReader.Head.PreSkip),
 		position:         0,
 		bytesPerSample:   dataSize(zero),
+		volume:           1.0,
 		// buffer does not need to be initialized here because it will be allocated on first read
 	}
 	runtime.SetFinalizer(player, func(p *OpusPlayer[T]) {
@@ -240,7 +242,7 @@ func (player *OpusPlayer[SampleT]) readPacketLocked(p []byte) (int, error) {
 	return 0, fmt.Errorf("unsupported data type")
 }
 
-func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
+func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 	if player.position >= len(player.bufferFloat32) {
 		packet, err := player.reader.ReadAudioPacket()
 		if err != nil {
@@ -281,27 +283,50 @@ func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
 	}
 
 	channels := player.Channels()
+	vol := float32(player.volume)
+
 	switch player.reader.Head.Channels {
 	case 1:
 		// we have to produce stereo audio, so each input sample becomes two output samples
 		atMost := min(len(p)/8, len(player.bufferFloat32)-player.position)
-		// log.Printf("Rendering opus: p=%d buffer=%d atMost=%d position=%d", len(p), len(player.buffer), atMost, player.position)
 		count := 0
-		for count < atMost {
-			sample := player.bufferFloat32[player.position+count]
+		if vol == 1.0 {
+			for count < atMost {
+				sample := player.bufferFloat32[player.position+count]
+				v := math.Float32bits(sample)
+				p[count*8+0] = byte(v)
+				p[count*8+1] = byte(v >> 8)
+				p[count*8+2] = byte(v >> 16)
+				p[count*8+3] = byte(v >> 24)
 
-			v := math.Float32bits(sample)
-			p[count*8+0] = byte(v)
-			p[count*8+1] = byte(v >> 8)
-			p[count*8+2] = byte(v >> 16)
-			p[count*8+3] = byte(v >> 24)
+				p[count*8+4] = byte(v)
+				p[count*8+5] = byte(v >> 8)
+				p[count*8+6] = byte(v >> 16)
+				p[count*8+7] = byte(v >> 24)
+				count += 1
+			}
+		} else if vol == 0.0 {
+			for count < atMost {
+				for b := 0; b < 8; b++ {
+					p[count*8+b] = 0
+				}
+				count += 1
+			}
+		} else {
+			for count < atMost {
+				sample := player.bufferFloat32[player.position+count] * vol
+				v := math.Float32bits(sample)
+				p[count*8+0] = byte(v)
+				p[count*8+1] = byte(v >> 8)
+				p[count*8+2] = byte(v >> 16)
+				p[count*8+3] = byte(v >> 24)
 
-			p[count*8+4] = byte(v)
-			p[count*8+5] = byte(v >> 8)
-			p[count*8+6] = byte(v >> 16)
-			p[count*8+7] = byte(v >> 24)
-
-			count += 1
+				p[count*8+4] = byte(v)
+				p[count*8+5] = byte(v >> 8)
+				p[count*8+6] = byte(v >> 16)
+				p[count*8+7] = byte(v >> 24)
+				count += 1
+			}
 		}
 		player.position += count
 		player.totalSamples += int64(count)
@@ -313,14 +338,28 @@ func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
 		availFrames := min(len(p)/bytesPerFrame, (len(player.bufferFloat32)-player.position)/channels)
 		count := availFrames * channels
 
-		for i := 0; i < count; i++ {
-			sample := player.bufferFloat32[player.position+i]
-
-			v := math.Float32bits(sample)
-			p[i*4+0] = byte(v)
-			p[i*4+1] = byte(v >> 8)
-			p[i*4+2] = byte(v >> 16)
-			p[i*4+3] = byte(v >> 24)
+		if vol == 1.0 {
+			for i := 0; i < count; i++ {
+				sample := player.bufferFloat32[player.position+i]
+				v := math.Float32bits(sample)
+				p[i*4+0] = byte(v)
+				p[i*4+1] = byte(v >> 8)
+				p[i*4+2] = byte(v >> 16)
+				p[i*4+3] = byte(v >> 24)
+			}
+		} else if vol == 0.0 {
+			for i := 0; i < count*4; i++ {
+				p[i] = 0
+			}
+		} else {
+			for i := 0; i < count; i++ {
+				sample := player.bufferFloat32[player.position+i] * vol
+				v := math.Float32bits(sample)
+				p[i*4+0] = byte(v)
+				p[i*4+1] = byte(v >> 8)
+				p[i*4+2] = byte(v >> 16)
+				p[i*4+3] = byte(v >> 24)
+			}
 		}
 		player.position += count
 		player.totalSamples += int64(availFrames)
@@ -358,7 +397,7 @@ func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxL
 	return maxLength
 }
 
-func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
+func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 	if player.position >= len(player.bufferInt16) {
 		packet, err := player.reader.ReadAudioPacket()
 		if err != nil {
@@ -396,21 +435,56 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 	}
 
 	channels := player.Channels()
+	vol := player.volume
+
 	switch player.reader.Head.Channels {
 	case 1:
 		// we have to produce stereo audio, so each input sample becomes two output samples
 		atMost := min(len(p)/4, len(player.bufferInt16)-player.position)
-		// log.Printf("Rendering opus: p=%d buffer=%d atMost=%d position=%d", len(p), len(player.buffer), atMost, player.position)
 		count := 0
-		for count < atMost {
-			low := byte(player.bufferInt16[player.position+count] & 0xFF)
-			high := byte((player.bufferInt16[player.position+count] >> 8) & 0xFF)
+		if vol == 1.0 {
+			for count < atMost {
+				s := player.bufferInt16[player.position+count]
+				low := byte(s & 0xFF)
+				high := byte((s >> 8) & 0xFF)
 
-			p[count*4] = low
-			p[count*4+1] = high
-			p[count*4+2] = low
-			p[count*4+3] = high
-			count += 1
+				p[count*4] = low
+				p[count*4+1] = high
+				p[count*4+2] = low
+				p[count*4+3] = high
+				count += 1
+			}
+		} else if vol == 0.0 {
+			for count < atMost {
+				p[count*4] = 0
+				p[count*4+1] = 0
+				p[count*4+2] = 0
+				p[count*4+3] = 0
+				count += 1
+			}
+		} else {
+			for count < atMost {
+				scaled := float64(player.bufferInt16[player.position+count]) * vol
+				if scaled > 32767.0 {
+					scaled = 32767.0
+				} else if scaled < -32768.0 {
+					scaled = -32768.0
+				}
+				var s int16
+				if scaled >= 0 {
+					s = int16(scaled + 0.5)
+				} else {
+					s = int16(scaled - 0.5)
+				}
+				low := byte(s & 0xFF)
+				high := byte((s >> 8) & 0xFF)
+
+				p[count*4] = low
+				p[count*4+1] = high
+				p[count*4+2] = low
+				p[count*4+3] = high
+				count += 1
+			}
 		}
 		player.position += count
 		player.totalSamples += int64(count)
@@ -422,9 +496,33 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 		availFrames := min(len(p)/bytesPerFrame, (len(player.bufferInt16)-player.position)/channels)
 		count := availFrames * channels
 
-		for i := 0; i < count; i++ {
-			p[i*2] = byte(player.bufferInt16[player.position+i] & 0xFF)
-			p[i*2+1] = byte((player.bufferInt16[player.position+i] >> 8) & 0xFF)
+		if vol == 1.0 {
+			for i := 0; i < count; i++ {
+				s := player.bufferInt16[player.position+i]
+				p[i*2] = byte(s & 0xFF)
+				p[i*2+1] = byte((s >> 8) & 0xFF)
+			}
+		} else if vol == 0.0 {
+			for i := 0; i < count*2; i++ {
+				p[i] = 0
+			}
+		} else {
+			for i := 0; i < count; i++ {
+				scaled := float64(player.bufferInt16[player.position+i]) * vol
+				if scaled > 32767.0 {
+					scaled = 32767.0
+				} else if scaled < -32768.0 {
+					scaled = -32768.0
+				}
+				var s int16
+				if scaled >= 0 {
+					s = int16(scaled + 0.5)
+				} else {
+					s = int16(scaled - 0.5)
+				}
+				p[i*2] = byte(s & 0xFF)
+				p[i*2+1] = byte((s >> 8) & 0xFF)
+			}
 		}
 		player.position += count
 		player.totalSamples += int64(availFrames)
@@ -634,3 +732,51 @@ func (player *OpusPlayer[T]) CurrentStreamTimestamp() time.Duration {
 func (player *OpusPlayer[T]) updateTimestamp(granule uint64) {
 	player.lastTimestamp = time.Duration(granule) * time.Second / time.Duration(ogg.OpusSampleRateHz)
 }
+
+// SetVolume sets the linear playback volume factor.
+// 1.0 is normal volume (100%), 0.0 mutes the audio, and values > 1.0 amplify the audio.
+// Negative values are clamped to 0.0.
+func (player *OpusPlayer[T]) SetVolume(volume float64) {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+	if volume < 0 {
+		volume = 0
+	}
+	player.volume = volume
+}
+
+// Volume returns the current linear playback volume factor (default 1.0).
+func (player *OpusPlayer[T]) Volume() float64 {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+	return player.volume
+}
+
+// SetGain sets the playback gain in decibels (dB).
+// 0 dB corresponds to normal volume (1.0).
+// Positive values amplify and negative values attenuate.
+// If gainDB <= -120 dB or -infinity, the volume is muted to 0.0.
+func (player *OpusPlayer[T]) SetGain(gainDB float64) {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+	if math.IsNaN(gainDB) {
+		return
+	}
+	if math.IsInf(gainDB, -1) || gainDB <= -120.0 {
+		player.volume = 0.0
+		return
+	}
+	player.volume = math.Pow(10, gainDB/20.0)
+}
+
+// Gain returns the current playback gain in decibels (dB).
+// If the player is muted (volume <= 0), it returns -infinity (math.Inf(-1)).
+func (player *OpusPlayer[T]) Gain() float64 {
+	player.mu.Lock()
+	defer player.mu.Unlock()
+	if player.volume <= 0 {
+		return math.Inf(-1)
+	}
+	return 20.0 * math.Log10(player.volume)
+}
+

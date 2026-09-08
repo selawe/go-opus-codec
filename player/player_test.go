@@ -484,5 +484,218 @@ func TestPlayer_TimestampSubsecondPrecision(t *testing.T) {
 	}
 }
 
+func TestPlayer_VolumeDefaultAndClamping(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer p.Close()
+
+	if v := p.Volume(); v != 1.0 {
+		t.Errorf("expected default volume 1.0, got %f", v)
+	}
+	if g := p.Gain(); math.Abs(g) > 1e-6 {
+		t.Errorf("expected default gain ~0 dB, got %f", g)
+	}
+
+	p.SetVolume(-0.5)
+	if v := p.Volume(); v != 0.0 {
+		t.Errorf("expected clamped volume 0.0 for negative, got %f", v)
+	}
+	if g := p.Gain(); !math.IsInf(g, -1) {
+		t.Errorf("expected -inf gain for volume 0.0, got %f", g)
+	}
+
+	p.SetGain(-6.0)
+	if v := p.Volume(); math.Abs(v-0.501187) > 0.001 {
+		t.Errorf("expected volume ~0.501 for -6 dB, got %f", v)
+	}
+
+	p.SetGain(6.0)
+	if v := p.Volume(); math.Abs(v-1.99526) > 0.001 {
+		t.Errorf("expected volume ~1.995 for +6 dB, got %f", v)
+	}
+
+	p.SetGain(-150.0)
+	if v := p.Volume(); v != 0.0 {
+		t.Errorf("expected volume 0.0 for -150 dB, got %f", v)
+	}
+}
+
+func TestPlayer_SetVolume_MuteInt16AndFloat32(t *testing.T) {
+	// Test int16 mute
+	p16, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer p16.Close()
+
+	p16.SetVolume(0.0)
+	buf16 := make([]byte, 4096)
+	n, err := p16.Read(buf16)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Read int16: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected to read audio bytes, got 0")
+	}
+	for i := 0; i < n; i++ {
+		if buf16[i] != 0 {
+			t.Fatalf("expected muted byte at index %d to be 0, got %d", i, buf16[i])
+		}
+	}
+
+	// Test float32 mute
+	pF32, err := NewPlayerF32FromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerF32FromFile: %v", err)
+	}
+	defer pF32.Close()
+
+	pF32.SetVolume(0.0)
+	bufF32 := make([]byte, 4096)
+	n, err = pF32.Read(bufF32)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Read float32: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected to read audio bytes, got 0")
+	}
+	for i := 0; i < n; i++ {
+		if bufF32[i] != 0 {
+			t.Fatalf("expected muted byte at index %d to be 0, got %d", i, bufF32[i])
+		}
+	}
+}
+
+func TestPlayer_SetVolume_ScaleInt16(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer p.Close()
+
+	rawBuf := make([]byte, 4096)
+	n1, err := p.Read(rawBuf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Read normal: %v", err)
+	}
+
+	// Seek back to start
+	if _, err := p.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+
+	// Set half volume
+	p.SetVolume(0.5)
+	scaledBuf := make([]byte, 4096)
+	n2, err := p.Read(scaledBuf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Read scaled: %v", err)
+	}
+
+	if n1 != n2 {
+		t.Fatalf("byte counts differ: normal=%d scaled=%d", n1, n2)
+	}
+
+	checked := 0
+	for i := 0; i < n1/2; i++ {
+		orig := int16(uint16(rawBuf[i*2]) | (uint16(rawBuf[i*2+1]) << 8))
+		scaled := int16(uint16(scaledBuf[i*2]) | (uint16(scaledBuf[i*2+1]) << 8))
+
+		expected := int16(math.Round(float64(orig) * 0.5))
+		diff := int(scaled) - int(expected)
+		if diff < -1 || diff > 1 {
+			t.Fatalf("sample %d scaled incorrectly: orig=%d scaled=%d expected=%d diff=%d",
+				i, orig, scaled, expected, diff)
+		}
+		if orig != 0 {
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no non-zero samples checked")
+	}
+}
+
+func TestPlayer_SetVolume_ScaleFloat32(t *testing.T) {
+	p, err := NewPlayerF32FromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerF32FromFile: %v", err)
+	}
+	defer p.Close()
+
+	rawBuf := make([]byte, 4096)
+	n1, err := p.Read(rawBuf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Read normal: %v", err)
+	}
+
+	if _, err := p.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+
+	p.SetVolume(0.5)
+	scaledBuf := make([]byte, 4096)
+	n2, err := p.Read(scaledBuf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("Read scaled: %v", err)
+	}
+
+	if n1 != n2 {
+		t.Fatalf("byte counts differ: normal=%d scaled=%d", n1, n2)
+	}
+
+	checked := 0
+	for i := 0; i < n1/4; i++ {
+		uOrig := uint32(rawBuf[i*4]) | (uint32(rawBuf[i*4+1]) << 8) | (uint32(rawBuf[i*4+2]) << 16) | (uint32(rawBuf[i*4+3]) << 24)
+		uScaled := uint32(scaledBuf[i*4]) | (uint32(scaledBuf[i*4+1]) << 8) | (uint32(scaledBuf[i*4+2]) << 16) | (uint32(scaledBuf[i*4+3]) << 24)
+
+		orig := math.Float32frombits(uOrig)
+		scaled := math.Float32frombits(uScaled)
+
+		expected := orig * 0.5
+		if math.Abs(float64(scaled-expected)) > 1e-6 {
+			t.Fatalf("sample %d float scaled incorrectly: orig=%f scaled=%f expected=%f",
+				i, orig, scaled, expected)
+		}
+		if orig != 0 {
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no non-zero float samples checked")
+	}
+}
+
+func TestPlayer_VolumeConcurrent(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer p.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1024)
+		for i := 0; i < 50; i++ {
+			_, err := p.Read(buf)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 50; i++ {
+		p.SetVolume(float64(i) / 50.0)
+		_ = p.Volume()
+		p.SetGain(float64(i%12) - 6.0)
+		_ = p.Gain()
+	}
+	<-done
+}
+
+
 
 
