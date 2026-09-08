@@ -101,9 +101,17 @@ func (r *Reader) readHeader() error {
 			if sz < 16 {
 				return fmt.Errorf("%w: fmt chunk too short", ErrUnsupportedWAV)
 			}
+			if sz > 64<<10 {
+				return fmt.Errorf("%w: fmt chunk too large (%d bytes)", ErrUnsupportedWAV, sz)
+			}
 			buf := make([]byte, sz)
 			if _, err := io.ReadFull(r.br, buf); err != nil {
 				return err
+			}
+			if sz%2 == 1 {
+				if _, err := r.br.ReadByte(); err != nil {
+					return err
+				}
 			}
 			audioFormat := binary.LittleEndian.Uint16(buf[0:2])
 			channels := binary.LittleEndian.Uint16(buf[2:4])

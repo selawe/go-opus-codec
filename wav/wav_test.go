@@ -148,3 +148,67 @@ func TestWAVInvalidHeader(t *testing.T) {
 		t.Fatal("expected error on truncated data, got nil")
 	}
 }
+
+func TestWAVReader_OddFmtChunk(t *testing.T) {
+	// Craft a WAV file with an odd-sized fmt chunk (17 bytes: 16-byte PCM header + 1-byte extra)
+	// followed by the mandatory 1-byte RIFF word padding, then a data chunk.
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	b.Write([]byte{0, 0, 0, 0}) // placeholder for RIFF size
+	b.WriteString("WAVE")
+
+	// "fmt " chunk with size 17
+	b.WriteString("fmt ")
+	b.Write([]byte{17, 0, 0, 0})       // sz = 17
+	b.Write([]byte{1, 0})              // audio format = 1 (PCM)
+	b.Write([]byte{1, 0})              // channels = 1
+	b.Write([]byte{0x80, 0x3e, 0, 0})  // sample rate = 16000
+	b.Write([]byte{0x00, 0x7d, 0, 0})  // byte rate = 32000
+	b.Write([]byte{2, 0})              // block align = 2
+	b.Write([]byte{16, 0})             // bits per sample = 16
+	b.WriteByte(0)                     // 17th byte (extra byte)
+	b.WriteByte(0)                     // RIFF word padding byte (must be skipped)
+
+	// "data" chunk with 4 bytes (2 int16 samples: 1234, 5678)
+	b.WriteString("data")
+	b.Write([]byte{4, 0, 0, 0})
+	b.Write([]byte{0xd2, 0x04}) // 1234
+	b.Write([]byte{0x2e, 0x16}) // 5678
+
+	r, err := NewReader(bytes.NewReader(b.Bytes()))
+	if err != nil {
+		t.Fatalf("NewReader with odd fmt chunk failed: %v", err)
+	}
+
+	if r.SampleRate() != 16000 || r.Channels() != 1 {
+		t.Fatalf("unexpected rate/channels: rate=%d, ch=%d", r.SampleRate(), r.Channels())
+	}
+
+	samples := make([]int16, 2)
+	n, err := r.ReadInt16PCM(samples)
+	if err != nil {
+		t.Fatalf("ReadInt16PCM failed: %v", err)
+	}
+	if n != 2 || samples[0] != 1234 || samples[1] != 5678 {
+		t.Fatalf("samples mismatch: n=%d, samples=%v", n, samples)
+	}
+}
+
+func TestWAVReader_OOMProtection(t *testing.T) {
+	// Craft a WAV file with an excessively large fmt chunk size (e.g. 100KB or 4GB)
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	b.Write([]byte{0, 0, 0, 0})
+	b.WriteString("WAVE")
+	b.WriteString("fmt ")
+	b.Write([]byte{0xff, 0xff, 0xff, 0xff}) // 4GB size
+
+	_, err := NewReader(bytes.NewReader(b.Bytes()))
+	if err == nil {
+		t.Fatal("expected error on malicious 4GB fmt chunk size, got nil")
+	}
+	if !errors.Is(err, ErrUnsupportedWAV) {
+		t.Fatalf("expected ErrUnsupportedWAV, got: %v", err)
+	}
+}
+
