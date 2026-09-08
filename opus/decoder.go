@@ -178,7 +178,10 @@ func (d *Decoder) Close() error {
 func (d *Decoder) SampleRate() int { return d.sampleRate }
 
 // Channels returns the number of channels decoded (1 for mono, 2 for stereo, up to 8 for surround).
-func (d *Decoder) Channels() int   { return d.channels }
+func (d *Decoder) Channels() int { return d.channels }
+
+// IsMultistream returns true if the decoder was initialized in multistream mode.
+func (d *Decoder) IsMultistream() bool { return d.multistream }
 
 // Decode decodes a single Opus packet into interleaved signed 16-bit PCM.
 //
