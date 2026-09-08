@@ -29,6 +29,9 @@ type PacketWriter struct {
 	pageSegTable   []byte
 	pageData       []byte
 	hasPendingPage bool
+
+	laceBuf    []byte
+	pageHeader [27]byte
 }
 
 // NewPacketWriter creates a new PacketWriter that serializes packets into Ogg pages using the given bitstream serial.
@@ -45,6 +48,7 @@ func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
 		crcTable:     crcTable8[0],
 		pageSegTable: make([]byte, 0, 255),
 		pageData:     make([]byte, 0, 4096),
+		laceBuf:      make([]byte, 0, 255),
 	}
 }
 
@@ -88,8 +92,27 @@ func (pw *PacketWriter) Flush() error {
 // If the packet is too large for one page, it will be continued across pages.
 // For continued packets, only the final page carries the provided granulePos;
 // earlier pages use granulePos = -1 (0xFFFFFFFFFFFFFFFF).
+func (pw *PacketWriter) lacing(packet []byte) []byte {
+	pw.laceBuf = pw.laceBuf[:0]
+	remaining := len(packet)
+	for remaining >= 255 {
+		pw.laceBuf = append(pw.laceBuf, 255)
+		remaining -= 255
+	}
+	pw.laceBuf = append(pw.laceBuf, byte(remaining))
+	return pw.laceBuf
+}
+
+// WritePacket writes a single logical Ogg packet.
+//
+// If MaxPageSize > 0, small packets are batched together into a single page
+// to reduce framing overhead per RFC 3533 §6.
+//
+// If the packet is too large for one page, it will be continued across pages.
+// For continued packets, only the final page carries the provided granulePos;
+// earlier pages use granulePos = -1 (0xFFFFFFFFFFFFFFFF).
 func (pw *PacketWriter) WritePacket(packet []byte, granulePos uint64, bos bool, eos bool) error {
-	segTable, _ := oggLacing(packet)
+	segTable := pw.lacing(packet)
 
 	// If batching is disabled (MaxPageSize <= 0), or if packet spans across pages (> 255 segments):
 	if pw.MaxPageSize <= 0 || len(segTable) > 255 {
@@ -148,7 +171,7 @@ func (pw *PacketWriter) WritePacket(packet []byte, granulePos uint64, bos bool, 
 }
 
 func (pw *PacketWriter) writeSpanningPacket(packet []byte, granulePos uint64, bos bool, eos bool) error {
-	lace, laceDataLens := oggLacing(packet)
+	lace := pw.lacing(packet)
 	dataOff := 0
 
 	pageIndex := 0
@@ -160,7 +183,7 @@ func (pw *PacketWriter) writeSpanningPacket(packet []byte, granulePos uint64, bo
 		segTable := lace[:nSeg]
 		dataLen := 0
 		for i := 0; i < nSeg; i++ {
-			dataLen += laceDataLens[i]
+			dataLen += int(segTable[i])
 		}
 
 		// Determine header type.
@@ -190,7 +213,6 @@ func (pw *PacketWriter) writeSpanningPacket(packet []byte, granulePos uint64, bo
 		pageIndex++
 		dataOff += dataLen
 		lace = lace[nSeg:]
-		laceDataLens = laceDataLens[nSeg:]
 	}
 
 	return nil
@@ -210,7 +232,7 @@ func oggLacing(packet []byte) (segTable []byte, segDataLens []int) {
 }
 
 func (pw *PacketWriter) writePage(headerType uint8, granulePos uint64, segTable []byte, segData []byte) error {
-	var header [27]byte
+	header := pw.pageHeader[:]
 	copy(header[0:4], []byte("OggS"))
 	header[4] = 0
 	header[5] = headerType
@@ -220,10 +242,10 @@ func (pw *PacketWriter) writePage(headerType uint8, granulePos uint64, segTable 
 	binary.LittleEndian.PutUint32(header[22:26], 0) // checksum placeholder
 	header[26] = byte(len(segTable))
 
-	crc := oggCRC3(header[:], segTable, segData)
+	crc := oggCRC3(header, segTable, segData)
 	binary.LittleEndian.PutUint32(header[22:26], crc)
 
-	if _, err := pw.bw.Write(header[:]); err != nil {
+	if _, err := pw.bw.Write(header); err != nil {
 		return err
 	}
 	if _, err := pw.bw.Write(segTable); err != nil {

@@ -64,3 +64,18 @@ func BenchmarkPacketWriter(b *testing.B) {
 		_ = pw.Flush()
 	}
 }
+
+func BenchmarkPacketWriter_Streaming(b *testing.B) {
+	packet := make([]byte, 960)
+	pw := NewPacketWriter(io.Discard, 0x1234)
+	b.SetBytes(int64(len(packet)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := pw.WritePacket(packet, uint64(i*960), i == 0, false); err != nil {
+			b.Fatalf("WritePacket: %v", err)
+		}
+	}
+	_ = pw.Flush()
+}
+
