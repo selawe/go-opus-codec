@@ -206,6 +206,9 @@ func (player *OpusPlayer[SampleT]) readLocked(p []byte) (int, error) {
 		if err != nil {
 			return total, err
 		}
+		if n == 0 {
+			break
+		}
 	}
 
 	return total, nil
@@ -306,24 +309,21 @@ func (player *OpusPlayer[float32]) readPacketFloat32(p []byte) (int, error) {
 		return count * 8, nil
 
 	default:
-		atMost := min(len(p)/4, len(player.bufferFloat32)-player.position)
+		bytesPerFrame := channels * 4
+		availFrames := min(len(p)/bytesPerFrame, (len(player.bufferFloat32)-player.position)/channels)
+		count := availFrames * channels
 
-		// log.Printf("Rendering opus: p=%d buffer=%d atMost=%d position=%d", len(p), len(player.buffer), atMost, player.position)
-
-		count := 0
-		for count < atMost {
-			sample := player.bufferFloat32[player.position+count]
+		for i := 0; i < count; i++ {
+			sample := player.bufferFloat32[player.position+i]
 
 			v := math.Float32bits(sample)
-			p[count*4+0] = byte(v)
-			p[count*4+1] = byte(v >> 8)
-			p[count*4+2] = byte(v >> 16)
-			p[count*4+3] = byte(v >> 24)
-
-			count += 1
+			p[i*4+0] = byte(v)
+			p[i*4+1] = byte(v >> 8)
+			p[i*4+2] = byte(v >> 16)
+			p[i*4+3] = byte(v >> 24)
 		}
 		player.position += count
-		player.totalSamples += int64(count / channels)
+		player.totalSamples += int64(availFrames)
 
 		return count * 4, nil
 	}
@@ -418,18 +418,16 @@ func (player *OpusPlayer[int16]) readPacketInt16(p []byte) (int, error) {
 		return count * 4, nil
 
 	default:
-		atMost := min(len(p)/2, len(player.bufferInt16)-player.position)
+		bytesPerFrame := channels * 2
+		availFrames := min(len(p)/bytesPerFrame, (len(player.bufferInt16)-player.position)/channels)
+		count := availFrames * channels
 
-		// log.Printf("Rendering opus: p=%d buffer=%d atMost=%d position=%d", len(p), len(player.buffer), atMost, player.position)
-
-		count := 0
-		for count < atMost {
-			p[count*2] = byte(player.bufferInt16[player.position+count] & 0xFF)
-			p[count*2+1] = byte((player.bufferInt16[player.position+count] >> 8) & 0xFF)
-			count += 1
+		for i := 0; i < count; i++ {
+			p[i*2] = byte(player.bufferInt16[player.position+i] & 0xFF)
+			p[i*2+1] = byte((player.bufferInt16[player.position+i] >> 8) & 0xFF)
 		}
 		player.position += count
-		player.totalSamples += int64(count / channels)
+		player.totalSamples += int64(availFrames)
 
 		return count * 2, nil
 	}

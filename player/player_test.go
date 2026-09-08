@@ -400,4 +400,66 @@ func TestPlayer_Close(t *testing.T) {
 	}
 }
 
+func TestPlayer_ShortAndUnalignedReads(t *testing.T) {
+	// 1. Test int16 player with unaligned/short slice sizes (must never hang)
+	playerI16, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer playerI16.Close()
+
+	// Short slices smaller than 1 frame (stereo int16 = 4 bytes)
+	for _, sz := range []int{1, 2, 3} {
+		tiny := make([]byte, sz)
+		n, err := playerI16.Read(tiny)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("Read(len=%d) error: %v", sz, err)
+		}
+		if n != 0 {
+			t.Fatalf("expected 0 bytes for sub-frame read of %d bytes, got %d", sz, n)
+		}
+	}
+
+	// Slices not aligned to frame size (e.g. 5, 7, 9 bytes)
+	for _, sz := range []int{5, 7, 9} {
+		buf := make([]byte, sz)
+		n, err := playerI16.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("Read(len=%d) error: %v", sz, err)
+		}
+		if n%4 != 0 {
+			t.Fatalf("expected read byte count to be multiple of 4, got %d for buffer size %d", n, sz)
+		}
+	}
+
+	// 2. Test float32 player with unaligned/short slice sizes (stereo float32 = 8 bytes)
+	playerF32, err := NewPlayerF32FromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerF32FromFile: %v", err)
+	}
+	defer playerF32.Close()
+
+	for _, sz := range []int{1, 3, 5, 7} {
+		tiny := make([]byte, sz)
+		n, err := playerF32.Read(tiny)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("F32 Read(len=%d) error: %v", sz, err)
+		}
+		if n != 0 {
+			t.Fatalf("expected 0 bytes for sub-frame float32 read of %d bytes, got %d", sz, n)
+		}
+	}
+
+	for _, sz := range []int{9, 13, 17} {
+		buf := make([]byte, sz)
+		n, err := playerF32.Read(buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("F32 Read(len=%d) error: %v", sz, err)
+		}
+		if n%8 != 0 {
+			t.Fatalf("expected read byte count to be multiple of 8, got %d for buffer size %d", n, sz)
+		}
+	}
+}
+
 
