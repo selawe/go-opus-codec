@@ -32,6 +32,7 @@ func NewRepacketizer() (*Repacketizer, error) {
 
 	st := opusccenc.Opus_opus_repacketizer_create(tls)
 	if st == 0 {
+		opusccenc.FreePseudostackTLS(tls)
 		tls.Close()
 		return nil, errors.New("opus: repacketizer_create failed")
 	}
@@ -66,6 +67,7 @@ func (rp *Repacketizer) Close() error {
 			opusccenc.Opus_opus_repacketizer_destroy(rp.tls, rp.st)
 			rp.st = 0
 		}
+		opusccenc.FreePseudostackTLS(rp.tls)
 		rp.tls.Close()
 		rp.tls = nil
 	}
