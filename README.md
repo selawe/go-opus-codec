@@ -1,11 +1,11 @@
 # go-opus-codec
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/selawe/go-opus-codec.svg)](https://pkg.go.dev/github.com/selawe/go-opus-codec)
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.21-00ADD8?logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/go-%3E%3D1.24-00ADD8?logo=go)](https://golang.org)
 [![Pure Go](https://img.shields.io/badge/CGO__ENABLED-0_(Pure_Go)-success?logo=go)](https://golang.org)
 [![RFC Conformance](https://img.shields.io/badge/RFC_6716_%2F_RFC_8251-100%25_PASS_(120%2F120)-brightgreen)](conformance_matrix.md)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20FreeBSD-blue)](#supported-platforms--architecture)
-[![License](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-orange.svg)](LICENSE)
 
 A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repacketizer without cgo (`CGO_ENABLED=0`). The underlying DSP codec logic was originally transpiled from reference libopus 1.6.1 C source using [ccgo](https://pkg.go.dev/modernc.org/ccgo/v4); subsequent development, extensions, and hardening are written purely in Go following the official IETF RFC specifications ([RFC 6716](https://tools.ietf.org/html/rfc6716), [RFC 8251](https://tools.ietf.org/html/rfc8251), [RFC 7845](https://tools.ietf.org/html/rfc7845), [RFC 3533](https://tools.ietf.org/html/rfc3533)).
 
@@ -35,7 +35,7 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
 > 1. **Personal Project Focus**: This library is maintained primarily for personal project needs. APIs and internal behavior may evolve based on author requirements.
 > 2. **Not a Drop-in Replacement**: Due to extensive modifications, refactoring, and module rename, this library is not guaranteed to remain API-compatible with upstream `kazzmir/opus-go`.
 > 3. **Architecture Constraint**: Only **64-bit little-endian architectures** (`amd64`, `arm64`) are supported. 32-bit systems (`386`, `arm`, `wasm`) are intentionally blocked at compile time.
-> 4. **License & As-Is**: Provided under the original 2-Clause BSD License without warranties of any kind. Use at your own risk.
+> 4. **License & As-Is**: Provided under the original 3-Clause BSD License without warranties of any kind. Use at your own risk.
 
 ---
 
@@ -65,7 +65,7 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
 go get github.com/selawe/go-opus-codec
 ```
 
-Requires Go 1.21 or higher. No C compiler, headers, or cgo needed (`CGO_ENABLED=0`).
+Requires Go 1.24 or higher. No C compiler, headers, or cgo needed (`CGO_ENABLED=0`).
 
 ---
 
@@ -471,5 +471,5 @@ bash scripts/run_conformance.sh
 
 ## License
 
-This project is released under the [2-Clause BSD License](LICENSE).
+This project is released under the [3-Clause BSD License](LICENSE).
 Transpiled libopus code is copyright Xiph.Org Foundation, Skype Limited, Octasic Inc., and other contributors.
