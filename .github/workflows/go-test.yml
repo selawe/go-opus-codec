@@ -33,6 +33,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Run golangci-lint
+        if: matrix.os == 'ubuntu-latest'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.63.4
+          args: --timeout=5m
+        env:
+          GODEBUG: gotypesalias=1
+
       - name: Run Unit Tests (CGO_ENABLED=0)
         env:
           CGO_ENABLED: 0
@@ -78,6 +87,31 @@ jobs:
           GOARCH: ${{ matrix.target.goarch }}
           CGO_ENABLED: 0
         run: go build -v ./...
+
+  conformance:
+    name: RFC 6716 Conformance Matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cache RFC 6716 test vectors
+        uses: actions/cache@v4
+        with:
+          path: testvectors
+          key: rfc6716-testvectors-${{ hashFiles('scripts/download_testvectors.sh') }}
+
+      - name: Download & verify test vectors (no-op on cache hit)
+        run: bash scripts/download_testvectors.sh
+
+      - name: Run full RFC 6716 conformance matrix
+        run: bash scripts/run_conformance.sh
 
   examples:
     name: Build Examples

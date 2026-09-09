@@ -1,4 +1,4 @@
-.PHONY: all test test-cgo0 test-race build build-examples benchmark cross-compile fmt vet clean help
+.PHONY: all test test-cgo0 test-race build build-examples benchmark cross-compile fmt vet lint clean help
 
 all: test-cgo0 build
 
@@ -51,6 +51,10 @@ vet:
 	else \
 		echo "go vet passed successfully across all packages."; \
 	fi
+
+## lint: Run golangci-lint on handwritten packages (excluding transpiled C shims via .golangci.yml)
+lint:
+	GODEBUG=gotypesalias=1 golangci-lint run ./...
 
 ## clean: Remove build artifacts and temporary files
 clean:
