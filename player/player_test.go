@@ -195,7 +195,9 @@ func TestSeek2(test *testing.T) {
 
 	for i := range 6 {
 		position := int(math.Pow(7, float64(i+1))) * 4
-		player.Seek(int64(position), io.SeekStart)
+		if _, err := player.Seek(int64(position), io.SeekStart); err != nil {
+			test.Fatalf("Failed to seek to position %d: %v", position, err)
+		}
 
 		decodedLength, err := player.Read(decoded)
 		if err != nil {
@@ -271,7 +273,9 @@ func BenchmarkDecodeInt16(bench *testing.B) {
 
 	bench.ResetTimer()
 	for bench.Loop() {
-		io.Copy(io.Discard, player)
+		if _, err := io.Copy(io.Discard, player); err != nil {
+			bench.Fatalf("Failed to decode during benchmark: %v", err)
+		}
 	}
 }
 
@@ -283,7 +287,9 @@ func BenchmarkDecodeFloat32(bench *testing.B) {
 
 	bench.ResetTimer()
 	for bench.Loop() {
-		io.Copy(io.Discard, player)
+		if _, err := io.Copy(io.Discard, player); err != nil {
+			bench.Fatalf("Failed to decode during benchmark: %v", err)
+		}
 	}
 }
 
