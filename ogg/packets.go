@@ -185,7 +185,9 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 			// if the granule position is greater than the target then this might be the page we want
 			// but we still have to check the previous page
 
-			seeker.Seek(pagePosition, io.SeekStart)
+			if _, err := seeker.Seek(pagePosition, io.SeekStart); err != nil {
+				return 0, err
+			}
 			r.reset()
 			r.pr = NewPageReader(seeker)
 			page, err := r.ReadPacket()
@@ -251,7 +253,9 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 		position = 0
 	}
 
-	seeker.Seek(position, io.SeekStart)
+	if _, err := seeker.Seek(position, io.SeekStart); err != nil {
+		return 0, err
+	}
 	r.reset()
 	r.pr = NewPageReader(seeker)
 
@@ -299,7 +303,9 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 		if index == -1 {
 			return 0, fmt.Errorf("ogg: could not find last page granule")
 		}
-		seeker.Seek(index, io.SeekStart)
+		if _, err := seeker.Seek(index, io.SeekStart); err != nil {
+			return 0, err
+		}
 
 		r.pr = NewPageReader(seeker)
 		r.reset()

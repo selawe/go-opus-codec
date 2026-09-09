@@ -163,7 +163,9 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		hdr, err := pr.r.Peek(27)
 		if err != nil {
 			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && pr.Resync {
-				pr.r.Discard(1)
+				if _, derr := pr.r.Discard(1); derr != nil {
+					return nil, derr
+				}
 				bytesSearched++
 				lastErr = err
 				continue
@@ -175,10 +177,14 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		if version != 0 {
 			verErr := fmt.Errorf("%w: %d", ErrUnsupportedVersion, version)
 			if !pr.Resync {
-				pr.r.Discard(27)
+				if _, derr := pr.r.Discard(27); derr != nil {
+					return nil, derr
+				}
 				return nil, verErr
 			}
-			pr.r.Discard(1)
+			if _, derr := pr.r.Discard(1); derr != nil {
+				return nil, derr
+			}
 			bytesSearched++
 			lastErr = verErr
 			if bytesSearched > maxResync {
@@ -197,7 +203,9 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		hdrAndSegs, err := pr.r.Peek(27 + pageSegments)
 		if err != nil {
 			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && pr.Resync {
-				pr.r.Discard(1)
+				if _, derr := pr.r.Discard(1); derr != nil {
+					return nil, derr
+				}
 				bytesSearched++
 				lastErr = err
 				continue
@@ -214,7 +222,9 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		fullPage, err := pr.r.Peek(totalPageSize)
 		if err != nil {
 			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && pr.Resync {
-				pr.r.Discard(1)
+				if _, derr := pr.r.Discard(1); derr != nil {
+					return nil, derr
+				}
 				bytesSearched++
 				lastErr = err
 				continue
@@ -233,10 +243,14 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 			if !pr.verifySliceCRC(fullPage, checksum) {
 				crcErr := fmt.Errorf("%w (serial=%d seq=%d)", ErrCRCMismatch, serial, seq)
 				if !pr.Resync {
-					pr.r.Discard(totalPageSize)
+					if _, derr := pr.r.Discard(totalPageSize); derr != nil {
+						return nil, derr
+					}
 					return nil, crcErr
 				}
-				pr.r.Discard(1)
+				if _, derr := pr.r.Discard(1); derr != nil {
+					return nil, derr
+				}
 				bytesSearched++
 				lastErr = crcErr
 				if bytesSearched > maxResync {
@@ -247,7 +261,9 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		}
 
 		// Discard verified page from buffer
-		pr.r.Discard(totalPageSize)
+		if _, err := pr.r.Discard(totalPageSize); err != nil {
+			return nil, err
+		}
 
 		segTable := make([]byte, pageSegments)
 		copy(segTable, fullPage[27:27+pageSegments])
@@ -344,18 +360,6 @@ func (pr *PageReader) parsePageDirect(fullPage []byte) (*Page, error) {
 		CRCVerified:      pr.VerifyCRC,
 		RawPageBytesSize: len(fullPage),
 	}, nil
-}
-
-func (pr *PageReader) verifyCRC(header [27]byte, segTable []byte, body []byte, expected uint32) (bool, error) {
-	if len(header) != 27 {
-		return false, errors.New("ogg: internal header size mismatch")
-	}
-	header[22] = 0
-	header[23] = 0
-	header[24] = 0
-	header[25] = 0
-	got := oggCRC3(header[:], segTable, body)
-	return got == expected, nil
 }
 
 func oggCRC3(a []byte, b []byte, c []byte) uint32 {
