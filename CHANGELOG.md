@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.2] - 2026-09-09
+
+### Added / Test
+- Comprehensive unit tests and testable CLI harness for `cmd/oggopusdump`, `cmd/oggopusextract`, and `cmd/wav2oggopus` (`f8f2302`)
+- Detailed failure reporting and refactored vector runner in RFC 6716 conformance matrix test (`e41c0f4`)
+- Unhandled error checks in player seek tests and copy benchmarks (`0c7b578`)
+
+### CI & Tooling
+- GitHub Actions RFC 6716 conformance matrix job with caching (`d2c71e1`)
+- `make lint` target and golangci-lint CI step (`d2c71e1`)
+
+### Fixed / Refactor
+- Handle unhandled return values from `Discard` and `Seek` in `ogg` package; remove dead CRC helper (`b238d6d`)
+- Remove redundant nil check in `opus.Decoder` and clean up test helper code (`4f5fe95`)
+- Remove write-only `haveData` variable in `wav.Reader` (`f30f60b`)
+
 ## [0.2.1] - 2026-09-09
 
 ### Security / Fixed
