@@ -101,13 +101,27 @@ type OpusReader struct {
 // OpusSampleRateHz is the Opus decoding sample rate (RFC 7845).
 const OpusSampleRateHz = 48000
 
+// MaxOpusPacketSize is the maximum permitted size (64 KiB) for an Opus audio packet in Ogg Opus (RFC 7845 / RFC 6716).
+// A single Opus packet can contain up to 48 frames with maximum 120 ms audio (~61,200 bytes) plus header/padding.
+const MaxOpusPacketSize = 64 * 1024
+
 // NewOpusReader creates a new OpusReader reading from r, parsing the mandatory OpusHead and OpusTags headers.
 func NewOpusReader(r io.Reader) (*OpusReader, error) {
-	or := &OpusReader{pr: NewPacketReader(r)}
+	pr := NewPacketReader(r)
+	pr.SetMaxPacketSize(MaxOpusPacketSize)
+	or := &OpusReader{pr: pr}
 	if err := or.readHeaders(); err != nil {
 		return nil, err
 	}
 	return or, nil
+}
+
+// SetMaxPacketSize configures the maximum permitted packet size in bytes.
+// A size <= 0 disables the limit.
+func (r *OpusReader) SetMaxPacketSize(size int) {
+	if r != nil && r.pr != nil {
+		r.pr.SetMaxPacketSize(size)
+	}
 }
 
 // SetVerifyCRC enables or disables CRC checksum verification for read pages.

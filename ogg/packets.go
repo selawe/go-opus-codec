@@ -13,7 +13,12 @@ import (
 var (
 	ErrSerialMismatch   = errors.New("ogg: bitstream serial mismatch")
 	ErrBadContinuedPage = errors.New("ogg: page marked continued but no prior packet")
+	ErrPacketTooLarge   = errors.New("ogg: packet exceeds maximum allowed size")
 )
+
+// DefaultMaxPacketSize is the default upper limit (2 MiB) on reassembled Ogg packets
+// to protect against unbounded memory allocation from malicious or corrupted bitstreams.
+const DefaultMaxPacketSize = 2 * 1024 * 1024
 
 // Packet is a reassembled Ogg packet.
 type Packet struct {
@@ -31,21 +36,30 @@ type Packet struct {
 // It assumes a single logical bitstream; if multiple serial numbers
 // are present it will return ErrSerialMismatch.
 type PacketReader struct {
-	pr          *PageReader
-	reader      io.Reader // the original reader for seeking
-	serial      *uint32
-	pending     []byte
-	havePending bool
-	pendingBOS  bool
-	queue       []*Packet
+	pr            *PageReader
+	reader        io.Reader // the original reader for seeking
+	serial        *uint32
+	pending       []byte
+	havePending   bool
+	pendingBOS    bool
+	queue         []*Packet
+	MaxPacketSize int
 }
 
 // NewPacketReader creates a new PacketReader that demuxes packets from the Ogg stream in r.
 func NewPacketReader(r io.Reader) *PacketReader {
 	return &PacketReader{
-		pr:     NewPageReader(r),
-		reader: r,
+		pr:            NewPageReader(r),
+		reader:        r,
+		MaxPacketSize: DefaultMaxPacketSize,
 	}
+}
+
+// SetMaxPacketSize configures the maximum permitted packet size in bytes.
+// If a packet being reassembled exceeds this limit, ReadPacket returns ErrPacketTooLarge.
+// A size <= 0 disables the limit.
+func (r *PacketReader) SetMaxPacketSize(size int) {
+	r.MaxPacketSize = size
 }
 
 func (r *PacketReader) reset() {
@@ -345,6 +359,12 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 			segLen := int(segLenU8)
 			if off+segLen > len(body) {
 				return nil, fmt.Errorf("ogg: segment data underrun (seq=%d)", page.PageSequence)
+			}
+			if r.MaxPacketSize > 0 && len(r.pending)+segLen > r.MaxPacketSize {
+				r.pending = nil
+				r.havePending = false
+				r.pendingBOS = false
+				return nil, fmt.Errorf("%w: packet size exceeds limit of %d bytes", ErrPacketTooLarge, r.MaxPacketSize)
 			}
 			if !r.havePending {
 				r.pendingBOS = page.IsBOS() && pktIndex == 0

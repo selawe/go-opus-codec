@@ -492,3 +492,39 @@ func TestRFC3533_CRC32SliceBy8Equivalence(t *testing.T) {
 		}
 	}
 }
+
+func TestPacketReader_MaxPacketSize(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+
+	payload := make([]byte, 5000)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	if err := pw.WritePacket(payload, 960, true, true); err != nil {
+		t.Fatalf("WritePacket: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// 1. With MaxPacketSize set smaller than packet (e.g. 2000 bytes)
+	pr := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	pr.SetMaxPacketSize(2000)
+	_, err := pr.ReadPacket()
+	if !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("expected ErrPacketTooLarge, got %v", err)
+	}
+
+	// 2. With MaxPacketSize set larger (e.g. 10000 bytes)
+	pr2 := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	pr2.SetMaxPacketSize(10000)
+	pkt, err := pr2.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket with limit 10000: %v", err)
+	}
+	if len(pkt.Data) != len(payload) {
+		t.Fatalf("expected %d bytes, got %d", len(payload), len(pkt.Data))
+	}
+}

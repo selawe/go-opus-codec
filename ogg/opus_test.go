@@ -336,3 +336,61 @@ func TestRFC7845_ParseOpusHeadVersionAndFamily(t *testing.T) {
 		t.Fatalf("expected ErrBadOpusHead for family 255, got %v", err)
 	}
 }
+
+func TestOpusReader_MaxOpusPacketSize(t *testing.T) {
+	var buf bytes.Buffer
+	const serial uint32 = 0x11223344
+	pw := NewPacketWriter(&buf, serial)
+
+	// Packet 1: OpusHead
+	head := OpusHead{
+		Version:              1,
+		Channels:             2,
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         0,
+		ChannelMappingFamily: 0,
+	}
+	headPkt, err := BuildOpusHeadPacket(head)
+	if err != nil {
+		t.Fatalf("BuildOpusHeadPacket: %v", err)
+	}
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		t.Fatalf("WritePacket head: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush head: %v", err)
+	}
+
+	// Packet 2: OpusTags
+	tagsPkt, err := BuildOpusTagsPacket(OpusTags{Vendor: "test"})
+	if err != nil {
+		t.Fatalf("BuildOpusTagsPacket: %v", err)
+	}
+	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		t.Fatalf("WritePacket tags: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush tags: %v", err)
+	}
+
+	// Packet 3: Huge audio packet (70,000 bytes > 64 KiB MaxOpusPacketSize)
+	hugeAudio := make([]byte, 70000)
+	hugeAudio[0] = 0xFC // valid TOC (20ms stereo)
+	if err := pw.WritePacket(hugeAudio, 960, false, true); err != nil {
+		t.Fatalf("WritePacket hugeAudio: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush hugeAudio: %v", err)
+	}
+
+	reader, err := NewOpusReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewOpusReader: %v", err)
+	}
+
+	_, err = reader.ReadAudioPacket()
+	if !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("expected ErrPacketTooLarge for 70KB audio packet, got %v", err)
+	}
+}
