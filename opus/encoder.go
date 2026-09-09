@@ -260,10 +260,8 @@ func (e *Encoder) SetInbandFEC(enabled bool) error {
 // SetPacketLossPerc configures the expected percentage of packet loss in the network (0 to 100).
 // Higher values instruct the encoder to dedicate more bitrate to FEC redundancy.
 func (e *Encoder) SetPacketLossPerc(percentage int) error {
-	if percentage < 0 {
-		percentage = 0
-	} else if percentage > 100 {
-		percentage = 100
+	if percentage < 0 || percentage > 100 {
+		return fmt.Errorf("opus: invalid packet loss percentage %d (must be 0..100)", percentage)
 	}
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_PACKET_LOSS_PERC_REQUEST), int32(percentage))
 }

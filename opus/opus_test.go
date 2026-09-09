@@ -189,6 +189,18 @@ func TestEncoderControls(t *testing.T) {
 	if err := enc.SetPacketLossPerc(10); err != nil {
 		t.Fatalf("SetPacketLossPerc(10): %v", err)
 	}
+	if err := enc.SetPacketLossPerc(0); err != nil {
+		t.Fatalf("SetPacketLossPerc(0): %v", err)
+	}
+	if err := enc.SetPacketLossPerc(100); err != nil {
+		t.Fatalf("SetPacketLossPerc(100): %v", err)
+	}
+	if err := enc.SetPacketLossPerc(-1); err == nil {
+		t.Fatal("expected error for SetPacketLossPerc(-1)")
+	}
+	if err := enc.SetPacketLossPerc(101); err == nil {
+		t.Fatal("expected error for SetPacketLossPerc(101)")
+	}
 	if err := enc.Reset(); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
