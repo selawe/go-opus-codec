@@ -16,12 +16,24 @@ var (
 	ErrCtlFailed    = errors.New("opus: encoder ctl failed")
 )
 
+// Standard Opus applications (RFC 6716 Section 5.1).
 const (
-	ApplicationVoIP               = int(opusccenc.OPUS_APPLICATION_VOIP)
-	ApplicationAudio              = int(opusccenc.OPUS_APPLICATION_AUDIO)
+	// ApplicationVoIP optimizes for speech clarity, packet loss resilience, and lower bitrates.
+	ApplicationVoIP = int(opusccenc.OPUS_APPLICATION_VOIP)
+
+	// ApplicationAudio optimizes for high-fidelity music and general broadcast audio.
+	ApplicationAudio = int(opusccenc.OPUS_APPLICATION_AUDIO)
+
+	// ApplicationRestrictedLowDelay operates exclusively with low algorithmic delay modes.
 	ApplicationRestrictedLowDelay = int(opusccenc.OPUS_APPLICATION_RESTRICTED_LOWDELAY)
-	ApplicationRestrictedSilk     = int(opusccenc.OPUS_APPLICATION_RESTRICTED_SILK)
-	ApplicationRestrictedCelt     = int(opusccenc.OPUS_APPLICATION_RESTRICTED_CELT)
+
+	// ApplicationRestrictedSilk is an internal libopus mode used for compliance and certification
+	// testing (forces SILK-only mode). It is not intended for general production use.
+	ApplicationRestrictedSilk = int(opusccenc.OPUS_APPLICATION_RESTRICTED_SILK)
+
+	// ApplicationRestrictedCelt is an internal libopus mode used for compliance and certification
+	// testing (forces CELT-only mode). It is not intended for general production use.
+	ApplicationRestrictedCelt = int(opusccenc.OPUS_APPLICATION_RESTRICTED_CELT)
 )
 
 // Encoder is an Opus encoder backed by ccgo-transpiled libopus.
