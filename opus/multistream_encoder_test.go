@@ -1,6 +1,7 @@
 package opus
 
 import (
+	"errors"
 	"math"
 	"testing"
 
@@ -215,5 +216,63 @@ func TestMultistreamEncoder_ValidationErrors(t *testing.T) {
 	badMapping := []uint8{0}
 	if _, err := NewMultistreamEncoder(48000, 2, 1, 1, badMapping, ApplicationAudio); err == nil {
 		t.Error("expected error for mapping length mismatch")
+	} else if !errors.Is(err, ErrUnsupportedMapping) {
+		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
+	}
+}
+
+func TestMultistreamDecoder_ValidationErrors(t *testing.T) {
+	mapping := []uint8{0, 1}
+
+	// Invalid channels: 0 or > 255
+	if _, err := NewMultistreamDecoder(48000, 0, 1, 0, mapping); err == nil {
+		t.Error("expected error for 0 channels")
+	}
+	if _, err := NewMultistreamDecoder(48000, 256, 1, 0, mapping); err == nil {
+		t.Error("expected error for 256 channels")
+	}
+
+	// Invalid streams: 0 or > 255
+	if _, err := NewMultistreamDecoder(48000, 2, 0, 0, mapping); err == nil {
+		t.Error("expected error for 0 streams")
+	}
+	if _, err := NewMultistreamDecoder(48000, 2, 256, 0, mapping); err == nil {
+		t.Error("expected error for 256 streams")
+	}
+
+	// Coupled streams < 0 or > streams
+	if _, err := NewMultistreamDecoder(48000, 2, 1, -1, mapping); err == nil {
+		t.Error("expected error for negative coupled streams")
+	}
+	if _, err := NewMultistreamDecoder(48000, 2, 1, 2, mapping); err == nil {
+		t.Error("expected error for coupled > streams")
+	}
+
+	// streams + coupled > channels
+	if _, err := NewMultistreamDecoder(48000, 2, 2, 1, mapping); err == nil {
+		t.Error("expected error for streams + coupled > channels")
+	}
+
+	// Mapping length mismatch: shorter (out-of-bounds prevention)
+	badMappingShort := []uint8{0}
+	if _, err := NewMultistreamDecoder(48000, 2, 1, 1, badMappingShort); err == nil {
+		t.Error("expected error for shorter mapping length")
+	} else if !errors.Is(err, ErrUnsupportedMapping) {
+		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
+	}
+
+	// Mapping length mismatch: empty
+	if _, err := NewMultistreamDecoder(48000, 2, 1, 1, nil); err == nil {
+		t.Error("expected error for nil mapping")
+	} else if !errors.Is(err, ErrUnsupportedMapping) {
+		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
+	}
+
+	// Mapping length mismatch: longer
+	badMappingLong := []uint8{0, 1, 2}
+	if _, err := NewMultistreamDecoder(48000, 2, 1, 1, badMappingLong); err == nil {
+		t.Error("expected error for longer mapping length")
+	} else if !errors.Is(err, ErrUnsupportedMapping) {
+		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
 	}
 }

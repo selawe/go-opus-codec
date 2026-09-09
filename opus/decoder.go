@@ -102,9 +102,11 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 	if err != nil || st == 0 {
 		if oe := (*opuscc.OpusError)(nil); errors.As(err, &oe) {
 			msg := opusccErrorString(oe.Code)
+			opuscc.FreePseudostackTLS(tls)
 			tls.Close()
 			return nil, fmt.Errorf("opus: decoder_create failed: %s (%d)", msg, oe.Code)
 		}
+		opuscc.FreePseudostackTLS(tls)
 		tls.Close()
 		return nil, fmt.Errorf("opus: decoder_create failed: %w", err)
 	}
@@ -116,7 +118,27 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 
 // NewMultistreamDecoder creates an Opus multistream decoder for multichannel surround audio
 // (such as 5.1 or 7.1 surround sound) using custom stream and coupled stream mapping tables.
+// channels is the total number of channels (1 to 255).
+// streams is the total number of Opus streams to decode (1 to 255).
+// coupledStreams is the number of coupled (stereo) streams (0 <= coupledStreams <= streams, and streams + coupledStreams <= channels).
+// mapping is an array of size channels mapping each output channel to a stream index.
 func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, mapping []uint8) (*Decoder, error) {
+	if channels < 1 || channels > 255 {
+		return nil, fmt.Errorf("opus: invalid channel count %d (must be 1..255)", channels)
+	}
+	if streams < 1 || streams > 255 {
+		return nil, fmt.Errorf("opus: invalid stream count %d (must be 1..255)", streams)
+	}
+	if coupledStreams < 0 || coupledStreams > streams {
+		return nil, fmt.Errorf("opus: invalid coupled stream count %d (must be 0..%d)", coupledStreams, streams)
+	}
+	if streams+coupledStreams > channels {
+		return nil, fmt.Errorf("opus: streams + coupledStreams (%d) exceeds channels (%d)", streams+coupledStreams, channels)
+	}
+	if len(mapping) != channels {
+		return nil, fmt.Errorf("%w: channel mapping length %d does not match channels %d", ErrUnsupportedMapping, len(mapping), channels)
+	}
+
 	tls := libc.NewTLS()
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
@@ -135,9 +157,11 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 	if err != nil || st == 0 {
 		if oe := (*opuscc.OpusError)(nil); errors.As(err, &oe) {
 			msg := opusccErrorString(oe.Code)
+			opuscc.FreePseudostackTLS(tls)
 			tls.Close()
 			return nil, fmt.Errorf("opus: multistream_decoder_create failed: %s (%d)", msg, oe.Code)
 		}
+		opuscc.FreePseudostackTLS(tls)
 		tls.Close()
 		return nil, fmt.Errorf("opus: multistream_decoder_create failed: %w", err)
 	}
