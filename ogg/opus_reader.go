@@ -202,7 +202,11 @@ func (r *OpusReader) TotalSamples() (int64, error) {
 		if err != nil {
 			r.cachedTotalErr = err
 		} else {
-			r.cachedTotalSamples = granule - int64(r.Head.PreSkip)
+			samples := granule - int64(r.Head.PreSkip)
+			if samples < 0 {
+				samples = 0
+			}
+			r.cachedTotalSamples = samples
 			r.cachedTotalErr = nil
 		}
 	})

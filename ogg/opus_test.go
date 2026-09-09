@@ -394,3 +394,70 @@ func TestOpusReader_MaxOpusPacketSize(t *testing.T) {
 		t.Fatalf("expected ErrPacketTooLarge for 70KB audio packet, got %v", err)
 	}
 }
+
+func TestOpusReader_TotalSamples_TruncatedStream(t *testing.T) {
+	var buf bytes.Buffer
+	const serial uint32 = 0x55667788
+	pw := NewPacketWriter(&buf, serial)
+
+	// PreSkip is 312
+	head := OpusHead{
+		Version:              1,
+		Channels:             2,
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         0,
+		ChannelMappingFamily: 0,
+	}
+	headPkt, err := BuildOpusHeadPacket(head)
+	if err != nil {
+		t.Fatalf("BuildOpusHeadPacket: %v", err)
+	}
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		t.Fatalf("WritePacket head: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush head: %v", err)
+	}
+
+	tagsPkt, err := BuildOpusTagsPacket(OpusTags{Vendor: "test"})
+	if err != nil {
+		t.Fatalf("BuildOpusTagsPacket: %v", err)
+	}
+	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		t.Fatalf("WritePacket tags: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush tags: %v", err)
+	}
+
+	// Audio packet with granule 100 (< PreSkip 312) marked EOS
+	audioPkt := []byte{0xFC, 0x01, 0x02}
+	if err := pw.WritePacket(audioPkt, 100, false, true); err != nil {
+		t.Fatalf("WritePacket audio: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush audio: %v", err)
+	}
+
+	reader, err := NewOpusReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewOpusReader: %v", err)
+	}
+
+	totalSamples, err := reader.TotalSamples()
+	if err != nil {
+		t.Fatalf("TotalSamples: %v", err)
+	}
+	if totalSamples != 0 {
+		t.Fatalf("expected 0 total samples for truncated stream (granule < PreSkip), got %d", totalSamples)
+	}
+
+	dur, err := reader.TotalDuration()
+	if err != nil {
+		t.Fatalf("TotalDuration: %v", err)
+	}
+	if dur < 0 {
+		t.Fatalf("expected non-negative duration, got %v", dur)
+	}
+}
