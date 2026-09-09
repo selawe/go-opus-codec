@@ -143,9 +143,8 @@ func TestEncoderQuality(t *testing.T) {
 			original := sig.generate(n)
 			decoded := roundTripGoF32(t, original, sig.channels)
 
-			lag := estimateCodecDelayFloat32(original, decoded)
-			snr := computeSNRWithLag(original, decoded, lag)
-			t.Logf("signal=%s lag=%d SNR=%.2f dB", sig.name, lag, snr)
+			snr := computeSNR(original, decoded)
+			t.Logf("signal=%s SNR=%.2f dB", sig.name, snr)
 
 			res := signalResult{snr: snr}
 			if sigData, ok := baseline.Signals[sig.name]; ok {

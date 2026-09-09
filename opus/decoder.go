@@ -222,7 +222,7 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d == nil || d.tls == nil || d.st == 0 {
+	if d.tls == nil || d.st == 0 {
 		return 0, errors.New("opus: decoder closed")
 	}
 	if frameSize <= 0 {
@@ -278,7 +278,7 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d == nil || d.tls == nil || d.st == 0 {
+	if d.tls == nil || d.st == 0 {
 		return 0, errors.New("opus: decoder closed")
 	}
 	if frameSize <= 0 {

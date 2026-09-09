@@ -107,8 +107,8 @@ func TestRFC6716_FrameCountCodes(t *testing.T) {
 	// Config 16 (CELT 2.5ms)
 	const cfg = 16 << 3
 
-	// Code 0: 1 frame
-	pktCode0 := []byte{cfg | 0, 0xAA, 0xBB}
+	// Code 0: 1 frame (code bits are the low 2 bits of the TOC, which are 0 here)
+	pktCode0 := []byte{cfg, 0xAA, 0xBB}
 	count, err := PacketFrameCount(pktCode0)
 	if err != nil || count != 1 {
 		t.Fatalf("Code 0: want count=1, got count=%d err=%v", count, err)
