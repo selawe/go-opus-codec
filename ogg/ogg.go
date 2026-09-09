@@ -7,6 +7,10 @@
 //   - PacketWriter: Serializes packets to Ogg pages with multi-packet batching support.
 //   - OpusReader: Parses OpusHead identification and OpusTags comment headers.
 //   - Slice-by-8 CRC32: Precomputed 8-way parallel tables for high-throughput checksumming.
+//
+// Concurrency: Types in this package (PageReader, PacketReader, PacketWriter, OpusReader)
+// wrap io.Reader or io.Writer and are not safe for concurrent use by multiple goroutines
+// without external synchronization.
 package ogg
 
 import (

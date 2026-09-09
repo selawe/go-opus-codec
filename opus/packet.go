@@ -62,6 +62,9 @@ var (
 	ErrPacketExcessFrames = errors.New("opus: packet exceeds 120ms limit")
 )
 
+// MaxFrameSize is the maximum size (1275 bytes) of a single Opus audio frame (RFC 6716 Section 3.1 & 3.2.5).
+const MaxFrameSize = 1275
+
 // ParsePacketTOC parses the Opus Table of Contents (TOC) byte (RFC 6716 Section 3.1).
 // It extracts mode, audio bandwidth, frame duration, stereo flag, and frame count code (0..3).
 func ParsePacketTOC(toc byte) (mode Mode, bw Bandwidth, frameDuration time.Duration, stereo bool, code int) {
@@ -226,6 +229,9 @@ func PacketFrames(packet []byte) ([][]byte, error) {
 	switch code {
 	case 0:
 		// Code 0: exactly 1 frame (RFC 6716 Section 3.2.2)
+		if len(packet[1:]) > MaxFrameSize {
+			return nil, fmt.Errorf("%w: code 0 frame length %d exceeds max frame size %d", ErrPacketInvalid, len(packet)-1, MaxFrameSize)
+		}
 		return [][]byte{packet[1:]}, nil
 
 	case 1:
@@ -235,6 +241,9 @@ func PacketFrames(packet []byte) ([][]byte, error) {
 			return nil, fmt.Errorf("%w: code 1 packet has odd payload length %d", ErrPacketInvalid, len(payload))
 		}
 		frameSize := len(payload) / 2
+		if frameSize > MaxFrameSize {
+			return nil, fmt.Errorf("%w: code 1 frame length %d exceeds max frame size %d", ErrPacketInvalid, frameSize, MaxFrameSize)
+		}
 		return [][]byte{payload[:frameSize], payload[frameSize:]}, nil
 
 	case 2:
@@ -252,6 +261,9 @@ func PacketFrames(packet []byte) ([][]byte, error) {
 		}
 		frame0 := payload[headerBytes : headerBytes+frame0Size]
 		frame1 := payload[headerBytes+frame0Size:]
+		if frame0Size > MaxFrameSize || len(frame1) > MaxFrameSize {
+			return nil, fmt.Errorf("%w: code 2 frame exceeds max frame size %d", ErrPacketInvalid, MaxFrameSize)
+		}
 		return [][]byte{frame0, frame1}, nil
 
 	case 3:
@@ -308,6 +320,9 @@ func PacketFrames(packet []byte) ([][]byte, error) {
 				return nil, fmt.Errorf("%w: CBR payload %d not evenly divisible by frame count %d", ErrPacketInvalid, payloadLen, count)
 			}
 			frameSize := payloadLen / count
+			if frameSize > MaxFrameSize {
+				return nil, fmt.Errorf("%w: code 3 CBR frame length %d exceeds max frame size %d", ErrPacketInvalid, frameSize, MaxFrameSize)
+			}
 			frames := make([][]byte, count)
 			for i := 0; i < count; i++ {
 				frames[i] = payload[i*frameSize : (i+1)*frameSize]
@@ -331,6 +346,9 @@ func PacketFrames(packet []byte) ([][]byte, error) {
 			curr = curr[frameSize:]
 		}
 		// Last frame receives remaining payload bytes
+		if len(curr) > MaxFrameSize {
+			return nil, fmt.Errorf("%w: code 3 VBR last frame length %d exceeds max frame size %d", ErrPacketInvalid, len(curr), MaxFrameSize)
+		}
 		frames[count-1] = curr
 		return frames, nil
 

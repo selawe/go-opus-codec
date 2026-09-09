@@ -178,6 +178,19 @@ func TestRFC6716_PacketLimitsAndErrors(t *testing.T) {
 	if _, err := PacketTotalSamples(pktExcess, 48000); !errors.Is(err, ErrPacketExcessFrames) {
 		t.Fatalf("expected ErrPacketExcessFrames for total samples, got: %v", err)
 	}
+	// Frame size exceeding MaxFrameSize (1275 bytes)
+	hugeCode0 := make([]byte, 1+MaxFrameSize+1)
+	hugeCode0[0] = 0xFC // Code 0
+	if _, err := PacketFrames(hugeCode0); !errors.Is(err, ErrPacketInvalid) {
+		t.Fatalf("expected ErrPacketInvalid for frame exceeding 1275 bytes, got %v", err)
+	}
+
+	// Code 1 with 2 frames of 1276 bytes each
+	hugeCode1 := make([]byte, 1+(MaxFrameSize+1)*2)
+	hugeCode1[0] = 0xFD // Code 1
+	if _, err := PacketFrames(hugeCode1); !errors.Is(err, ErrPacketInvalid) {
+		t.Fatalf("expected ErrPacketInvalid for Code 1 frames exceeding 1275 bytes, got %v", err)
+	}
 }
 
 func TestRFC6716_PacketInspectionHelpers(t *testing.T) {

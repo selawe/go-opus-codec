@@ -1,6 +1,9 @@
 // Package wav implements reading and writing of RIFF/WAVE uncompressed PCM audio files.
 //
 // It supports 16-bit linear PCM audio across mono, stereo, and multichannel configurations.
+//
+// Concurrency: Types in this package (Reader and Writer) wrap io.Reader or io.WriteSeeker
+// and are not safe for concurrent use by multiple goroutines without external synchronization.
 package wav
 
 import (
