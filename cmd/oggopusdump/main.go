@@ -10,32 +10,40 @@ import (
 )
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("oggopusdump", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	var (
-		noCRC = flag.Bool("no-crc", false, "skip Ogg CRC verification")
-		max   = flag.Int("max", 0, "stop after N audio packets (0 = all)")
+		noCRC = fs.Bool("no-crc", false, "skip Ogg CRC verification")
+		max   = fs.Int("max", 0, "stop after N audio packets (0 = all)")
 	)
-	flag.Parse()
-	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: oggopusdump [--no-crc] [--max N] file.ogg")
-		os.Exit(2)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: oggopusdump [--no-crc] [--max N] file.ogg")
+		return 2
 	}
 
-	f, err := os.Open(flag.Arg(0))
+	f, err := os.Open(fs.Arg(0))
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	defer f.Close()
 
 	r, err := ogg.NewOpusReader(f)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	r.SetVerifyCRC(!*noCRC)
 
-	fmt.Printf("OpusHead: version=%d channels=%d preSkip=%d inputRate=%d mapping=%d\n",
+	fmt.Fprintf(stdout, "OpusHead: version=%d channels=%d preSkip=%d inputRate=%d mapping=%d\n",
 		r.Head.Version, r.Head.Channels, r.Head.PreSkip, r.Head.InputSampleRate, r.Head.ChannelMappingFamily)
-	fmt.Printf("OpusTags: vendor=%q comments=%d\n", r.Tags.Vendor, len(r.Tags.Comments))
-	fmt.Printf("Preskip samples: %d\n", r.Head.PreSkip)
+	fmt.Fprintf(stdout, "OpusTags: vendor=%q comments=%d\n", r.Tags.Vendor, len(r.Tags.Comments))
+	fmt.Fprintf(stdout, "Preskip samples: %d\n", r.Head.PreSkip)
 
 	count := 0
 	for {
@@ -44,21 +52,22 @@ func main() {
 			break
 		}
 		if err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 		count++
 		if pkt.GranuleValid {
-			fmt.Printf("pkt=%d bytes=%d granule=%d page=%d eos=%v\n", count, len(pkt.Data), pkt.GranulePos, pkt.PageSequence, pkt.EOS)
+			fmt.Fprintf(stdout, "pkt=%d bytes=%d granule=%d page=%d eos=%v\n", count, len(pkt.Data), pkt.GranulePos, pkt.PageSequence, pkt.EOS)
 		} else {
-			fmt.Printf("pkt=%d bytes=%d granule=? (%d) page=%d eos=%v\n", count, len(pkt.Data), pkt.GranulePos, pkt.PageSequence, pkt.EOS)
+			fmt.Fprintf(stdout, "pkt=%d bytes=%d granule=? (%d) page=%d eos=%v\n", count, len(pkt.Data), pkt.GranulePos, pkt.PageSequence, pkt.EOS)
 		}
 		if *max > 0 && count >= *max {
 			break
 		}
 	}
+	return 0
 }
 
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "error:", err)
-	os.Exit(1)
+func fail(w io.Writer, err error) int {
+	fmt.Fprintln(w, "error:", err)
+	return 1
 }

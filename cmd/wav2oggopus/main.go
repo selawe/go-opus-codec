@@ -19,94 +19,102 @@ import (
 )
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("wav2oggopus", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	var (
-		outPath     = flag.String("out", "out.opus", "output .opus file")
-		cpuProfile  = flag.String("cpuprofile", "cpu.pprof", "write CPU profile to file (set to empty to disable)")
-		bitrate     = flag.Int("bitrate", 64000, "target bitrate in bits/sec")
-		vbr         = flag.Bool("vbr", true, "enable variable bitrate")
-		complexity  = flag.Int("complexity", 10, "encoder complexity (0-10)")
-		application = flag.String("application", "audio", "opus application: audio|voip|lowdelay")
-		frameMS     = flag.Int("frame-ms", 20, "frame duration in ms (5|10|20|40|60)")
-		vendor      = flag.String("vendor", "opusgo", "OpusTags vendor string")
+		outPath     = fs.String("out", "out.opus", "output .opus file")
+		cpuProfile  = fs.String("cpuprofile", "cpu.pprof", "write CPU profile to file (set to empty to disable)")
+		bitrate     = fs.Int("bitrate", 64000, "target bitrate in bits/sec")
+		vbr         = fs.Bool("vbr", true, "enable variable bitrate")
+		complexity  = fs.Int("complexity", 10, "encoder complexity (0-10)")
+		application = fs.String("application", "audio", "opus application: audio|voip|lowdelay")
+		frameMS     = fs.Int("frame-ms", 20, "frame duration in ms (5|10|20|40|60)")
+		vendor      = fs.String("vendor", "opusgo", "OpusTags vendor string")
 	)
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
 		if err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 		defer func() {
 			_ = f.Close()
 		}()
 		if err := pprof.StartCPUProfile(f); err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 		defer pprof.StopCPUProfile()
 	}
 
-	if flag.NArg() != 1 {
-		fmt.Fprintf(os.Stderr, "usage: %s [flags] input.wav\n", os.Args[0])
-		flag.PrintDefaults()
-		os.Exit(2)
+	if fs.NArg() != 1 {
+		fmt.Fprintf(stderr, "usage: wav2oggopus [flags] input.wav\n")
+		fs.PrintDefaults()
+		return 2
 	}
-	inPath := flag.Arg(0)
+	inPath := fs.Arg(0)
 
 	app, err := parseApplication(*application)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 
 	frameSize, err := frameSizeFromMS(*frameMS)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 
 	inF, err := os.Open(inPath)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	defer inF.Close()
 
 	wr, err := wav.NewReader(inF)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	if wr.SampleRate() != 48000 {
-		fatal(fmt.Errorf("only 48kHz WAV supported currently (got %d)", wr.SampleRate()))
+		return fail(stderr, fmt.Errorf("only 48kHz WAV supported currently (got %d)", wr.SampleRate()))
 	}
 	if wr.Channels() < 1 || wr.Channels() > 2 {
-		fatal(fmt.Errorf("only mono and stereo (1 or 2 channels) WAV files supported currently (got %d)", wr.Channels()))
+		return fail(stderr, fmt.Errorf("only mono and stereo (1 or 2 channels) WAV files supported currently (got %d)", wr.Channels()))
 	}
 
 	enc, err := opus.NewEncoder(wr.SampleRate(), wr.Channels(), app)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	defer enc.Close()
 
 	if *bitrate > 0 {
 		if err := enc.SetBitrate(*bitrate); err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 	}
 	if err := enc.SetVBR(*vbr); err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	if *complexity >= 0 {
 		if err := enc.SetComplexity(*complexity); err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 	}
 
 	lookahead, err := enc.Lookahead()
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 
 	outF, err := os.Create(*outPath)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	defer func() {
 		_ = outF.Close()
@@ -130,7 +138,7 @@ func main() {
 	}
 	headPkt, err := ogg.BuildOpusHeadPacket(head)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 
 	tags := ogg.OpusTags{
@@ -139,14 +147,14 @@ func main() {
 	}
 	tagsPkt, err := ogg.BuildOpusTagsPacket(tags)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 
 	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 
 	pcm := make([]int16, frameSize*wr.Channels())
@@ -156,14 +164,14 @@ func main() {
 	for {
 		n, rerr := wr.ReadInt16PCM(pcm)
 		if rerr != nil && !errors.Is(rerr, io.EOF) {
-			fatal(rerr)
+			return fail(stderr, rerr)
 		}
 		if n == 0 {
 			break
 		}
 		// n is in samples (interleaved). Ensure we have whole frames.
 		if n%wr.Channels() != 0 {
-			fatal(fmt.Errorf("wav: sample count not multiple of channels"))
+			return fail(stderr, fmt.Errorf("wav: sample count not multiple of channels"))
 		}
 		framesRead := n / wr.Channels()
 		isLast := errors.Is(rerr, io.EOF)
@@ -177,14 +185,14 @@ func main() {
 
 		nBytes, err := enc.Encode(pcm, frameSize, packet)
 		if err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 
 		totalSamplesPerCh += uint64(framesRead)
 		granule := uint64(head.PreSkip) + totalSamplesPerCh
 
 		if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 
 		if isLast {
@@ -193,8 +201,9 @@ func main() {
 	}
 
 	if err := pw.Flush(); err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
+	return 0
 }
 
 func parseApplication(s string) (int, error) {
@@ -202,9 +211,7 @@ func parseApplication(s string) (int, error) {
 	s = strings.ReplaceAll(s, "_", "-")
 	s = strings.ReplaceAll(s, " ", "-")
 	s = strings.ReplaceAll(s, "restricted-", "")
-	if strings.HasPrefix(s, "app-") {
-		s = strings.TrimPrefix(s, "app-")
-	}
+	s = strings.TrimPrefix(s, "app-")
 
 	switch s {
 	case "audio":
@@ -244,10 +251,7 @@ func randomSerial() uint32 {
 	return uint32(time.Now().UnixNano())
 }
 
-func fatal(err error) {
-	if err == nil {
-		return
-	}
-	fmt.Fprintln(os.Stderr, "error:", err)
-	os.Exit(1)
+func fail(w io.Writer, err error) int {
+	fmt.Fprintln(w, "error:", err)
+	return 1
 }

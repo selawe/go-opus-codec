@@ -13,34 +13,41 @@ import (
 
 // Writes length-prefixed Opus packets (u32le length + bytes) for audio packets only.
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("oggopusextract", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	var (
-		noCRC = flag.Bool("no-crc", false, "skip Ogg CRC verification")
-		out   = flag.String("out", "", "output file (default stdout)")
+		noCRC = fs.Bool("no-crc", false, "skip Ogg CRC verification")
+		out   = fs.String("out", "", "output file (default stdout)")
 	)
-	flag.Parse()
-	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: oggopusextract [--no-crc] [--out packets.bin] file.ogg")
-		os.Exit(2)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: oggopusextract [--no-crc] [--out packets.bin] file.ogg")
+		return 2
 	}
 
-	in, err := os.Open(flag.Arg(0))
+	in, err := os.Open(fs.Arg(0))
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	defer in.Close()
 
 	r, err := ogg.NewOpusReader(in)
 	if err != nil {
-		fatal(err)
+		return fail(stderr, err)
 	}
 	r.SetVerifyCRC(!*noCRC)
 
-	var w io.Writer = os.Stdout
-	var f *os.File
+	var w io.Writer = stdout
 	if *out != "" {
-		f, err = os.Create(*out)
+		f, err := os.Create(*out)
 		if err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 		defer f.Close()
 		w = f
@@ -54,20 +61,21 @@ func main() {
 			break
 		}
 		if err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 		var lenBuf [4]byte
 		binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(pkt.Data)))
 		if _, err := bw.Write(lenBuf[:]); err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 		if _, err := bw.Write(pkt.Data); err != nil {
-			fatal(err)
+			return fail(stderr, err)
 		}
 	}
+	return 0
 }
 
-func fatal(err error) {
-	fmt.Fprintln(os.Stderr, "error:", err)
-	os.Exit(1)
+func fail(w io.Writer, err error) int {
+	fmt.Fprintln(w, "error:", err)
+	return 1
 }
