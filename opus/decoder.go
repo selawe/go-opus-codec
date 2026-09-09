@@ -64,8 +64,8 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 			return nil, fmt.Errorf("%w: mapping family 0 requires 1 or 2 channels, got %d", ErrUnsupportedMapping, head.Channels)
 		}
 		dec, err = NewDecoder(fs, int(head.Channels))
-	} else {
-		// Mapping family != 0 uses multistream.
+	} else if head.ChannelMappingFamily == 1 {
+		// Mapping family 1 uses multistream.
 		if head.StreamCount == 0 {
 			return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
 		}
@@ -74,6 +74,8 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 		}
 
 		dec, err = NewMultistreamDecoder(fs, int(head.Channels), int(head.StreamCount), int(head.CoupledStreamCount), head.ChannelMapping)
+	} else {
+		return nil, fmt.Errorf("%w: unsupported channel mapping family %d", ErrUnsupportedMapping, head.ChannelMappingFamily)
 	}
 	if err != nil {
 		return nil, err

@@ -10,6 +10,8 @@ import (
 func BuildOpusHeadPacket(h OpusHead) ([]byte, error) {
 	if h.Version == 0 {
 		h.Version = 1
+	} else if (h.Version >> 4) > 0 {
+		return nil, fmt.Errorf("%w: unsupported version %d (major version must be 0)", ErrBadOpusHead, h.Version)
 	}
 	if h.Channels == 0 {
 		return nil, fmt.Errorf("%w: channels=0", ErrBadOpusHead)
@@ -27,32 +29,33 @@ func BuildOpusHeadPacket(h OpusHead) ([]byte, error) {
 		binary.LittleEndian.PutUint16(b[16:18], uint16(h.OutputGainQ8))
 		b[18] = 0
 		return b, nil
+	} else if h.ChannelMappingFamily == 1 {
+		if int(h.Channels) != len(h.ChannelMapping) {
+			return nil, fmt.Errorf("%w: mapping len mismatch", ErrBadOpusHead)
+		}
+		if h.StreamCount == 0 {
+			return nil, fmt.Errorf("%w: stream count cannot be 0", ErrBadOpusHead)
+		}
+		if h.CoupledStreamCount > h.StreamCount {
+			return nil, fmt.Errorf("%w: coupled stream count %d > stream count %d", ErrBadOpusHead, h.CoupledStreamCount, h.StreamCount)
+		}
+		if int(h.StreamCount)+int(h.CoupledStreamCount) > int(h.Channels) {
+			return nil, fmt.Errorf("%w: streams (%d+%d) > channels (%d)", ErrBadOpusHead, h.StreamCount, h.CoupledStreamCount, h.Channels)
+		}
+		b := make([]byte, 21+len(h.ChannelMapping))
+		copy(b[0:8], opusHeadMagic)
+		b[8] = h.Version
+		b[9] = h.Channels
+		binary.LittleEndian.PutUint16(b[10:12], h.PreSkip)
+		binary.LittleEndian.PutUint32(b[12:16], h.InputSampleRate)
+		binary.LittleEndian.PutUint16(b[16:18], uint16(h.OutputGainQ8))
+		b[18] = 1
+		b[19] = h.StreamCount
+		b[20] = h.CoupledStreamCount
+		copy(b[21:], h.ChannelMapping)
+		return b, nil
 	}
-
-	if int(h.Channels) != len(h.ChannelMapping) {
-		return nil, fmt.Errorf("%w: mapping len mismatch", ErrBadOpusHead)
-	}
-	if h.StreamCount == 0 {
-		return nil, fmt.Errorf("%w: stream count cannot be 0", ErrBadOpusHead)
-	}
-	if h.CoupledStreamCount > h.StreamCount {
-		return nil, fmt.Errorf("%w: coupled stream count %d > stream count %d", ErrBadOpusHead, h.CoupledStreamCount, h.StreamCount)
-	}
-	if int(h.StreamCount)+int(h.CoupledStreamCount) > int(h.Channels) {
-		return nil, fmt.Errorf("%w: streams (%d+%d) > channels (%d)", ErrBadOpusHead, h.StreamCount, h.CoupledStreamCount, h.Channels)
-	}
-	b := make([]byte, 21+len(h.ChannelMapping))
-	copy(b[0:8], opusHeadMagic)
-	b[8] = h.Version
-	b[9] = h.Channels
-	binary.LittleEndian.PutUint16(b[10:12], h.PreSkip)
-	binary.LittleEndian.PutUint32(b[12:16], h.InputSampleRate)
-	binary.LittleEndian.PutUint16(b[16:18], uint16(h.OutputGainQ8))
-	b[18] = h.ChannelMappingFamily
-	b[19] = h.StreamCount
-	b[20] = h.CoupledStreamCount
-	copy(b[21:], h.ChannelMapping)
-	return b, nil
+	return nil, fmt.Errorf("%w: unsupported channel mapping family %d", ErrBadOpusHead, h.ChannelMappingFamily)
 }
 
 // BuildOpusTagsPacket builds an OpusTags comment header packet (RFC 7845).

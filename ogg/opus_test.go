@@ -273,4 +273,66 @@ func TestRFC7845_BuildOpusHeadValidation(t *testing.T) {
 	if !errors.Is(err, ErrBadOpusHead) {
 		t.Fatalf("expected ErrBadOpusHead for CoupledStreamCount > StreamCount, got %v", err)
 	}
+
+	// Unsupported channel mapping family (e.g. 2, 255)
+	_, err = BuildOpusHeadPacket(OpusHead{
+		Channels:             2,
+		ChannelMappingFamily: 2,
+	})
+	if !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for unsupported family 2, got %v", err)
+	}
+
+	// Unsupported major version > 0
+	_, err = BuildOpusHeadPacket(OpusHead{
+		Version:              0x20, // Major version 2
+		Channels:             2,
+		ChannelMappingFamily: 0,
+	})
+	if !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for major version 2, got %v", err)
+	}
+}
+
+func TestRFC7845_ParseOpusHeadVersionAndFamily(t *testing.T) {
+	validHead := OpusHead{
+		Version:              1,
+		Channels:             2,
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         0,
+		ChannelMappingFamily: 0,
+	}
+	pkt, err := BuildOpusHeadPacket(validHead)
+	if err != nil {
+		t.Fatalf("BuildOpusHeadPacket: %v", err)
+	}
+
+	// Corrupt version to 0
+	badVerPkt := make([]byte, len(pkt))
+	copy(badVerPkt, pkt)
+	badVerPkt[8] = 0
+	if _, err := parseOpusHead(badVerPkt); !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for version 0, got %v", err)
+	}
+
+	// Corrupt version to major version 2 (0x20)
+	badVerPkt[8] = 0x20
+	if _, err := parseOpusHead(badVerPkt); !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for major version 2, got %v", err)
+	}
+
+	// Corrupt family to 2
+	badFamPkt := make([]byte, len(pkt))
+	copy(badFamPkt, pkt)
+	badFamPkt[18] = 2
+	if _, err := parseOpusHead(badFamPkt); !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for family 2, got %v", err)
+	}
+
+	// Corrupt family to 255
+	badFamPkt[18] = 255
+	if _, err := parseOpusHead(badFamPkt); !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("expected ErrBadOpusHead for family 255, got %v", err)
+	}
 }

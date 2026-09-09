@@ -189,6 +189,26 @@ func TestNewEncoderFromHead_Multistream(t *testing.T) {
 	}
 }
 
+func TestFromHead_UnsupportedChannelMappingFamily(t *testing.T) {
+	head := ogg.OpusHead{
+		Version:              1,
+		Channels:             2,
+		ChannelMappingFamily: 2, // Unsupported family (e.g. reserved 2 or 255)
+	}
+
+	if _, err := NewDecoderFromHead(head); err == nil {
+		t.Error("expected error for unsupported ChannelMappingFamily in NewDecoderFromHead")
+	} else if !errors.Is(err, ErrUnsupportedMapping) {
+		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
+	}
+
+	if _, err := NewEncoderFromHead(head, ApplicationAudio); err == nil {
+		t.Error("expected error for unsupported ChannelMappingFamily in NewEncoderFromHead")
+	} else if !errors.Is(err, ErrUnsupportedMapping) {
+		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
+	}
+}
+
 func TestMultistreamEncoder_ValidationErrors(t *testing.T) {
 	mapping := []uint8{0, 1}
 

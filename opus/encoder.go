@@ -149,24 +149,26 @@ func NewEncoderFromHead(head ogg.OpusHead, application int) (*Encoder, error) {
 			return nil, fmt.Errorf("%w: mapping family 0 requires 1 or 2 channels, got %d", ErrUnsupportedMapping, head.Channels)
 		}
 		return NewEncoder(fs, int(head.Channels), application)
-	}
+	} else if head.ChannelMappingFamily == 1 {
+		// Mapping family 1 uses multistream.
+		if head.StreamCount == 0 {
+			return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
+		}
+		if int(head.Channels) != len(head.ChannelMapping) {
+			return nil, fmt.Errorf("%w: channel mapping length mismatch", ErrUnsupportedMapping)
+		}
 
-	// Mapping family != 0 uses multistream.
-	if head.StreamCount == 0 {
-		return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
+		return NewMultistreamEncoder(
+			fs,
+			int(head.Channels),
+			int(head.StreamCount),
+			int(head.CoupledStreamCount),
+			head.ChannelMapping,
+			application,
+		)
+	} else {
+		return nil, fmt.Errorf("%w: unsupported channel mapping family %d", ErrUnsupportedMapping, head.ChannelMappingFamily)
 	}
-	if int(head.Channels) != len(head.ChannelMapping) {
-		return nil, fmt.Errorf("%w: channel mapping length mismatch", ErrUnsupportedMapping)
-	}
-
-	return NewMultistreamEncoder(
-		fs,
-		int(head.Channels),
-		int(head.StreamCount),
-		int(head.CoupledStreamCount),
-		head.ChannelMapping,
-		application,
-	)
 }
 
 // Close closes the encoder and frees all associated C runtime and TLS memory.
