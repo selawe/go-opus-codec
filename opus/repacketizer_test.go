@@ -2,6 +2,7 @@ package opus
 
 import (
 	"math"
+	"runtime"
 	"testing"
 )
 
@@ -286,4 +287,143 @@ func TestFinalRange(t *testing.T) {
 
 	// Note: in CELT or full-band modes, entropy range reflects bit-exact state.
 	t.Logf("enc final range: 0x%08x, dec final range: 0x%08x", encRange, decRange)
+}
+
+func TestRepacketizer_NoUseAfterFree(t *testing.T) {
+	enc, err := NewEncoder(48000, 2, ApplicationAudio)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	defer enc.Close()
+
+	dec, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer dec.Close()
+
+	rp, err := NewRepacketizer()
+	if err != nil {
+		t.Fatalf("NewRepacketizer: %v", err)
+	}
+	defer rp.Close()
+
+	pcm := make([]int16, 960*2)
+	for i := range pcm {
+		pcm[i] = int16(5000 * math.Sin(float64(i)*0.05))
+	}
+
+	// Function that creates an ephemeral heap-allocated slice and drops its reference
+	catPacket := func(rp *Repacketizer) {
+		pkt := make([]byte, 1000)
+		n, err := enc.Encode(pcm, 960, pkt)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		// Allocate isolated heap slice and pass to Cat
+		ephemeral := make([]byte, n)
+		copy(ephemeral, pkt[:n])
+		if err := rp.Cat(ephemeral); err != nil {
+			t.Fatalf("Cat: %v", err)
+		}
+	}
+
+	catPacket(rp)
+	catPacket(rp)
+
+	// Force Go runtime GC to reclaim unreachable ephemeral slices
+	runtime.GC()
+
+	// Poison the heap with dummy allocations
+	for i := 0; i < 100; i++ {
+		poison := make([]byte, 1024)
+		for j := range poison {
+			poison[j] = 0xAA
+		}
+		_ = poison
+	}
+
+	merged := make([]byte, 3000)
+	nMerged, err := rp.Out(merged)
+	if err != nil {
+		t.Fatalf("rp.Out: %v", err)
+	}
+
+	outPCM := make([]int16, 960*2*2)
+	nSamples, err := dec.Decode(merged[:nMerged], outPCM, 960*2, false)
+	if err != nil {
+		t.Fatalf("Decode merged packet failed (corrupted by UAF): %v", err)
+	}
+	if nSamples != 960*2 {
+		t.Fatalf("expected %d samples, got %d", 960*2, nSamples)
+	}
+}
+
+func TestRepacketizer_BufferReuse(t *testing.T) {
+	enc, err := NewEncoder(48000, 2, ApplicationAudio)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	defer enc.Close()
+
+	dec, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer dec.Close()
+
+	rp, err := NewRepacketizer()
+	if err != nil {
+		t.Fatalf("NewRepacketizer: %v", err)
+	}
+	defer rp.Close()
+
+	pcm := make([]int16, 960*2)
+	for i := range pcm {
+		pcm[i] = int16(4000 * math.Sin(float64(i)*0.03))
+	}
+	reusableBuf := make([]byte, 1000)
+
+	// Add first frame using reusableBuf
+	n1, err := enc.Encode(pcm, 960, reusableBuf)
+	if err != nil {
+		t.Fatalf("Encode 1: %v", err)
+	}
+	if err := rp.Cat(reusableBuf[:n1]); err != nil {
+		t.Fatalf("Cat 1: %v", err)
+	}
+
+	// Overwrite reusableBuf completely with 0xFF before second frame
+	for i := range reusableBuf {
+		reusableBuf[i] = 0xFF
+	}
+
+	// Add second frame
+	n2, err := enc.Encode(pcm, 960, reusableBuf)
+	if err != nil {
+		t.Fatalf("Encode 2: %v", err)
+	}
+	if err := rp.Cat(reusableBuf[:n2]); err != nil {
+		t.Fatalf("Cat 2: %v", err)
+	}
+
+	// Overwrite reusableBuf again with poison
+	for i := range reusableBuf {
+		reusableBuf[i] = 0xAA
+	}
+
+	merged := make([]byte, 3000)
+	nMerged, err := rp.Out(merged)
+	if err != nil {
+		t.Fatalf("rp.Out: %v", err)
+	}
+
+	outPCM := make([]int16, 960*2*2)
+	nSamples, err := dec.Decode(merged[:nMerged], outPCM, 960*2, false)
+	if err != nil {
+		t.Fatalf("Decode failed after buffer reuse: %v", err)
+	}
+	if nSamples != 960*2 {
+		t.Fatalf("expected %d samples, got %d", 960*2, nSamples)
+	}
 }

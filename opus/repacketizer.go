@@ -19,6 +19,8 @@ type Repacketizer struct {
 	mu  sync.Mutex
 	tls *libc.TLS
 	st  uintptr
+
+	packets [][]byte
 }
 
 // NewRepacketizer creates and initializes a new Opus repacketizer.
@@ -35,8 +37,9 @@ func NewRepacketizer() (*Repacketizer, error) {
 	}
 
 	rp := &Repacketizer{
-		tls: tls,
-		st:  st,
+		tls:     tls,
+		st:      st,
+		packets: make([][]byte, 0, 8),
 	}
 	runtime.SetFinalizer(rp, (*Repacketizer).finalize)
 	return rp, nil
@@ -55,6 +58,9 @@ func (rp *Repacketizer) Close() error {
 	defer rp.mu.Unlock()
 
 	runtime.SetFinalizer(rp, nil)
+	clear(rp.packets)
+	rp.packets = nil
+
 	if rp.tls != nil {
 		if rp.st != 0 {
 			opusccenc.Opus_opus_repacketizer_destroy(rp.tls, rp.st)
@@ -78,6 +84,8 @@ func (rp *Repacketizer) Reset() error {
 		return errors.New("opus: repacketizer closed")
 	}
 	opusccenc.Opus_opus_repacketizer_init(rp.tls, rp.st)
+	clear(rp.packets)
+	rp.packets = rp.packets[:0]
 	return nil
 }
 
@@ -97,11 +105,18 @@ func (rp *Repacketizer) Cat(packet []byte) error {
 		return errors.New("opus: cannot repacketize empty packet")
 	}
 
-	dataPtr := libc.PtrByte(packet)
-	ret := opusccenc.Opus_opus_repacketizer_cat(rp.tls, rp.st, dataPtr, int32(len(packet)))
+	// Copy the packet into memory retained by Repacketizer to prevent
+	// use-after-free or dangling pointers when the caller drops or mutates the packet slice.
+	cp := make([]byte, len(packet))
+	copy(cp, packet)
+
+	dataPtr := libc.PtrByte(cp)
+	ret := opusccenc.Opus_opus_repacketizer_cat(rp.tls, rp.st, dataPtr, int32(len(cp)))
 	if ret != opusccenc.OPUS_OK {
 		return fmt.Errorf("opus: repacketizer_cat failed: %s (%d)", opusccencErrorString(rp.tls, ret), ret)
 	}
+	rp.packets = append(rp.packets, cp)
+	runtime.KeepAlive(cp)
 	runtime.KeepAlive(rp)
 	return nil
 }
