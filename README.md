@@ -55,6 +55,7 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
 - [Examples Directory](#examples-directory)
 - [Command Line Utilities](#command-line-utilities)
 - [Testing & Conformance](#testing--conformance)
+- [Benchmarks](#benchmarks)
 - [License](#license)
 
 ---
@@ -466,6 +467,44 @@ Run the 120-test matrix against official IETF test vectors:
 # Automatically downloads official test vectors and runs the 120-scenario suite:
 bash scripts/run_conformance.sh
 ```
+
+---
+
+## Benchmarks
+
+`benchmarks/codec-comparison` is a separate Go module (same layout as `examples/*`, with a `replace` back to this module) that benchmarks this library's decoder and encoder against two reference implementations decoding/encoding the exact same input:
+
+- **[libopus](https://opus-codec.org/) (C, via cgo)** — the reference implementation, wrapped by [`github.com/hraban/opus`](https://github.com/hraban/opus).
+- **[pion/opus](https://github.com/pion/opus)** — an independent, decoder-only, pure-Go Opus implementation (decode only; it has no public encoder as of v0.1.0).
+
+It is isolated in its own module specifically so the cgo dependency on `libopus-dev` never leaks into this repository's zero-dependency, `CGO_ENABLED=0` main module.
+
+### Results
+
+Measured on an AMD Ryzen 9 5900HX (`go test -bench=. -benchmem`), decoding real packets from `testvectors/testvector01.bit` / encoding synthetic 48kHz stereo 20ms frames at 64kbps, complexity 10:
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| Decode — go-opus-codec (this repo) | 119,603 | 44 | 4 |
+| Decode — libopus (cgo) | 73,543 | 0 | 0 |
+| Decode — pion/opus | 139,168 | 82 | 1 |
+| Encode — go-opus-codec (this repo) | 260,158 | 57 | 6 |
+| Encode — libopus (cgo) | 106,581 | 0 | 0 |
+
+**Takeaways:**
+- `go-opus-codec` decodes ~1.6x slower than libopus C, but ~1.2x faster than `pion/opus`.
+- `go-opus-codec` encodes ~2.4x slower than libopus C (no pure-Go encoder exists in `pion/opus` to compare against).
+- **This is not a like-for-like "C vs Go" comparison.** The transpile in this repo was generated with `-DOPUS_DISABLE_INTRINSICS -U__SSE__ -U__SSE2__ -U__SSE3__ -U__SSSE3__ -U__AVX__ -U__AVX2__` (see the header comment in `opuscc/common.go`), i.e. all SIMD intrinsics were disabled at transpile time. The system `libopus.so` linked via cgo is typically built **with** SIMD enabled. The gap above is partly "no-SIMD Go vs SIMD-enabled C," not purely a language/runtime difference.
+- `libopus` shows 0 allocations because it manages its own memory in C; `go-opus-codec`'s small (44–57 B) per-call allocations come from its heap-staging buffers in `libcshim` and are worth investigating further if this becomes a hot path for a given workload.
+
+### Running it yourself
+
+```bash
+cd benchmarks/codec-comparison
+go test -tags nolibopusfile -bench=. -benchmem
+```
+
+`-tags nolibopusfile` excludes `hraban/opus`'s optional `libopusfile`-based streaming API, which this benchmark doesn't use and which most systems don't have installed (only `libopus-dev` is required, not `libopusfile-dev`). Requires `CGO_ENABLED=1` and `libopus-dev` (or equivalent) installed — e.g. `apt install libopus-dev` on Debian/Ubuntu.
 
 ---
 
