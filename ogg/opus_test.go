@@ -395,6 +395,71 @@ func TestOpusReader_MaxOpusPacketSize(t *testing.T) {
 	}
 }
 
+func TestOpusReader_SetMaxPacketSize(t *testing.T) {
+	var buf bytes.Buffer
+	const serial uint32 = 0x11223344
+	pw := NewPacketWriter(&buf, serial)
+
+	head := OpusHead{
+		Version:              1,
+		Channels:             2,
+		PreSkip:              312,
+		InputSampleRate:      48000,
+		OutputGainQ8:         0,
+		ChannelMappingFamily: 0,
+	}
+	headPkt, err := BuildOpusHeadPacket(head)
+	if err != nil {
+		t.Fatalf("BuildOpusHeadPacket: %v", err)
+	}
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		t.Fatalf("WritePacket head: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush head: %v", err)
+	}
+
+	tagsPkt, err := BuildOpusTagsPacket(OpusTags{Vendor: "test"})
+	if err != nil {
+		t.Fatalf("BuildOpusTagsPacket: %v", err)
+	}
+	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		t.Fatalf("WritePacket tags: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush tags: %v", err)
+	}
+
+	// 70,000 bytes exceeds the default 64 KiB MaxOpusPacketSize but fits under
+	// the raised limit set below via OpusReader.SetMaxPacketSize.
+	hugeAudio := make([]byte, 70000)
+	hugeAudio[0] = 0xFC // valid TOC (20ms stereo)
+	if err := pw.WritePacket(hugeAudio, 960, false, true); err != nil {
+		t.Fatalf("WritePacket hugeAudio: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush hugeAudio: %v", err)
+	}
+
+	reader, err := NewOpusReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewOpusReader: %v", err)
+	}
+	reader.SetMaxPacketSize(100000)
+
+	pkt, err := reader.ReadAudioPacket()
+	if err != nil {
+		t.Fatalf("ReadAudioPacket: expected raised limit to admit 70KB packet, got error: %v", err)
+	}
+	if len(pkt.Data) != len(hugeAudio) {
+		t.Errorf("packet length mismatch: got %d, want %d", len(pkt.Data), len(hugeAudio))
+	}
+
+	// A nil OpusReader or one with no underlying PacketReader must not panic.
+	var nilReader *OpusReader
+	nilReader.SetMaxPacketSize(1000)
+}
+
 func TestOpusReader_TotalSamples_TruncatedStream(t *testing.T) {
 	var buf bytes.Buffer
 	const serial uint32 = 0x55667788

@@ -2,8 +2,60 @@ package opusgo
 
 import (
 	"math"
+	"os"
 	"testing"
 )
+
+func TestNewPlayerFromReader(t *testing.T) {
+	f, err := os.Open("test/music_64kbps.opus")
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer f.Close()
+
+	player, err := NewPlayerFromReader(f)
+	if err != nil {
+		t.Fatalf("NewPlayerFromReader: %v", err)
+	}
+	defer player.Close()
+
+	buf := make([]byte, 4096)
+	if _, err := player.Read(buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+}
+
+func TestNewPlayerF32FromReader(t *testing.T) {
+	f, err := os.Open("test/music_64kbps.opus")
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer f.Close()
+
+	player, err := NewPlayerF32FromReader(f)
+	if err != nil {
+		t.Fatalf("NewPlayerF32FromReader: %v", err)
+	}
+	defer player.Close()
+
+	buf := make([]byte, 4096)
+	if _, err := player.Read(buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+}
+
+func TestNewPlayerF32FromFile(t *testing.T) {
+	player, err := NewPlayerF32FromFile("test/music_64kbps.opus", true)
+	if err != nil {
+		t.Fatalf("NewPlayerF32FromFile: %v", err)
+	}
+	defer player.Close()
+
+	buf := make([]byte, 4096)
+	if _, err := player.Read(buf); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+}
 
 func TestOpusPlayer_VolumeAndGainAPI(t *testing.T) {
 	player, err := NewPlayerFromFile("test/music_64kbps.opus", true)

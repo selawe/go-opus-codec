@@ -1,6 +1,7 @@
 package ogg
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -284,6 +285,45 @@ func TestRFC3533_InvalidCapturePattern(t *testing.T) {
 	_, err := pr.ReadPage()
 	if !errors.Is(err, ErrInvalidCapturePattern) {
 		t.Fatalf("expected ErrInvalidCapturePattern, got: %v", err)
+	}
+}
+
+func TestPageReader_ParsePageDirect_LargePageExceedsBuffer(t *testing.T) {
+	var buf bytes.Buffer
+	const serial uint32 = 0xABCDEF01
+	payload := bytes.Repeat([]byte{0x5A}, 5000)
+	pw := NewPacketWriter(&buf, serial)
+	if err := pw.WritePacket(payload, 12345, true, true); err != nil {
+		t.Fatalf("WritePacket: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// Use a bufio buffer far smaller than the page so ReadPage's Peek(totalPageSize)
+	// hits bufio.ErrBufferFull and falls back to the parsePageDirect slow path.
+	pr := &PageReader{
+		r:         bufio.NewReaderSize(bytes.NewReader(buf.Bytes()), 64),
+		VerifyCRC: true,
+		Resync:    true,
+		crcTable:  crcTable8[0],
+	}
+
+	page, err := pr.ReadPage()
+	if err != nil {
+		t.Fatalf("ReadPage: %v", err)
+	}
+	if page.BitstreamSerial != serial {
+		t.Errorf("serial mismatch: got %#x, want %#x", page.BitstreamSerial, serial)
+	}
+	if !page.IsBOS() || !page.IsEOS() {
+		t.Errorf("expected BOS+EOS page, got HeaderType=%#x", page.HeaderType)
+	}
+	if !page.CRCVerified {
+		t.Error("expected CRCVerified true")
+	}
+	if !bytes.Equal(page.SegmentData, payload) {
+		t.Errorf("segment data mismatch: got %d bytes, want %d bytes", len(page.SegmentData), len(payload))
 	}
 }
 
