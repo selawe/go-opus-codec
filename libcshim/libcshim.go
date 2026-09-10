@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/bits"
 	"os"
-	"sync"
 	"unsafe"
 )
 
@@ -39,16 +38,20 @@ type tlsChunk struct {
 // - a simple LIFO "stack" allocator (Alloc/Free) for temporary scratch
 // - a very small malloc/free implementation for long-lived allocations
 // - pthread-specific storage emulation for the ccgo TLS pseudostack
+//
+// TLS is not safe for concurrent use. Every method here assumes the caller
+// (opus.Decoder, opus.Encoder, opus.Repacketizer, etc.) already serializes
+// access to it with its own mutex around the whole ccgo call, matching the
+// original C code's own NONTHREADSAFE_PSEUDOSTACK assumption - so the heap
+// and pthread-key maps below are deliberately unsynchronized.
 type TLS struct {
 	chunks []tlsChunk
 	curr   int
 	sp     int // total allocated stack bytes across chunks
 
-	heapMu sync.Mutex
-	heap   map[uintptr]*heapAlloc
+	heap map[uintptr]*heapAlloc
 
-	keysMu sync.Mutex
-	keys   map[Tpthread_key_t]uintptr
+	keys map[Tpthread_key_t]uintptr
 }
 
 type heapAlloc struct {
@@ -68,14 +71,8 @@ func (t *TLS) Close() {
 	if t == nil {
 		return
 	}
-	t.heapMu.Lock()
 	t.heap = nil
-	t.heapMu.Unlock()
-
-	t.keysMu.Lock()
 	t.keys = nil
-	t.keysMu.Unlock()
-
 	t.chunks = nil
 	t.curr = 0
 	t.sp = 0
@@ -213,12 +210,10 @@ func Xmalloc(tls *TLS, size uint64) uintptr {
 	base := uintptr(unsafe.Pointer(unsafe.SliceData(buf)))
 	aligned := (base + 15) &^ 15
 
-	tls.heapMu.Lock()
 	if tls.heap == nil {
 		tls.heap = make(map[uintptr]*heapAlloc)
 	}
 	tls.heap[aligned] = &heapAlloc{buf: buf}
-	tls.heapMu.Unlock()
 	return aligned
 }
 
@@ -226,11 +221,9 @@ func Xfree(tls *TLS, p uintptr) {
 	if tls == nil || p == 0 {
 		return
 	}
-	tls.heapMu.Lock()
 	if tls.heap != nil {
 		delete(tls.heap, p)
 	}
-	tls.heapMu.Unlock()
 }
 
 func Xmemset(_ *TLS, s uintptr, c int32, n uint64) uintptr {
@@ -273,12 +266,7 @@ func Xmemmove(_ *TLS, dst, src uintptr, n uint64) uintptr {
 // ---- pthread TLS emulation (per *TLS instance) ----
 
 func Xpthread_getspecific(tls *TLS, key uint32) uintptr {
-	if tls == nil {
-		return 0
-	}
-	tls.keysMu.Lock()
-	defer tls.keysMu.Unlock()
-	if tls.keys == nil {
+	if tls == nil || tls.keys == nil {
 		return 0
 	}
 	return tls.keys[Tpthread_key_t(key)]
@@ -288,12 +276,10 @@ func Xpthread_setspecific(tls *TLS, key uint32, value uintptr) int32 {
 	if tls == nil {
 		return -1
 	}
-	tls.keysMu.Lock()
 	if tls.keys == nil {
 		tls.keys = make(map[Tpthread_key_t]uintptr)
 	}
 	tls.keys[Tpthread_key_t(key)] = value
-	tls.keysMu.Unlock()
 	return 0
 }
 

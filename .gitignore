@@ -5,6 +5,7 @@ testvectors/
 # Test artifacts and outputs
 *.pcm
 *.pprof
+*.test
 out.wav
 test_out.wav
 scratch/

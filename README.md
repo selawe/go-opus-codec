@@ -485,15 +485,16 @@ Measured on an AMD Ryzen 9 5900HX (`go test -bench=. -benchmem`), decoding real 
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| Decode — go-opus-codec (this repo) | 119,603 | 44 | 4 |
-| Decode — libopus (cgo) | 73,543 | 0 | 0 |
-| Decode — pion/opus | 139,168 | 82 | 1 |
-| Encode — go-opus-codec (this repo) | 260,158 | 57 | 6 |
-| Encode — libopus (cgo) | 106,581 | 0 | 0 |
+| Decode — go-opus-codec (this repo) | 114,593 | 44 | 4 |
+| Decode — libopus (cgo) | 72,893 | 0 | 0 |
+| Decode — pion/opus | 139,052 | 82 | 1 |
+| Encode — go-opus-codec (this repo) | 257,554 | 57 | 6 |
+| Encode — libopus (cgo) | 104,925 | 0 | 0 |
 
 **Takeaways:**
 - `go-opus-codec` decodes ~1.6x slower than libopus C, but ~1.2x faster than `pion/opus`.
-- `go-opus-codec` encodes ~2.4x slower than libopus C (no pure-Go encoder exists in `pion/opus` to compare against).
+- `go-opus-codec` encodes ~2.5x slower than libopus C (no pure-Go encoder exists in `pion/opus` to compare against).
+- `libcshim`'s pthread-TLS emulation used to lock+map-lookup a single well-known key (`opusPseudostackTLSKey`) on every access, even though every caller (`opus.Decoder`, `Encoder`, `Repacketizer`) already serializes access with its own mutex around the whole call. Removing that redundant locking (confirmed safe via `go test -race`, which stays clean) shaved off the CPU profile's `Xpthread_getspecific`/mutex overhead entirely and got decode from 119,603 → 114,593 ns/op (~3%).
 - **This is not a like-for-like "C vs Go" comparison.** The transpile in this repo was generated with `-DOPUS_DISABLE_INTRINSICS -U__SSE__ -U__SSE2__ -U__SSE3__ -U__SSSE3__ -U__AVX__ -U__AVX2__` (see the header comment in `opuscc/common.go`), i.e. all SIMD intrinsics were disabled at transpile time. The system `libopus.so` linked via cgo is typically built **with** SIMD enabled. The gap above is partly "no-SIMD Go vs SIMD-enabled C," not purely a language/runtime difference.
 - `libopus` shows 0 allocations because it manages its own memory in C; `go-opus-codec`'s small (44–57 B) per-call allocations come from its heap-staging buffers in `libcshim` and are worth investigating further if this becomes a hot path for a given workload.
 
