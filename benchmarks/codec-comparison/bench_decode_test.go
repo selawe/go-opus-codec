@@ -164,3 +164,178 @@ func BenchmarkDecode_PionOpus(b *testing.B) {
 		}
 	}
 }
+
+// ---- Phase 1: Real-World Matrix Decode Benchmarks ----
+
+type matrixDecodeConfig struct {
+	name       string
+	sampleRate int
+	channels   int
+	frameSize  int
+	bitrate    int
+	app        int
+}
+
+var matrixDecodeConfigs = []matrixDecodeConfig{
+	{"VoIP_16k_Mono_10ms", 16000, 1, 160, 24000, goopus.ApplicationVoIP},
+	{"VoIP_16k_Mono_20ms", 16000, 1, 320, 24000, goopus.ApplicationVoIP},
+	{"VoIP_16k_Mono_40ms", 16000, 1, 640, 24000, goopus.ApplicationVoIP},
+	{"Audio_48k_Stereo_10ms", 48000, 2, 480, 64000, goopus.ApplicationAudio},
+	{"Audio_48k_Stereo_20ms", 48000, 2, 960, 64000, goopus.ApplicationAudio},
+	{"Audio_48k_Stereo_40ms", 48000, 2, 1920, 64000, goopus.ApplicationAudio},
+}
+
+func prepareMatrixDecodePackets(cfg matrixDecodeConfig, count int) ([][]byte, error) {
+	enc, err := goopus.NewEncoder(cfg.sampleRate, cfg.channels, cfg.app)
+	if err != nil {
+		return nil, err
+	}
+	defer enc.Close()
+	_ = enc.SetBitrate(cfg.bitrate)
+
+	corpus := makePCMCorpus(cfg.sampleRate, cfg.channels, cfg.frameSize, count)
+	var packets [][]byte
+	for _, frame := range corpus {
+		buf := make([]byte, 1275)
+		n, err := enc.Encode(frame, cfg.frameSize, buf)
+		if err != nil {
+			return nil, err
+		}
+		packets = append(packets, buf[:n])
+	}
+	return packets, nil
+}
+
+func TestMatrixDecodeSampleCountsAgree(t *testing.T) {
+	for _, cfg := range matrixDecodeConfigs {
+		t.Run(cfg.name, func(t *testing.T) {
+			pkts, err := prepareMatrixDecodePackets(cfg, 5)
+			if err != nil {
+				t.Fatalf("prepare packets: %v", err)
+			}
+
+			goDec, err := goopus.NewDecoder(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				t.Fatalf("goopus NewDecoder: %v", err)
+			}
+			defer goDec.Close()
+
+			libDec, err := hraban.NewDecoder(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				t.Fatalf("hraban NewDecoder: %v", err)
+			}
+
+			pionDec, err := pion.NewDecoderWithOutput(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				t.Fatalf("pion NewDecoderWithOutput: %v", err)
+			}
+
+			goPCM := make([]int16, 5760*cfg.channels)
+			libPCM := make([]int16, 5760*cfg.channels)
+			pionPCM := make([]int16, 5760*cfg.channels)
+
+			for i, pkt := range pkts {
+				goN, err := goDec.Decode(pkt, goPCM, 5760, false)
+				if err != nil {
+					t.Fatalf("packet %d goopus Decode: %v", i, err)
+				}
+				libN, err := libDec.Decode(pkt, libPCM)
+				if err != nil {
+					t.Fatalf("packet %d hraban Decode: %v", i, err)
+				}
+				pionN, err := pionDec.DecodeToInt16(pkt, pionPCM)
+				if err != nil {
+					t.Fatalf("packet %d pion DecodeToInt16: %v", i, err)
+				}
+				if goN != libN || goN != pionN {
+					t.Fatalf("packet %d mismatch: go=%d lib=%d pion=%d", i, goN, libN, pionN)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDecode_Matrix_GoOpusCodec(b *testing.B) {
+	for _, cfg := range matrixDecodeConfigs {
+		b.Run(cfg.name, func(b *testing.B) {
+			pkts, err := prepareMatrixDecodePackets(cfg, 20)
+			if err != nil {
+				b.Fatalf("prepare packets: %v", err)
+			}
+
+			dec, err := goopus.NewDecoder(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				b.Fatalf("NewDecoder: %v", err)
+			}
+			defer dec.Close()
+
+			pcm := make([]int16, 5760*cfg.channels)
+			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				pkt := pkts[i%len(pkts)]
+				if _, err := dec.Decode(pkt, pcm, 5760, false); err != nil {
+					b.Fatalf("Decode: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDecode_Matrix_Libopus(b *testing.B) {
+	for _, cfg := range matrixDecodeConfigs {
+		b.Run(cfg.name, func(b *testing.B) {
+			pkts, err := prepareMatrixDecodePackets(cfg, 20)
+			if err != nil {
+				b.Fatalf("prepare packets: %v", err)
+			}
+
+			dec, err := hraban.NewDecoder(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				b.Fatalf("NewDecoder: %v", err)
+			}
+
+			pcm := make([]int16, 5760*cfg.channels)
+			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				pkt := pkts[i%len(pkts)]
+				if _, err := dec.Decode(pkt, pcm); err != nil {
+					b.Fatalf("Decode: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDecode_Matrix_PionOpus(b *testing.B) {
+	for _, cfg := range matrixDecodeConfigs {
+		b.Run(cfg.name, func(b *testing.B) {
+			pkts, err := prepareMatrixDecodePackets(cfg, 20)
+			if err != nil {
+				b.Fatalf("prepare packets: %v", err)
+			}
+
+			dec, err := pion.NewDecoderWithOutput(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				b.Fatalf("NewDecoderWithOutput: %v", err)
+			}
+
+			pcm := make([]int16, 5760*cfg.channels)
+			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				pkt := pkts[i%len(pkts)]
+				if _, err := dec.DecodeToInt16(pkt, pcm); err != nil {
+					b.Fatalf("DecodeToInt16: %v", err)
+				}
+			}
+		})
+	}
+}

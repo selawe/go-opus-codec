@@ -160,3 +160,154 @@ func BenchmarkEncode_Libopus(b *testing.B) {
 		}
 	}
 }
+
+// ---- Phase 1: Real-World Matrix Encode Benchmarks ----
+
+type matrixEncodeConfig struct {
+	name       string
+	sampleRate int
+	channels   int
+	frameSize  int
+	bitrate    int
+	complexity int
+	goApp      int
+	libopusApp hraban.Application
+}
+
+var matrixConfigs = []matrixEncodeConfig{
+	{"VoIP_16k_Mono_20ms_c1", 16000, 1, 320, 24000, 1, goopus.ApplicationVoIP, hraban.AppVoIP},
+	{"VoIP_16k_Mono_20ms_c5", 16000, 1, 320, 24000, 5, goopus.ApplicationVoIP, hraban.AppVoIP},
+	{"VoIP_16k_Mono_20ms_c10", 16000, 1, 320, 24000, 10, goopus.ApplicationVoIP, hraban.AppVoIP},
+	{"Audio_48k_Stereo_20ms_c1", 48000, 2, 960, 64000, 1, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_20ms_c5", 48000, 2, 960, 64000, 5, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_20ms_c10", 48000, 2, 960, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_10ms_c10", 48000, 2, 480, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_40ms_c10", 48000, 2, 1920, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
+}
+
+func makePCMCorpus(sampleRate, channels, frameSize, numFrames int) [][]int16 {
+	rng := rand.New(rand.NewSource(1))
+	corpus := make([][]int16, numFrames)
+	for f := 0; f < numFrames; f++ {
+		freq := 220.0 + float64(f)*30.0
+		frame := make([]int16, frameSize*channels)
+		for i := 0; i < frameSize; i++ {
+			t := float64(i) / float64(sampleRate)
+			sample := 0.6 * math.Sin(2*math.Pi*freq*t)
+			sample += 0.02 * (rng.Float64()*2 - 1)
+			v := int16(sample * 32767)
+			for c := 0; c < channels; c++ {
+				frame[i*channels+c] = v
+			}
+		}
+		corpus[f] = frame
+	}
+	return corpus
+}
+
+func TestMatrixEncodeRoundTrips(t *testing.T) {
+	for _, cfg := range matrixConfigs {
+		t.Run(cfg.name, func(t *testing.T) {
+			corpus := makePCMCorpus(cfg.sampleRate, cfg.channels, cfg.frameSize, 2)
+			frame := corpus[0]
+
+			dec, err := goopus.NewDecoder(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				t.Fatalf("goopus NewDecoder: %v", err)
+			}
+			defer dec.Close()
+
+			// Test goopus encode
+			goEnc, err := goopus.NewEncoder(cfg.sampleRate, cfg.channels, cfg.goApp)
+			if err != nil {
+				t.Fatalf("goopus NewEncoder: %v", err)
+			}
+			defer goEnc.Close()
+			_ = goEnc.SetBitrate(cfg.bitrate)
+			_ = goEnc.SetComplexity(cfg.complexity)
+
+			pktGo := make([]byte, 4000)
+			nGo, err := goEnc.Encode(frame, cfg.frameSize, pktGo)
+			if err != nil || nGo <= 0 {
+				t.Fatalf("goopus Encode error: %v, n=%d", err, nGo)
+			}
+
+			pcmOut := make([]int16, 5760*cfg.channels)
+			if _, err := dec.Decode(pktGo[:nGo], pcmOut, 5760, false); err != nil {
+				t.Fatalf("goopus roundtrip decode error: %v", err)
+			}
+
+			// Test libopus encode
+			libEnc, err := hraban.NewEncoder(cfg.sampleRate, cfg.channels, cfg.libopusApp)
+			if err != nil {
+				t.Fatalf("libopus NewEncoder: %v", err)
+			}
+			_ = libEnc.SetBitrate(cfg.bitrate)
+			_ = libEnc.SetComplexity(cfg.complexity)
+
+			pktLib := make([]byte, 4000)
+			nLib, err := libEnc.Encode(frame, pktLib)
+			if err != nil || nLib <= 0 {
+				t.Fatalf("libopus Encode error: %v, n=%d", err, nLib)
+			}
+			if _, err := dec.Decode(pktLib[:nLib], pcmOut, 5760, false); err != nil {
+				t.Fatalf("libopus roundtrip decode error: %v", err)
+			}
+		})
+	}
+}
+
+func BenchmarkEncode_Matrix_GoOpusCodec(b *testing.B) {
+	for _, cfg := range matrixConfigs {
+		b.Run(cfg.name, func(b *testing.B) {
+			enc, err := goopus.NewEncoder(cfg.sampleRate, cfg.channels, cfg.goApp)
+			if err != nil {
+				b.Fatalf("NewEncoder: %v", err)
+			}
+			defer enc.Close()
+			_ = enc.SetBitrate(cfg.bitrate)
+			_ = enc.SetComplexity(cfg.complexity)
+
+			corpus := makePCMCorpus(cfg.sampleRate, cfg.channels, cfg.frameSize, 20)
+			packet := make([]byte, 4000)
+
+			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				frame := corpus[i%len(corpus)]
+				if _, err := enc.Encode(frame, cfg.frameSize, packet); err != nil {
+					b.Fatalf("Encode: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkEncode_Matrix_Libopus(b *testing.B) {
+	for _, cfg := range matrixConfigs {
+		b.Run(cfg.name, func(b *testing.B) {
+			enc, err := hraban.NewEncoder(cfg.sampleRate, cfg.channels, cfg.libopusApp)
+			if err != nil {
+				b.Fatalf("NewEncoder: %v", err)
+			}
+			_ = enc.SetBitrate(cfg.bitrate)
+			_ = enc.SetComplexity(cfg.complexity)
+
+			corpus := makePCMCorpus(cfg.sampleRate, cfg.channels, cfg.frameSize, 20)
+			packet := make([]byte, 4000)
+
+			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				frame := corpus[i%len(corpus)]
+				if _, err := enc.Encode(frame, packet); err != nil {
+					b.Fatalf("Encode: %v", err)
+				}
+			}
+		})
+	}
+}
