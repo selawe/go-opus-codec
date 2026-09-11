@@ -120,6 +120,12 @@ func BenchmarkDecode_GoOpusCodec(b *testing.B) {
 	}
 	defer dec.Close()
 	pcm := make([]int16, 5760*2)
+	// Warm up decoder's ccgo/TLS pseudostack and staging buffer before timing
+	if len(corpus) > 0 {
+		if _, err := dec.Decode(corpus[0], pcm, 5760, false); err != nil {
+			b.Fatalf("Decode warm-up: %v", err)
+		}
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -270,6 +276,13 @@ func BenchmarkDecode_Matrix_GoOpusCodec(b *testing.B) {
 			defer dec.Close()
 
 			pcm := make([]int16, 5760*cfg.channels)
+			// Warm up decoder's ccgo/TLS pseudostack before timing
+			if len(pkts) > 0 {
+				if _, err := dec.Decode(pkts[0], pcm, 5760, false); err != nil {
+					b.Fatalf("Decode warm-up: %v", err)
+				}
+			}
+
 			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
 			b.ReportAllocs()
 			b.ResetTimer()

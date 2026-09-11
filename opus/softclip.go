@@ -93,6 +93,36 @@ func (sc *SoftClipper) Close() error {
 	return nil
 }
 
+// softClipTLSPool holds *libc.TLS instances for the stateless SoftClip
+// helper below. It mirrors padTLSPool in pad.go (see that comment for the
+// full rationale): SoftClip is a one-shot function, so pooling avoids a
+// fresh NewTLS per call, and putSoftClipTLS deliberately skips
+// FreePseudostackTLS so opus_pcm_soft_clip's own lazily-cached pseudostack
+// scratch buffer survives across borrows instead of being rebuilt every
+// call. This is a separate pool from pad.go's because it caches TLS
+// instances used with opuscc (decoder-side) transpiled code rather than
+// opusccenc (encoder-side) - keeping them apart avoids coupling the two
+// independently generated packages' pseudostack layouts together.
+var softClipTLSPool = sync.Pool{
+	New: func() any { return libc.NewTLS() },
+}
+
+func getSoftClipTLS() (*libc.TLS, error) {
+	tls, _ := softClipTLSPool.Get().(*libc.TLS)
+	if tls == nil {
+		return nil, errors.New("opus: failed to allocate TLS")
+	}
+	return tls, nil
+}
+
+func putSoftClipTLS(tls *libc.TLS) {
+	if tls == nil {
+		return
+	}
+	tls.Reset()
+	softClipTLSPool.Put(tls)
+}
+
 // SoftClip is a stateless helper that applies soft clipping to a single buffer of float32 PCM samples in-place.
 func SoftClip(pcm []float32, channels int) error {
 	if channels <= 0 {
@@ -104,14 +134,11 @@ func SoftClip(pcm []float32, channels int) error {
 	if len(pcm)%channels != 0 {
 		return fmt.Errorf("opus: pcm sample count %d must be multiple of channels %d", len(pcm), channels)
 	}
-	tls := libc.NewTLS()
-	if tls == nil {
-		return errors.New("opus: failed to allocate TLS")
+	tls, err := getSoftClipTLS()
+	if err != nil {
+		return err
 	}
-	defer func() {
-		opuscc.FreePseudostackTLS(tls)
-		tls.Close()
-	}()
+	defer putSoftClipTLS(tls)
 
 	mem := make([]float32, channels)
 	nbSamples := int32(len(pcm) / channels)

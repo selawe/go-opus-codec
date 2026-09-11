@@ -127,6 +127,12 @@ func BenchmarkEncode_GoOpusCodec(b *testing.B) {
 		b.Fatalf("SetComplexity: %v", err)
 	}
 	packet := make([]byte, 4000)
+	// Warm up encoder's ccgo/TLS pseudostack and staging buffer before timing
+	if len(encodePCMCorpus) > 0 {
+		if _, err := enc.Encode(encodePCMCorpus[0], encFrameSize, packet); err != nil {
+			b.Fatalf("Encode warm-up: %v", err)
+		}
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -270,6 +276,12 @@ func BenchmarkEncode_Matrix_GoOpusCodec(b *testing.B) {
 
 			corpus := makePCMCorpus(cfg.sampleRate, cfg.channels, cfg.frameSize, 20)
 			packet := make([]byte, 4000)
+			// Warm up encoder's ccgo/TLS pseudostack before timing
+			if len(corpus) > 0 {
+				if _, err := enc.Encode(corpus[0], cfg.frameSize, packet); err != nil {
+					b.Fatalf("Encode warm-up: %v", err)
+				}
+			}
 
 			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
 			b.ReportAllocs()

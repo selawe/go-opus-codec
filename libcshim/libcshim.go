@@ -124,6 +124,25 @@ func (t *TLS) Alloc(n int) uintptr {
 	return p
 }
 
+// Reset returns t to its just-allocated state so it can be reused across
+// unrelated calls (e.g. via a sync.Pool) without discarding its already-grown
+// stack chunks or heap/key maps, avoiding a fresh NewTLS per call.
+//
+// Callers must call FreePseudostackTLS first, so any per-thread scratch
+// state cached in the key/heap maps (e.g. celt/stack_alloc.h's pseudostack)
+// is torn down exactly as it would be before a real tls.Close - Reset only
+// rewinds the stack bump-allocator, it does not touch those maps.
+func (t *TLS) Reset() {
+	if t == nil {
+		return
+	}
+	for i := range t.chunks {
+		t.chunks[i].sp = 0
+	}
+	t.curr = 0
+	t.sp = 0
+}
+
 // Free releases the last Alloc(n) region.
 func (t *TLS) Free(n int) {
 	if t == nil || n <= 0 {
