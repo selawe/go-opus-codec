@@ -248,9 +248,13 @@ func BenchmarkDecode_Matrix(b *testing.B) {
 		{"VoIP_16k_Mono_10ms", 16000, 1, 160, 24000, ApplicationVoIP},
 		{"VoIP_16k_Mono_20ms", 16000, 1, 320, 24000, ApplicationVoIP},
 		{"VoIP_16k_Mono_40ms", 16000, 1, 640, 24000, ApplicationVoIP},
+		{"VoIP_16k_Mono_60ms", 16000, 1, 960, 24000, ApplicationVoIP},
+		{"Audio_48k_Stereo_2.5ms", 48000, 2, 120, 64000, ApplicationAudio},
+		{"Audio_48k_Stereo_5ms", 48000, 2, 240, 64000, ApplicationAudio},
 		{"Audio_48k_Stereo_10ms", 48000, 2, 480, 64000, ApplicationAudio},
 		{"Audio_48k_Stereo_20ms", 48000, 2, 960, 64000, ApplicationAudio},
 		{"Audio_48k_Stereo_40ms", 48000, 2, 1920, 64000, ApplicationAudio},
+		{"Audio_48k_Stereo_60ms", 48000, 2, 2880, 64000, ApplicationAudio},
 	}
 
 	for _, cfg := range configs {
@@ -305,15 +309,31 @@ func BenchmarkEncode_Matrix(b *testing.B) {
 			complexities: []int{1, 5, 10},
 		},
 		{
-			benchConfig:  benchConfig{"Audio_48k_Stereo_20ms", 48000, 2, 960, 64000, ApplicationAudio},
-			complexities: []int{1, 5, 10},
+			benchConfig:  benchConfig{"VoIP_16k_Mono_60ms", 16000, 1, 960, 24000, ApplicationVoIP},
+			complexities: []int{10},
+		},
+		{
+			benchConfig:  benchConfig{"Audio_48k_Stereo_2.5ms", 48000, 2, 120, 64000, ApplicationAudio},
+			complexities: []int{10},
+		},
+		{
+			benchConfig:  benchConfig{"Audio_48k_Stereo_5ms", 48000, 2, 240, 64000, ApplicationAudio},
+			complexities: []int{10},
 		},
 		{
 			benchConfig:  benchConfig{"Audio_48k_Stereo_10ms", 48000, 2, 480, 64000, ApplicationAudio},
 			complexities: []int{10},
 		},
 		{
+			benchConfig:  benchConfig{"Audio_48k_Stereo_20ms", 48000, 2, 960, 64000, ApplicationAudio},
+			complexities: []int{1, 5, 10},
+		},
+		{
 			benchConfig:  benchConfig{"Audio_48k_Stereo_40ms", 48000, 2, 1920, 64000, ApplicationAudio},
+			complexities: []int{10},
+		},
+		{
+			benchConfig:  benchConfig{"Audio_48k_Stereo_60ms", 48000, 2, 2880, 64000, ApplicationAudio},
 			complexities: []int{10},
 		},
 	}

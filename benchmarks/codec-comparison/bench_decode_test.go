@@ -15,6 +15,8 @@ package benchcompare
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -24,7 +26,7 @@ import (
 	goopus "github.com/selawe/go-opus-codec/opus"
 )
 
-const bitstreamPath = "../../testvectors/testvector01.bit"
+const bitstreamDir = "../../testvectors"
 
 // loadBitstreamPackets extracts real Opus packets from an RFC 6716 Section 6
 // .bit test vector (see the main module's test/bitstream.go for the format:
@@ -57,15 +59,35 @@ func loadBitstreamPackets(path string, max int) ([][]byte, error) {
 	return packets, nil
 }
 
+// loadAllBitstreamPackets extracts real Opus packets from all 12 RFC 6716
+// Section 6 .bit test vectors (testvector01.bit..testvector12.bit) to create
+// a diverse, representative corpus covering speech (SILK), music (CELT),
+// hybrid mode, bandwidth transitions, and variable frame sizes.
+func loadAllBitstreamPackets(dir string, maxPerVector int) ([][]byte, error) {
+	var allPackets [][]byte
+	for i := 1; i <= 12; i++ {
+		path := fmt.Sprintf("%s/testvector%02d.bit", dir, i)
+		pkts, err := loadBitstreamPackets(path, maxPerVector)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		allPackets = append(allPackets, pkts...)
+	}
+	return allPackets, nil
+}
+
 var corpus [][]byte
 
 func init() {
-	pkts, err := loadBitstreamPackets(bitstreamPath, 200)
+	pkts, err := loadAllBitstreamPackets(bitstreamDir, 25)
 	if err != nil {
-		panic("benchcompare: failed to load " + bitstreamPath + ": " + err.Error())
+		panic("benchcompare: failed to load " + bitstreamDir + ": " + err.Error())
 	}
 	if len(pkts) == 0 {
-		panic("benchcompare: no packets extracted from " + bitstreamPath)
+		panic("benchcompare: no packets extracted from " + bitstreamDir)
 	}
 	corpus = pkts
 }
@@ -186,9 +208,13 @@ var matrixDecodeConfigs = []matrixDecodeConfig{
 	{"VoIP_16k_Mono_10ms", 16000, 1, 160, 24000, goopus.ApplicationVoIP},
 	{"VoIP_16k_Mono_20ms", 16000, 1, 320, 24000, goopus.ApplicationVoIP},
 	{"VoIP_16k_Mono_40ms", 16000, 1, 640, 24000, goopus.ApplicationVoIP},
+	{"VoIP_16k_Mono_60ms", 16000, 1, 960, 24000, goopus.ApplicationVoIP},
+	{"Audio_48k_Stereo_2.5ms", 48000, 2, 120, 64000, goopus.ApplicationAudio},
+	{"Audio_48k_Stereo_5ms", 48000, 2, 240, 64000, goopus.ApplicationAudio},
 	{"Audio_48k_Stereo_10ms", 48000, 2, 480, 64000, goopus.ApplicationAudio},
 	{"Audio_48k_Stereo_20ms", 48000, 2, 960, 64000, goopus.ApplicationAudio},
 	{"Audio_48k_Stereo_40ms", 48000, 2, 1920, 64000, goopus.ApplicationAudio},
+	{"Audio_48k_Stereo_60ms", 48000, 2, 2880, 64000, goopus.ApplicationAudio},
 }
 
 func prepareMatrixDecodePackets(cfg matrixDecodeConfig, count int) ([][]byte, error) {

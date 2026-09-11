@@ -184,11 +184,15 @@ var matrixConfigs = []matrixEncodeConfig{
 	{"VoIP_16k_Mono_20ms_c1", 16000, 1, 320, 24000, 1, goopus.ApplicationVoIP, hraban.AppVoIP},
 	{"VoIP_16k_Mono_20ms_c5", 16000, 1, 320, 24000, 5, goopus.ApplicationVoIP, hraban.AppVoIP},
 	{"VoIP_16k_Mono_20ms_c10", 16000, 1, 320, 24000, 10, goopus.ApplicationVoIP, hraban.AppVoIP},
+	{"VoIP_16k_Mono_60ms_c10", 16000, 1, 960, 24000, 10, goopus.ApplicationVoIP, hraban.AppVoIP},
+	{"Audio_48k_Stereo_2.5ms_c10", 48000, 2, 120, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_5ms_c10", 48000, 2, 240, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_10ms_c10", 48000, 2, 480, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
 	{"Audio_48k_Stereo_20ms_c1", 48000, 2, 960, 64000, 1, goopus.ApplicationAudio, hraban.AppAudio},
 	{"Audio_48k_Stereo_20ms_c5", 48000, 2, 960, 64000, 5, goopus.ApplicationAudio, hraban.AppAudio},
 	{"Audio_48k_Stereo_20ms_c10", 48000, 2, 960, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
-	{"Audio_48k_Stereo_10ms_c10", 48000, 2, 480, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
 	{"Audio_48k_Stereo_40ms_c10", 48000, 2, 1920, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
+	{"Audio_48k_Stereo_60ms_c10", 48000, 2, 2880, 64000, 10, goopus.ApplicationAudio, hraban.AppAudio},
 }
 
 func makePCMCorpus(sampleRate, channels, frameSize, numFrames int) [][]int16 {
