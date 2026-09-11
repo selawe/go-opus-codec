@@ -3,6 +3,23 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.3] - 2026-09-11
+
+### Performance
+- Eliminate heap escapes in `VaList` achieving `0 B/op` and `0 allocs/op` in hot-path steady-state decode and encode (`986e1cf`)
+- Pool stateless TLS instances in `PacketPad`, `PacketPadSafe`, and `SoftClip` via `sync.Pool` (`30b4681`)
+- Optimize TLS implementation by removing unnecessary mutexes for heap and keys (`8685e0e`)
+
+### Added / Test
+- Add fuzz testing suite for Opus packet handling and decoding (`FuzzPacketPad`, `FuzzPacketUnpad`, `FuzzDecode`, `FuzzDecodeF32`) (`300789f`)
+- Add tests for player with large audio packets exceeding typical frame sizes (`b184005`)
+- Add comprehensive benchmark suites for encoder and decoder throughput (`c3ce4ee`)
+- Add Phase 1 real-world configuration matrix benchmarks (2.5ms–60ms, 16kHz–48kHz, mono/stereo, complexities 1–10) (`0e3ceff`, `876ef3e`)
+- Add steady-state page reader and parallel codec benchmarks (`eecdb55`)
+- Add Phase 2 realtime network benchmarks for PLC, Repacketizer, and Padding (`14be38e`)
+- Add decoder/encoder warmup, FEC, and SoftClip benchmarks (`4087262`)
+- Expand benchmark corpus to all 12 RFC 6716 test vectors in codec comparison (`876ef3e`)
+
 ## [0.2.2] - 2026-09-09
 
 ### Added / Test
