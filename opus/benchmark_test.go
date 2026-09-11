@@ -27,6 +27,15 @@ func BenchmarkDecodeInt16(b *testing.B) {
 	}
 
 	pcm := make([]int16, 960*2)
+	// Warm up the decoder's ccgo/TLS pseudostack (heap+key maps, 64KB stack
+	// chunk) before timing: its first Decode call is where those lazily
+	// grow, and leaving it inside the loop misattributes that one-time cost
+	// as steady-state per-op allocation (see BenchmarkDecode_PLC for the
+	// same pattern already applied to its decoder).
+	if _, err := dec.Decode(packet[:nBytes], pcm, 960, false); err != nil {
+		b.Fatalf("Decode warm-up: %v", err)
+	}
+
 	b.SetBytes(int64(960 * 2 * 2)) // 960 samples * 2 channels * 2 bytes = 3840 bytes of PCM
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -60,6 +69,11 @@ func BenchmarkDecodeFloat32(b *testing.B) {
 	}
 
 	pcm := make([]float32, 960*2)
+	// Warm up the decoder's TLS pseudostack before timing (see BenchmarkDecodeInt16).
+	if _, err := dec.DecodeF32(packet[:nBytes], pcm, 960, false); err != nil {
+		b.Fatalf("DecodeF32 warm-up: %v", err)
+	}
+
 	b.SetBytes(int64(960 * 2 * 4)) // 960 samples * 2 channels * 4 bytes
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -83,6 +97,11 @@ func BenchmarkEncodeComplexity0(b *testing.B) {
 	input := generateSineWave(440, 48000, 2, 960)
 	packet := make([]byte, 1275)
 
+	// Warm up the encoder's TLS pseudostack before timing (see BenchmarkDecodeInt16).
+	if _, err := enc.Encode(input, 960, packet); err != nil {
+		b.Fatalf("Encode warm-up: %v", err)
+	}
+
 	b.SetBytes(int64(960 * 2 * 2))
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -105,6 +124,11 @@ func BenchmarkEncodeComplexity10(b *testing.B) {
 
 	input := generateSineWave(440, 48000, 2, 960)
 	packet := make([]byte, 1275)
+
+	// Warm up the encoder's TLS pseudostack before timing (see BenchmarkDecodeInt16).
+	if _, err := enc.Encode(input, 960, packet); err != nil {
+		b.Fatalf("Encode warm-up: %v", err)
+	}
 
 	b.SetBytes(int64(960 * 2 * 2))
 	b.ResetTimer()
@@ -130,6 +154,7 @@ func BenchmarkEncodeParallel(b *testing.B) {
 	input := generateSineWave(440, 48000, 2, 960)
 
 	b.ReportAllocs()
+	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		enc, err := NewEncoder(48000, 2, ApplicationAudio)
 		if err != nil {
@@ -143,6 +168,11 @@ func BenchmarkEncodeParallel(b *testing.B) {
 			b.Fatalf("SetComplexity: %v", err)
 		}
 		packet := make([]byte, 1275)
+
+		// Warm up this goroutine's encoder TLS pseudostack (see BenchmarkDecodeInt16).
+		if _, err := enc.Encode(input, 960, packet); err != nil {
+			b.Fatalf("Encode warm-up: %v", err)
+		}
 
 		for pb.Next() {
 			if _, err := enc.Encode(input, 960, packet); err != nil {
@@ -168,6 +198,7 @@ func BenchmarkDecodeParallel(b *testing.B) {
 	packet = packet[:nBytes]
 
 	b.ReportAllocs()
+	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		dec, err := NewDecoder(48000, 2)
 		if err != nil {
@@ -175,6 +206,11 @@ func BenchmarkDecodeParallel(b *testing.B) {
 		}
 		defer dec.Close()
 		pcm := make([]int16, 960*2)
+
+		// Warm up this goroutine's decoder TLS pseudostack (see BenchmarkDecodeInt16).
+		if _, err := dec.Decode(packet, pcm, 960, false); err != nil {
+			b.Fatalf("Decode warm-up: %v", err)
+		}
 
 		for pb.Next() {
 			if _, err := dec.Decode(packet, pcm, 960, false); err != nil {
@@ -240,6 +276,11 @@ func BenchmarkDecode_Matrix(b *testing.B) {
 			}
 
 			pcm := make([]int16, 5760*cfg.channels)
+			// Warm up the decoder's TLS pseudostack before timing (see BenchmarkDecodeInt16).
+			if _, err := dec.Decode(packet[:nBytes], pcm, 5760, false); err != nil {
+				b.Fatalf("Decode warm-up: %v", err)
+			}
+
 			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -293,6 +334,11 @@ func BenchmarkEncode_Matrix(b *testing.B) {
 				input := generateSineWave(440, cfg.sampleRate, cfg.channels, cfg.frameSize)
 				packet := make([]byte, 1275)
 
+				// Warm up the encoder's TLS pseudostack before timing (see BenchmarkDecodeInt16).
+				if _, err := enc.Encode(input, cfg.frameSize, packet); err != nil {
+					b.Fatalf("Encode warm-up: %v", err)
+				}
+
 				b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
 				b.ReportAllocs()
 				b.ResetTimer()
@@ -344,6 +390,13 @@ func BenchmarkDecode_PLC(b *testing.B) {
 			}
 
 			pcm := make([]int16, 5760*cfg.channels)
+			// Warm up the decoder's TLS pseudostack before timing, matching the
+			// _PLC variant below so the two are an apples-to-apples comparison
+			// (see BenchmarkDecodeInt16 for why this matters).
+			if _, err := dec.Decode(pkt[:nBytes], pcm, 5760, false); err != nil {
+				b.Fatalf("Decode warm-up: %v", err)
+			}
+
 			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -390,6 +443,80 @@ func BenchmarkDecode_PLC(b *testing.B) {
 				_, err := dec.Decode(nil, pcm, cfg.frameSize, false)
 				if err != nil {
 					b.Fatalf("PLC Decode: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkDecode_FEC exercises in-band FEC recovery: the encoder is
+// configured with SetInbandFEC + SetPacketLossPerc, and per RFC 6716's
+// LBRR mechanism (opus_decode's decode_fec argument), the *next* packet
+// after a loss carries redundant data for the lost frame. Decode is
+// called with decodeFEC=true on that next packet to recover the "lost"
+// frame's audio, simulating packet-loss recovery rather than the silent
+// concealment covered by BenchmarkDecode_PLC.
+func BenchmarkDecode_FEC(b *testing.B) {
+	configs := []struct {
+		name       string
+		sampleRate int
+		channels   int
+		frameSize  int
+		app        int
+	}{
+		{"VoIP_16k_Mono_20ms", 16000, 1, 320, ApplicationVoIP},
+		{"Audio_48k_Stereo_20ms", 48000, 2, 960, ApplicationAudio},
+	}
+
+	for _, cfg := range configs {
+		b.Run(cfg.name, func(b *testing.B) {
+			enc, err := NewEncoder(cfg.sampleRate, cfg.channels, cfg.app)
+			if err != nil {
+				b.Fatalf("NewEncoder: %v", err)
+			}
+			defer enc.Close()
+			if err := enc.SetInbandFEC(true); err != nil {
+				b.Fatalf("SetInbandFEC: %v", err)
+			}
+			if err := enc.SetPacketLossPerc(10); err != nil {
+				b.Fatalf("SetPacketLossPerc: %v", err)
+			}
+
+			dec, err := NewDecoder(cfg.sampleRate, cfg.channels)
+			if err != nil {
+				b.Fatalf("NewDecoder: %v", err)
+			}
+			defer dec.Close()
+
+			// frame1 is the "lost" frame; frame2 is the next packet, which
+			// carries LBRR redundancy for frame1 when decoded with fec=true.
+			input1 := generateSineWave(440, cfg.sampleRate, cfg.channels, cfg.frameSize)
+			input2 := generateSineWave(460, cfg.sampleRate, cfg.channels, cfg.frameSize)
+			pkt1 := make([]byte, 1275)
+			pkt2 := make([]byte, 1275)
+			if _, err := enc.Encode(input1, cfg.frameSize, pkt1); err != nil {
+				b.Fatalf("Encode frame1: %v", err)
+			}
+			n2, err := enc.Encode(input2, cfg.frameSize, pkt2)
+			if err != nil {
+				b.Fatalf("Encode frame2: %v", err)
+			}
+			pkt2 = pkt2[:n2]
+
+			pcm := make([]int16, 5760*cfg.channels)
+			// Warm up the decoder's TLS pseudostack before timing (see BenchmarkDecodeInt16).
+			if _, err := dec.Decode(pkt2, pcm, cfg.frameSize, true); err != nil {
+				b.Fatalf("FEC Decode warm-up: %v", err)
+			}
+
+			b.SetBytes(int64(cfg.frameSize * cfg.channels * 2))
+			b.ReportAllocs()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				_, err := dec.Decode(pkt2, pcm, cfg.frameSize, true)
+				if err != nil {
+					b.Fatalf("FEC Decode: %v", err)
 				}
 			}
 		})
@@ -478,6 +605,21 @@ func BenchmarkRepacketizer_Split(b *testing.B) {
 		}
 		if _, err := rp.OutRange(0, 1, dst); err != nil {
 			b.Fatalf("OutRange: %v", err)
+		}
+	}
+}
+
+func BenchmarkSoftClip(b *testing.B) {
+	pcm := make([]float32, 960*2)
+	for i := range pcm {
+		pcm[i] = 0.9
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := SoftClip(pcm, 2); err != nil {
+			b.Fatalf("SoftClip: %v", err)
 		}
 	}
 }
