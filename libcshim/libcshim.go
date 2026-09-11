@@ -173,7 +173,7 @@ func VaList(p uintptr, args ...interface{}) uintptr {
 		case int:
 			*(*uintptr)(slot) = uintptr(v)
 		default:
-			panic(fmt.Sprintf("libcshim: unsupported VaList arg type %T", a))
+			panic("libcshim: unsupported VaList arg type")
 		}
 	}
 	return p
