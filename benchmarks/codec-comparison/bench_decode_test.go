@@ -339,3 +339,47 @@ func BenchmarkDecode_Matrix_PionOpus(b *testing.B) {
 		})
 	}
 }
+
+func TestPLC(t *testing.T) {
+	// Test goopus
+	goDec, err := goopus.NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatalf("goopus: %v", err)
+	}
+	defer goDec.Close()
+	pcm := make([]int16, 5760*2)
+	nGo, err := goDec.Decode(nil, pcm, 960, false)
+	if err != nil || nGo != 960 {
+		t.Fatalf("goopus PLC failed: n=%d, err=%v", nGo, err)
+	}
+
+	// Note: hraban/opus returns "opus: no data supplied" on nil input,
+	// and pion/opus returns "packet is too short to contain table of contents header".
+	// Neither library currently supports RFC 6716 Section 3.4 PLC decoding.
+}
+
+// BenchmarkDecode_PLC_GoOpusCodec measures Packet Loss Concealment (PLC)
+// throughput when reconstructing lost frames without bitstream input.
+func BenchmarkDecode_PLC_GoOpusCodec(b *testing.B) {
+	dec, err := goopus.NewDecoder(48000, 2)
+	if err != nil {
+		b.Fatalf("NewDecoder: %v", err)
+	}
+	defer dec.Close()
+
+	pcm := make([]int16, 5760*2)
+	// Prime the decoder state with a real audio frame first
+	if len(corpus) > 0 {
+		_, _ = dec.Decode(corpus[0], pcm, 5760, false)
+	}
+
+	b.SetBytes(int64(960 * 2 * 2))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if _, err := dec.Decode(nil, pcm, 960, false); err != nil {
+			b.Fatalf("Decode PLC: %v", err)
+		}
+	}
+}
