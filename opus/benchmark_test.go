@@ -118,6 +118,72 @@ func BenchmarkEncodeComplexity10(b *testing.B) {
 	}
 }
 
+// ---- Parallel / concurrency benchmarks ----
+//
+// Each goroutine gets its own Encoder/Decoder instance (mirroring the
+// intended usage pattern: one instance per stream/connection), so these
+// benchmarks exercise the shared ccgo/libc TLS runtime under concurrent
+// use rather than mutex contention on a single shared instance. This is
+// the kind of workload that would surface a concurrency regression from
+// changes to the TLS heap/key allocation path.
+func BenchmarkEncodeParallel(b *testing.B) {
+	input := generateSineWave(440, 48000, 2, 960)
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		enc, err := NewEncoder(48000, 2, ApplicationAudio)
+		if err != nil {
+			b.Fatalf("NewEncoder: %v", err)
+		}
+		defer enc.Close()
+		if err := enc.SetBitrate(64000); err != nil {
+			b.Fatalf("SetBitrate: %v", err)
+		}
+		if err := enc.SetComplexity(10); err != nil {
+			b.Fatalf("SetComplexity: %v", err)
+		}
+		packet := make([]byte, 1275)
+
+		for pb.Next() {
+			if _, err := enc.Encode(input, 960, packet); err != nil {
+				b.Fatalf("Encode: %v", err)
+			}
+		}
+	})
+}
+
+func BenchmarkDecodeParallel(b *testing.B) {
+	enc, err := NewEncoder(48000, 2, ApplicationAudio)
+	if err != nil {
+		b.Fatalf("NewEncoder: %v", err)
+	}
+	defer enc.Close()
+
+	input := generateSineWave(440, 48000, 2, 960)
+	packet := make([]byte, 1275)
+	nBytes, err := enc.Encode(input, 960, packet)
+	if err != nil {
+		b.Fatalf("Encode: %v", err)
+	}
+	packet = packet[:nBytes]
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		dec, err := NewDecoder(48000, 2)
+		if err != nil {
+			b.Fatalf("NewDecoder: %v", err)
+		}
+		defer dec.Close()
+		pcm := make([]int16, 960*2)
+
+		for pb.Next() {
+			if _, err := dec.Decode(packet, pcm, 960, false); err != nil {
+				b.Fatalf("Decode: %v", err)
+			}
+		}
+	})
+}
+
 func BenchmarkPacketParse(b *testing.B) {
 	pkt := []byte{0xFC, 0x01, 0x02, 0x03}
 	b.ResetTimer()
