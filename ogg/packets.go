@@ -110,6 +110,23 @@ func (r *PacketReader) findNextPage(seeker io.ReadSeeker, position int64, seekBu
 	return -1, io.EOF
 }
 
+func (r *PacketReader) newPageReader(reader io.Reader) *PageReader {
+	pr := NewPageReader(reader)
+	if r.pr != nil {
+		pr.VerifyCRC = r.pr.VerifyCRC
+		pr.Resync = r.pr.Resync
+		pr.MaxResync = r.pr.MaxResync
+	}
+	return pr
+}
+
+// SetResync enables or disables capture pattern resynchronization.
+func (r *PacketReader) SetResync(v bool) {
+	if r.pr != nil {
+		r.pr.Resync = v
+	}
+}
+
 // seek to the first page that contains the granule position
 // note that the granule position on the page is the position of the last complete packet on that page
 // For example, if granulePos == 40000 then we find the page that has the closest granule position below
@@ -128,7 +145,7 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 		if err != nil {
 			return 0, err
 		}
-		r.pr = NewPageReader(seeker)
+		r.pr = r.newPageReader(seeker)
 		// skip headers
 		for range 2 {
 			_, err := r.ReadPacket()
@@ -188,9 +205,8 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 			if _, err := seeker.Seek(pagePosition, io.SeekStart); err != nil {
 				return 0, err
 			}
-			r.reset()
-			r.pr = NewPageReader(seeker)
-			page, err := r.ReadPacket()
+			pr := r.newPageReader(seeker)
+			page, err := pr.ReadPage()
 			if err != nil {
 				// this wasn't a page after all?
 				total = position
@@ -198,6 +214,12 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 			}
 
 			pages += 1
+
+			if page.GranulePosition == math.MaxUint64 {
+				// No packet finishes on this page; granule is invalid.
+				total = position
+				continue
+			}
 
 			last, ok := granulePositions[page.GranulePosition]
 			if ok && last == pagePosition {
@@ -218,7 +240,7 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 			// the highest granule position that is above or equal to the target
 			if page.GranulePosition >= granulePos && (highestGranule == 0 || page.GranulePosition <= highestGranule) {
 				highestGranule = page.GranulePosition
-				highestPage = page.PageSequenceEnd
+				highestPage = page.PageSequence
 				// search down for the next highest page
 				total = position
 
@@ -257,7 +279,7 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 		return 0, err
 	}
 	r.reset()
-	r.pr = NewPageReader(seeker)
+	r.pr = r.newPageReader(seeker)
 
 	// fmt.Printf("start sequential scan at position %d pages %d\n", position, pages)
 	last := uint64(0)
@@ -267,12 +289,12 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 			return 0, err
 		}
 		pages += 1
-		if page.GranulePosition >= granulePos {
+		if page.GranulePosition != math.MaxUint64 && page.GranulePosition >= granulePos {
 			// put back in the queue
 			r.queue = slices.Insert(r.queue, 0, page)
 			// fmt.Printf("ogg: SeekToPage scanned %d pages to find granule position %d\n", pages, granulePos)
 			return last, nil
-		} else {
+		} else if page.GranulePosition != math.MaxUint64 {
 			last = page.GranulePosition
 		}
 	}
@@ -307,22 +329,37 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			return 0, err
 		}
 
-		r.pr = NewPageReader(seeker)
+		r.pr = r.newPageReader(seeker)
 		r.reset()
 	}
 
+	lastGranule := int64(-1)
 	for {
-		page, err := r.ReadPacket()
-		if err == nil && page.EOS && page.GranuleValid {
-			return int64(page.GranulePosition), nil
-		}
+		page, err := r.pr.ReadPage()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return 0, fmt.Errorf("ogg: could not find last page granule: %v", err)
 		}
+		if page.GranulePosition != math.MaxUint64 {
+			lastGranule = int64(page.GranulePosition)
+		}
+		if page.IsEOS() && page.GranulePosition != math.MaxUint64 {
+			return int64(page.GranulePosition), nil
+		}
 	}
+	if lastGranule >= 0 {
+		return lastGranule, nil
+	}
+	return 0, fmt.Errorf("ogg: could not find last page granule")
 }
 
-func (r *PacketReader) SetVerifyCRC(v bool) { r.pr.VerifyCRC = v }
+func (r *PacketReader) SetVerifyCRC(v bool) {
+	if r.pr != nil {
+		r.pr.VerifyCRC = v
+	}
+}
 
 func (r *PacketReader) ReadPacket() (*Packet, error) {
 	if len(r.queue) > 0 {
@@ -345,7 +382,8 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 			return nil, fmt.Errorf("%w: got=%d want=%d", ErrSerialMismatch, page.BitstreamSerial, *r.serial)
 		}
 
-		if page.IsContinuedPacket() && !r.havePending {
+		skipOrphan := page.IsContinuedPacket() && !r.havePending
+		if skipOrphan && !r.pr.Resync {
 			return nil, ErrBadContinuedPage
 		}
 		if !page.IsContinuedPacket() {
@@ -365,6 +403,13 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 			segLen := int(segLenU8)
 			if off+segLen > len(body) {
 				return nil, fmt.Errorf("ogg: segment data underrun (seq=%d)", page.PageSequence)
+			}
+			if skipOrphan {
+				off += segLen
+				if segLenU8 < 255 {
+					skipOrphan = false
+				}
+				continue
 			}
 			if r.MaxPacketSize > 0 && len(r.pending)+segLen > r.MaxPacketSize {
 				r.pending = nil

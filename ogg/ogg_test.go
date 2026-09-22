@@ -140,6 +140,36 @@ func TestRFC3533_PageRoundtrip(t *testing.T) {
 	}
 }
 
+func TestTruncatedPageReturnsEOF(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	if err := pw.WritePacket([]byte("hello"), 960, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Append truncated header (only 10 bytes starting with "OggS")
+	buf.Write([]byte("OggS\x00\x00\x00\x00\x00\x00"))
+
+	pr := NewPageReader(&buf)
+	p, err := pr.ReadPage()
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if string(p.SegmentData) != "hello" {
+		t.Fatalf("unexpected data: %s", p.SegmentData)
+	}
+
+	// Second read on truncated header should return io.EOF (clean EOF), NOT ErrResyncFailed
+	_, err = pr.ReadPage()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected clean io.EOF on truncated page, got: %v", err)
+	}
+}
+
+
 func TestRFC3533_MultiPagePacketSpanning(t *testing.T) {
 	// A packet larger than 255 * 255 = 65,025 bytes must span across multiple pages
 	var buf bytes.Buffer
@@ -568,3 +598,84 @@ func TestPacketReader_MaxPacketSize(t *testing.T) {
 		t.Fatalf("expected %d bytes, got %d", len(payload), len(pkt.Data))
 	}
 }
+
+func TestSeekToPage_PreservesVerifyCRCAndResync(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	for i := 0; i < 5; i++ {
+		_ = pw.WritePacket([]byte(fmt.Sprintf("packet-%d", i)), uint64((i+1)*960), i == 0, i == 4)
+	}
+	_ = pw.Flush()
+
+	pr := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	pr.SetVerifyCRC(false)
+	pr.SetResync(false)
+
+	_, err := pr.SeekToPage(0)
+	if err != nil {
+		t.Fatalf("SeekToPage: %v", err)
+	}
+
+	if pr.pr.VerifyCRC != false {
+		t.Errorf("SeekToPage clobbered VerifyCRC: got %v, want false", pr.pr.VerifyCRC)
+	}
+	if pr.pr.Resync != false {
+		t.Errorf("SeekToPage clobbered Resync: got %v, want false", pr.pr.Resync)
+	}
+}
+
+func TestLastPageGranule_ContinuedPage(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	// BOS
+	_ = pw.WritePacket([]byte("OpusHead..."), 0, true, false)
+	_ = pw.Flush()
+	// Write a packet > 65025 bytes so it spans across pages, with EOS
+	bigPayload := make([]byte, 70000)
+	_ = pw.WritePacket(bigPayload, 48000, false, true)
+	_ = pw.Flush()
+
+	pr := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	granule, err := pr.LastPageGranule()
+	if err != nil {
+		t.Fatalf("LastPageGranule failed on continued page: %v", err)
+	}
+	if granule != 48000 {
+		t.Fatalf("expected granule 48000, got %d", granule)
+	}
+}
+
+func TestSeekToPage_ContinuedPage(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	_ = pw.WritePacket([]byte("OpusHead..."), 0, true, false)
+	_ = pw.Flush()
+	_ = pw.WritePacket([]byte("OpusTags..."), 0, false, false)
+	_ = pw.Flush()
+
+	_ = pw.WritePacket([]byte("audio-1"), 960, false, false)
+	_ = pw.Flush()
+
+	// Packet spanning across 2 pages
+	bigPayload := make([]byte, 70000)
+	_ = pw.WritePacket(bigPayload, 1920, false, false)
+	_ = pw.Flush()
+
+	_ = pw.WritePacket([]byte("audio-3"), 2880, false, true)
+	_ = pw.Flush()
+
+	pr := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	_, err := pr.SeekToPage(2000)
+	if err != nil {
+		t.Fatalf("SeekToPage failed on continued stream: %v", err)
+	}
+	pkt, err := pr.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket failed after SeekToPage: %v", err)
+	}
+	if string(pkt.Data) != "audio-3" {
+		t.Fatalf("expected audio-3, got %s", string(pkt.Data))
+	}
+}
+
+

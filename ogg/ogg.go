@@ -162,13 +162,8 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		// Peek fixed 27-byte header
 		hdr, err := pr.r.Peek(27)
 		if err != nil {
-			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && pr.Resync {
-				if _, derr := pr.r.Discard(1); derr != nil {
-					return nil, derr
-				}
-				bytesSearched++
-				lastErr = err
-				continue
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, io.EOF
 			}
 			return nil, err
 		}
@@ -202,13 +197,8 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 
 		hdrAndSegs, err := pr.r.Peek(27 + pageSegments)
 		if err != nil {
-			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && pr.Resync {
-				if _, derr := pr.r.Discard(1); derr != nil {
-					return nil, derr
-				}
-				bytesSearched++
-				lastErr = err
-				continue
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, io.EOF
 			}
 			return nil, err
 		}
@@ -221,13 +211,8 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 
 		fullPage, err := pr.r.Peek(totalPageSize)
 		if err != nil {
-			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && pr.Resync {
-				if _, derr := pr.r.Discard(1); derr != nil {
-					return nil, derr
-				}
-				bytesSearched++
-				lastErr = err
-				continue
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil, io.EOF
 			}
 			if errors.Is(err, bufio.ErrBufferFull) {
 				buf := make([]byte, totalPageSize)

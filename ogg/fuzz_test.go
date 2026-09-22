@@ -32,3 +32,39 @@ func FuzzOpusReader(f *testing.F) {
 		t.Fatalf("ReadAudioPacket did not terminate within %d packets", maxPackets)
 	})
 }
+
+// FuzzPageReader tests RFC 3533 PageReader against arbitrary input bytes.
+func FuzzPageReader(f *testing.F) {
+	f.Add([]byte("OggS"))
+	if data, err := os.ReadFile("../test/music_64kbps.opus"); err == nil {
+		f.Add(data)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		pr := NewPageReader(bytes.NewReader(data))
+		const maxPages = 10000
+		for range maxPages {
+			if _, err := pr.ReadPage(); err != nil {
+				return
+			}
+		}
+	})
+}
+
+// FuzzPacketReader tests PacketReader packet reconstruction against arbitrary byte streams.
+func FuzzPacketReader(f *testing.F) {
+	f.Add([]byte("OggS"))
+	if data, err := os.ReadFile("../test/music_64kbps.opus"); err == nil {
+		f.Add(data)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		pkr := NewPacketReader(bytes.NewReader(data))
+		const maxPackets = 10000
+		for range maxPackets {
+			if _, err := pkr.ReadPacket(); err != nil {
+				return
+			}
+		}
+	})
+}
