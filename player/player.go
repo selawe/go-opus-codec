@@ -57,9 +57,10 @@ type OpusPlayer[SampleT DataType] struct {
 	bytesPerSample   int
 	finished         bool
 	// how many samples have been read so far
-	totalSamples  int64
-	lastTimestamp time.Duration
-	volume        float64
+	totalSamples        int64
+	totalSamplesDecoded uint64
+	lastTimestamp       time.Duration
+	volume              float64
 }
 
 func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
@@ -202,14 +203,21 @@ func (player *OpusPlayer[SampleT]) Read(p []byte) (int, error) {
 
 func (player *OpusPlayer[SampleT]) readLocked(p []byte) (int, error) {
 	total := 0
+	frameSize := player.bytesPerSample * player.Channels()
 	for total < len(p) {
+		if len(p)-total < frameSize {
+			break
+		}
 		n, err := player.readPacketLocked(p[total:])
 		total += n
 		if err != nil {
 			return total, err
 		}
 		if n == 0 {
-			break
+			if player.finished {
+				break
+			}
+			continue
 		}
 	}
 
@@ -243,23 +251,15 @@ func (player *OpusPlayer[SampleT]) readPacketLocked(p []byte) (int, error) {
 }
 
 func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
+	if player.finished && player.position >= len(player.bufferFloat32) {
+		return 0, io.EOF
+	}
 	if player.position >= len(player.bufferFloat32) {
 		packet, err := player.reader.ReadAudioPacket()
 		if err != nil {
 			player.finished = true
 			return 0, err
-
-			// fill with silence
-			/*
-			   for i := range p {
-			       p[i] = 0
-			   }
-
-			   return len(p), err
-			*/
 		}
-
-		// fmt.Printf("Packet granule: %v valid: %v sequence: %v eos: %v\n", packet.GranulePos, packet.GranuleValid, packet.PageSequence, packet.EOS)
 
 		player.updateTimestamp(packet.GranulePos)
 
@@ -273,9 +273,12 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 		// DecodePacket will re-allocate the buffer if necessary
 		decoded, n, err := player.decoder.DecodePacketF32(packet, player.bufferFloat32)
 		if err != nil {
+			player.bufferFloat32 = player.bufferFloat32[:0]
+			player.position = 0
 			return 0, err
 		}
 
+		player.totalSamplesDecoded += uint64(n)
 		player.bufferFloat32 = decoded
 
 		newSize := player.handleSkip(n, packet, len(player.bufferFloat32))
@@ -375,42 +378,29 @@ func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxL
 		player.position += int(skip) * int(player.reader.Head.Channels)
 	}
 
-	// fmt.Printf("Decoded samples: %d buffer length: %d\n", n, len(player.buffer))
-
-	// discard excess samples based on granule position
-	if packet.GranuleValid {
-		actual := uint64(player.totalSamples + int64(n+int(player.reader.Head.PreSkip)))
-		maxSamples := packet.GranulePos
-
-		// this page's granule position indicates that we should drop some of the decoded samples
-		if actual > maxSamples {
-			// fmt.Printf("Dropping %d samples to match granule position at %d\n", actual - maxSamples, packet.GranulePos)
-
-			excessSamples := actual - maxSamples
-			upper := excessSamples * uint64(player.reader.Head.Channels)
-			if upper < uint64(maxLength) {
-				return maxLength - int(upper)
-			}
+	// RFC 7845 Section 4: If packet has a valid granule position (especially at EOS),
+	// trim any trailing excess samples beyond the granule position.
+	if packet.GranuleValid && player.totalSamplesDecoded > packet.GranulePos {
+		excessSamples := player.totalSamplesDecoded - packet.GranulePos
+		upper := excessSamples * uint64(player.reader.Head.Channels)
+		if upper < uint64(maxLength) {
+			return maxLength - int(upper)
 		}
+		return 0
 	}
 
 	return maxLength
 }
 
 func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
+	if player.finished && player.position >= len(player.bufferInt16) {
+		return 0, io.EOF
+	}
 	if player.position >= len(player.bufferInt16) {
 		packet, err := player.reader.ReadAudioPacket()
 		if err != nil {
 			player.finished = true
 			return 0, err
-
-			// fill with silence
-			/*
-				for i := range p {
-					p[i] = 0
-				}
-				return len(p), nil
-			*/
 		}
 
 		player.updateTimestamp(packet.GranulePos)
@@ -425,9 +415,12 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 		// DecodePacket will re-allocate the buffer if necessary
 		decoded, n, err := player.decoder.DecodePacket(packet, player.bufferInt16)
 		if err != nil {
+			player.bufferInt16 = player.bufferInt16[:0]
+			player.position = 0
 			return 0, err
 		}
 
+		player.totalSamplesDecoded += uint64(n)
 		player.bufferInt16 = decoded
 
 		newSize := player.handleSkip(n, packet, len(player.bufferInt16))
@@ -570,13 +563,22 @@ func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
 
 	switch whence {
 	case io.SeekStart:
+		if offset < 0 {
+			return 0, fmt.Errorf("opus: negative seek offset: %d", offset)
+		}
 		err = player.seekSampleLocked(uint64(offset))
 	case io.SeekCurrent:
-		n := max(0, offset+player.totalSamples)
+		n := offset + player.totalSamples
+		if n < 0 {
+			return 0, fmt.Errorf("opus: negative seek offset: %d", n)
+		}
 		err = player.seekSampleLocked(uint64(n))
 	case io.SeekEnd:
 		length := byteToSample(player.lengthLocked())
-		n := max(0, offset+length)
+		n := offset + length
+		if n < 0 {
+			return 0, fmt.Errorf("opus: negative seek offset: %d", n)
+		}
 		err = player.seekSampleLocked(uint64(n))
 	default:
 		return 0, fmt.Errorf("invalid whence: %d", whence)
@@ -634,6 +636,8 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 	}
 
 	player.updateTimestamp(granule)
+	player.finished = false
+	player.totalSamplesDecoded = granule
 
 	// reset decoder state
 	// in theory, the decoder state should start fresh from a new audio page
@@ -670,7 +674,13 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 		n, rerr := player.readLocked(scratch[:toRead])
 		skipBytes -= int64(n)
 		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
 			return rerr
+		}
+		if n == 0 {
+			break
 		}
 	}
 	return nil
@@ -683,6 +693,10 @@ func (player *OpusPlayer[T]) SeekTime(when time.Duration) error {
 
 	if player.closed {
 		return ErrClosed
+	}
+
+	if when < 0 {
+		return fmt.Errorf("opus: negative seek duration: %v", when)
 	}
 
 	samples := uint64(when * time.Duration(ogg.OpusSampleRateHz) / time.Second)

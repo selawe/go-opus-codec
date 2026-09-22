@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/selawe/go-opus-codec/ogg"
+	"github.com/selawe/go-opus-codec/opus"
 )
 
 const testFilePath = "../test/music_64kbps.opus"
@@ -701,3 +702,156 @@ func TestPlayer_VolumeConcurrent(t *testing.T) {
 	}
 	<-done
 }
+
+func TestPlayer_SeekNegative(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer p.Close()
+
+	if _, err := p.Seek(-10, io.SeekStart); err == nil {
+		t.Error("expected error seeking to negative offset with SeekStart, got nil")
+	}
+
+	if err := p.SeekTime(-time.Second); err == nil {
+		t.Error("expected error for negative SeekTime, got nil")
+	}
+}
+
+func TestPlayer_SeekResetsFinished(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatalf("NewPlayerFromFile: %v", err)
+	}
+	defer p.Close()
+
+	// Drain player completely
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, p)
+	if err != nil {
+		t.Fatalf("io.Copy: %v", err)
+	}
+
+	if !p.finished {
+		t.Fatal("expected player to be finished after reading to EOF")
+	}
+
+	// Seek back to start
+	if _, err := p.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("Seek to start: %v", err)
+	}
+
+	if p.finished {
+		t.Fatal("player.finished should be reset to false after seek")
+	}
+
+	// Read should succeed now
+	scratch := make([]byte, 1024)
+	n, err := p.Read(scratch)
+	if err != nil {
+		t.Fatalf("Read after seek to start failed: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("expected to read > 0 bytes after seek to start")
+	}
+}
+
+func TestPlayer_FirstPacketPreSkip(t *testing.T) {
+	enc, err := opus.NewEncoder(48000, 1, opus.ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+
+	pcm1 := make([]int16, 960)
+	for i := range pcm1 {
+		pcm1[i] = int16(i * 10)
+	}
+	pkt1 := make([]byte, 1000)
+	n1, err := enc.Encode(pcm1, 960, pkt1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkt1 = pkt1[:n1]
+
+	pcm2 := make([]int16, 960)
+	for i := range pcm2 {
+		pcm2[i] = int16(i * 10)
+	}
+	pkt2 := make([]byte, 1000)
+	n2, err := enc.Encode(pcm2, 960, pkt2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkt2 = pkt2[:n2]
+
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, 0x12345678)
+	head := ogg.OpusHead{
+		Version:         1,
+		Channels:        1,
+		PreSkip:         312,
+		InputSampleRate: 48000,
+	}
+	headBytes, err := ogg.BuildOpusHeadPacket(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.WritePacket(headBytes, 0, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	tagsBytes, err := ogg.BuildOpusTagsPacket(ogg.OpusTags{Vendor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.WritePacket(tagsBytes, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Packet 1: GranulePos 960
+	if err := pw.WritePacket(pkt1, 960, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Packet 2: GranulePos 1920 (EOS)
+	if err := pw.WritePacket(pkt2, 1920, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := NewPlayerFromReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	var out bytes.Buffer
+	n, err := io.Copy(&out, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expected: 1920 - 312 = 1608 samples. Mono expanded to stereo (2 ch * 2 bytes = 4 bytes/sample)
+	// 1608 * 4 = 6432 bytes.
+	const wantBytes = 1608 * 4
+	if n != wantBytes {
+		t.Fatalf("first packet wrongly trimmed: got %d bytes (%d samples), want %d bytes (%d samples)",
+			n, n/4, wantBytes, wantBytes/4)
+	}
+}
+
+
+
