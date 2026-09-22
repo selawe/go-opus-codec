@@ -69,13 +69,26 @@ func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
 		r.buf = make([]byte, nBytes)
 	}
 	buf := r.buf[:nBytes]
-	if _, err := io.ReadFull(r.br, buf); err != nil {
+	nRead, err := io.ReadFull(r.br, buf)
+	if nRead > 0 {
+		samplesRead := nRead / 2
+		for i := 0; i < samplesRead; i++ {
+			dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
+		}
+		r.dataRemaining -= uint32(samplesRead * 2)
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+			r.dataRemaining = 0
+			return samplesRead, nil
+		}
+		return samplesRead, err
+	}
+	if err != nil {
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			r.dataRemaining = 0
+			return 0, io.EOF
+		}
 		return 0, err
 	}
-	for i := 0; i < n; i++ {
-		dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
-	}
-	r.dataRemaining -= uint32(nBytes)
 	return n, nil
 }
 
@@ -120,14 +133,31 @@ func (r *Reader) readHeader() error {
 			sampleRate := binary.LittleEndian.Uint32(buf[4:8])
 			bitsPerSample := binary.LittleEndian.Uint16(buf[14:16])
 
-			if audioFormat != 1 {
+			const (
+				formatPCM        = 1
+				formatExtensible = 0xFFFE
+			)
+
+			if audioFormat != formatPCM && audioFormat != formatExtensible {
 				return fmt.Errorf("%w: audio format=%d", ErrUnsupportedWAV, audioFormat)
+			}
+			if audioFormat == formatExtensible {
+				if sz < 40 {
+					return fmt.Errorf("%w: extensible fmt chunk too short", ErrUnsupportedWAV)
+				}
+				subFormat := binary.LittleEndian.Uint16(buf[24:26])
+				if subFormat != formatPCM {
+					return fmt.Errorf("%w: extensible subformat=%d", ErrUnsupportedWAV, subFormat)
+				}
 			}
 			if bitsPerSample != 16 {
 				return fmt.Errorf("%w: bits per sample=%d", ErrUnsupportedWAV, bitsPerSample)
 			}
 			if channels == 0 {
 				return fmt.Errorf("%w: channels=0", ErrUnsupportedWAV)
+			}
+			if sampleRate == 0 {
+				return fmt.Errorf("%w: sample rate=0", ErrUnsupportedWAV)
 			}
 			r.sampleRate = int(sampleRate)
 			r.channels = int(channels)

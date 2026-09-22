@@ -2,6 +2,7 @@ package wav
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"testing"
@@ -239,3 +240,133 @@ func BenchmarkWAVReader_ReadInt16PCM(b *testing.B) {
 		}
 	}
 }
+
+type discardSeeker struct{ pos int64 }
+
+func (d *discardSeeker) Write(p []byte) (int, error) { d.pos += int64(len(p)); return len(p), nil }
+func (d *discardSeeker) Seek(off int64, whence int) (int64, error) {
+	if whence == io.SeekStart {
+		d.pos = off
+	}
+	return d.pos, nil
+}
+
+func TestWriterRejectsSizeOverflow(t *testing.T) {
+	w, err := NewWriter(&discardSeeker{}, 48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.dataBytes = uint32(maxDataBytes) - 2 // room for exactly one more sample
+	if err := w.WriteInt16PCM([]int16{1}); err != nil {
+		t.Fatalf("write within limit: %v", err)
+	}
+	before := w.dataBytes
+	if err := w.WriteInt16PCM([]int16{1}); !errors.Is(err, ErrDataTooLarge) {
+		t.Fatalf("got %v, want ErrDataTooLarge", err)
+	}
+	if w.dataBytes != before {
+		t.Fatalf("dataBytes changed on rejected write: %d -> %d", before, w.dataBytes)
+	}
+}
+
+func TestWAVReader_SampleRateZero(t *testing.T) {
+	// Minimal WAV with sampleRate=0
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(36))
+	buf.WriteString("WAVEfmt ")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))  // format PCM
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))  // channels 1
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0))  // sampleRate 0
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0))  // byteRate
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(2))  // blockAlign
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16)) // bitsPerSample
+	buf.WriteString("data")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+	_, err := NewReader(bytes.NewReader(buf.Bytes()))
+	if err == nil {
+		t.Fatal("expected error for sampleRate=0, got nil")
+	}
+}
+
+func TestWAVReader_Extensible(t *testing.T) {
+	// Build WAVE_FORMAT_EXTENSIBLE 6-channel 48kHz PCM WAV
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(40+36))
+	buf.WriteString("WAVEfmt ")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(40)) // extensible size 40
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(0xFFFE)) // WAVE_FORMAT_EXTENSIBLE
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(6))      // channels 6
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000))  // sampleRate
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000*6*2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(12))     // blockAlign
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))     // bitsPerSample
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(22))     // cbSize
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))     // validBitsPerSample
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x3F))   // channelMask (5.1)
+	// SubFormat GUID for PCM: {00000001-0000-0010-8000-00aa00389b71}
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))      // subFormat PCM
+	buf.Write([]byte{0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71})
+	buf.WriteString("data")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(12))     // 1 frame of 6 samples
+	for i := int16(1); i <= 6; i++ {
+		_ = binary.Write(&buf, binary.LittleEndian, i)
+	}
+
+	r, err := NewReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewReader failed for extensible WAV: %v", err)
+	}
+	if r.Channels() != 6 {
+		t.Errorf("expected 6 channels, got %d", r.Channels())
+	}
+	if r.SampleRate() != 48000 {
+		t.Errorf("expected 48000 Hz, got %d", r.SampleRate())
+	}
+	samples := make([]int16, 6)
+	n, err := r.ReadInt16PCM(samples)
+	if err != nil {
+		t.Fatalf("ReadInt16PCM: %v", err)
+	}
+	if n != 6 {
+		t.Fatalf("expected 6 samples read, got %d", n)
+	}
+}
+
+func TestWAVReader_TruncatedData(t *testing.T) {
+	// Build WAV header claiming 1000 samples (2000 bytes) of data, but only provide 10 samples (20 bytes)
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2036))
+	buf.WriteString("WAVEfmt ")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(96000))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))
+	buf.WriteString("data")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2000)) // claims 1000 samples
+	for i := int16(1); i <= 10; i++ {
+		_ = binary.Write(&buf, binary.LittleEndian, i) // only 10 samples provided
+	}
+
+	r, err := NewReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+
+	dst := make([]int16, 500)
+	n, err := r.ReadInt16PCM(dst)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error on partial read: %v", err)
+	}
+	if n != 10 {
+		t.Fatalf("expected 10 samples from partial read before EOF, got %d", n)
+	}
+}
+

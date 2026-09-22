@@ -9,8 +9,17 @@ package wav
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"io"
 )
+
+// ErrDataTooLarge is returned by Writer.WriteInt16PCM when the PCM payload would
+// exceed the 4 GiB limit of a RIFF/WAVE file (32-bit chunk sizes).
+var ErrDataTooLarge = errors.New("wav: PCM data exceeds the 4 GiB RIFF size limit")
+
+// maxDataBytes is the largest data chunk whose RIFF size (data + 36 bytes of
+// headers) still fits in a uint32.
+const maxDataBytes = uint64(^uint32(0)) - 36
 
 // Writer writes 16-bit PCM WAV files.
 //
@@ -45,6 +54,9 @@ func NewWriter(w io.WriteSeeker, sampleRate int, channels int) (*Writer, error) 
 	return wr, nil
 }
 
+// WriteInt16PCM appends interleaved 16-bit little-endian PCM samples.
+// It returns ErrDataTooLarge, without writing anything, if the samples would
+// push the data chunk past the 4 GiB RIFF limit.
 func (wr *Writer) WriteInt16PCM(pcm []int16) error {
 	if wr.closed {
 		return io.ErrClosedPipe
@@ -54,6 +66,9 @@ func (wr *Writer) WriteInt16PCM(pcm []int16) error {
 	}
 
 	n := len(pcm) * 2
+	if uint64(wr.dataBytes)+uint64(n) > maxDataBytes {
+		return ErrDataTooLarge
+	}
 	if cap(wr.buf) < n {
 		wr.buf = make([]byte, n)
 	}
@@ -68,6 +83,8 @@ func (wr *Writer) WriteInt16PCM(pcm []int16) error {
 	return nil
 }
 
+// Close flushes buffered samples and patches the RIFF and data chunk sizes.
+// It does not close the underlying io.WriteSeeker.
 func (wr *Writer) Close() error {
 	if wr.closed {
 		return nil
