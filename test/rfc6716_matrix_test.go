@@ -101,7 +101,12 @@ func TestRFC6716_FullConformanceMatrix(t *testing.T) {
 	}
 
 	if vectorDir == "" {
-		t.Skip("RFC 6716 test vectors not found. Set OPUS_RFC6716_TESTVECTORS or run scripts/download_testvectors.sh")
+		const hint = "RFC 6716 test vectors not found. Set OPUS_RFC6716_TESTVECTORS or run scripts/download_testvectors.sh"
+		// Fail when required by script or running in CI so missing corpus cannot pass silently.
+		if os.Getenv("OPUS_REQUIRE_TESTVECTORS") != "" || os.Getenv("CI") != "" {
+			t.Fatal(hint)
+		}
+		t.Skip(hint)
 	}
 
 	rates := []int{8000, 12000, 16000, 24000, 48000}

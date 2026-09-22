@@ -12,7 +12,7 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -22,6 +22,9 @@ jobs:
           - ubuntu-24.04-arm
           - macos-latest
           - windows-latest
+        go-version:
+          - '1.24'
+          - 'stable'
 
     steps:
       - name: Checkout code
@@ -30,11 +33,29 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go-version }}
           cache: true
 
+      - name: Run go vet
+        run: |
+          output=$(go vet -unsafeptr=false ./... 2>&1 | grep -vE 'opuscc|opusccenc' || true)
+          if [ -n "$output" ]; then
+            echo "$output"
+            exit 1
+          fi
+          echo "go vet passed successfully across all packages."
+
+      - name: Verify 32-bit architecture rejection
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
+        run: |
+          if GOARCH=386 go build ./libcshim 2>/dev/null; then
+            echo "Expected GOARCH=386 build to fail due to 64-bit architecture requirement, but it succeeded"
+            exit 1
+          fi
+          echo "32-bit guard successfully rejected build as expected."
+
       - name: Run golangci-lint
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.63.4
@@ -42,7 +63,21 @@ jobs:
         env:
           GODEBUG: gotypesalias=1
 
+      - name: Run Unit Tests with Coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
+        env:
+          CGO_ENABLED: 0
+        run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
+
+      - name: Upload Coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.txt
+
       - name: Run Unit Tests (CGO_ENABLED=0)
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable') }}
         env:
           CGO_ENABLED: 0
         run: go test -v ./...

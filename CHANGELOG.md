@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Optimize TLS implementation by removing unnecessary mutexes for heap and keys (`8685e0e`)
 
 ### Added / Test
-- Add fuzz testing suite for Opus packet handling and decoding (`FuzzPacketPad`, `FuzzPacketUnpad`, `FuzzDecode`, `FuzzDecodeF32`) (`300789f`)
+- Add fuzz testing suite for Opus packet handling and decoding (`FuzzPacketFrames`, `FuzzPacketUnpad`, `FuzzDecode`, `FuzzDecodeF32`) (`300789f`)
 - Add tests for player with large audio packets exceeding typical frame sizes (`b184005`)
 - Add comprehensive benchmark suites for encoder and decoder throughput (`c3ce4ee`)
 - Add Phase 1 real-world configuration matrix benchmarks (2.5ms–60ms, 16kHz–48kHz, mono/stereo, complexities 1–10) (`0e3ceff`, `876ef3e`)

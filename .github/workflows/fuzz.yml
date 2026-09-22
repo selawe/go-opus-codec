@@ -1,0 +1,39 @@
+name: Scheduled Fuzzing
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Daily at 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target.pkg }} / ${{ matrix.target.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { pkg: ./opus, target: FuzzPacketFrames }
+          - { pkg: ./opus, target: FuzzPacketTotalSamples }
+          - { pkg: ./opus, target: FuzzPacketUnpad }
+          - { pkg: ./opus, target: FuzzParsePacketTOC }
+          - { pkg: ./opus, target: FuzzDecode }
+          - { pkg: ./opus, target: FuzzDecodeF32 }
+          - { pkg: ./opus, target: FuzzRepacketizer }
+          - { pkg: ./ogg, target: FuzzOpusReader }
+          - { pkg: ./ogg, target: FuzzPageReader }
+          - { pkg: ./ogg, target: FuzzPacketReader }
+          - { pkg: ./wav, target: FuzzNewReader }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Fuzz Target
+        run: go test -v -run=^$ -fuzz=${{ matrix.target.target }} -fuzztime=30s ${{ matrix.target.pkg }}

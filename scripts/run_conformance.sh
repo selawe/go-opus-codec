@@ -11,6 +11,7 @@ fi
 
 echo "=== Running RFC 6716 / RFC 8251 Conformance Test Matrix (120 Tests) ==="
 export OPUS_RFC6716_TESTVECTORS="$TARGET_DIR"
+export OPUS_REQUIRE_TESTVECTORS=1
 
 cd "$ROOT_DIR"
 go test -v -timeout 30m -run TestRFC6716_FullConformanceMatrix ./test "$@"

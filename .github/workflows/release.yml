@@ -22,8 +22,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Verify Unit & Conformance Tests
+      - name: Verify Unit Tests
         run: go test -v ./...
+
+      - name: Cache RFC 6716 test vectors
+        uses: actions/cache@v4
+        with:
+          path: testvectors
+          key: rfc6716-testvectors-${{ hashFiles('scripts/download_testvectors.sh') }}
+
+      - name: Download & verify test vectors (no-op on cache hit)
+        run: bash scripts/download_testvectors.sh
+
+      - name: Verify RFC 6716 Conformance (120 tests, fails if vectors missing)
+        run: bash scripts/run_conformance.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -39,13 +51,13 @@ jobs:
 
             ### Highlights
             - **100% Pure Go**: Zero C compiler or cgo required, no external C runtime libraries (`CGO_ENABLED=0` friendly).
-            - **RFC 6716 & RFC 8251 Conformance**: 120 / 120 tests passed (100.0%) against official IETF test vectors.
+            - **RFC 6716 & RFC 8251 Conformance**: Validated against official IETF test vectors.
             - **64-bit Architecture Support**: Tested on Linux, macOS (Apple Silicon & Intel), Windows, and FreeBSD (`amd64`, `arm64`).
             - **Repacketizer API**: Merge multiple Opus frames (up to 120 ms) into a single packet without re-encoding (`opus.Repacketizer`).
             - **CBR Packet Padding**: Pad and unpad Opus packets to fixed sizes (`opus.PacketPad`, `opus.PacketUnpad`).
             - **Soft Clipping**: Non-linear dynamic range compression for float32 PCM (`opus.SoftClip`, `opus.SoftClipper`).
             - **Container Demuxer & Muxer**: RFC 7845 / RFC 3533 Ogg Opus muxing (`ogg.PacketWriter`) and demuxing (`ogg.OpusReader`).
-            - **Comprehensive Examples**: 8 complete examples in `examples/` with dedicated documentation.
+            - **Comprehensive Examples**: complete examples in `examples/` with dedicated documentation.
 
             ### Installation
             ```bash
