@@ -260,3 +260,203 @@ func TestLoadStoreUintptrAtNullBase(t *testing.T) {
 	}
 	StoreUintptrAt(0, 16, 0x1234)
 }
+
+func TestTLSReset(t *testing.T) {
+	tls := NewTLS()
+	defer tls.Close()
+
+	_ = tls.Alloc(128)
+	tls.Reset()
+	if tls.sp != 0 {
+		t.Fatalf("expected sp 0 after Reset, got %d", tls.sp)
+	}
+}
+
+func TestXfprintf(t *testing.T) {
+	var buf bytes.Buffer
+	oldWriter := stderrWriter
+	stderrWriter = &buf
+	defer func() { stderrWriter = oldWriter }()
+
+	tls := NewTLS()
+	defer tls.Close()
+
+	// Direct string without ap
+	fmtStr1 := []byte("hello world\n\x00")
+	Xfprintf(tls, Xstderr, uintptr(unsafe.Pointer(&fmtStr1[0])), 0)
+
+	// String with varargs (%s, %d, %u, %p, %%)
+	fmtStr2 := []byte("msg: %s, line: %d, code: %u, ptr: %p, pct: %%\n\x00")
+	argStr := []byte("assert error\x00")
+	bp := tls.Alloc(64)
+	defer tls.Free(64)
+
+	VaList(bp, uintptr(unsafe.Pointer(&argStr[0])), int32(42), uint32(100), uintptr(0x1234))
+	Xfprintf(tls, Xstderr, uintptr(unsafe.Pointer(&fmtStr2[0])), bp)
+
+	output := buf.String()
+	if !bytes.Contains([]byte(output), []byte("hello world")) {
+		t.Fatalf("missing hello world: %s", output)
+	}
+	if !bytes.Contains([]byte(output), []byte("assert error")) {
+		t.Fatalf("missing assert error: %s", output)
+	}
+	if !bytes.Contains([]byte(output), []byte("line: 42")) {
+		t.Fatalf("missing line 42: %s", output)
+	}
+}
+
+func TestXmallocOverflow(t *testing.T) {
+	tls := NewTLS()
+	defer tls.Close()
+
+	if p := Xmalloc(tls, ^uint64(0)); p != 0 {
+		t.Fatalf("expected 0 from overflowing Xmalloc, got %x", p)
+	}
+	if p := Xmalloc(nil, 100); p != 0 {
+		t.Fatalf("expected 0 for nil TLS Xmalloc, got %x", p)
+	}
+}
+
+func TestMathShims(t *testing.T) {
+	tls := NewTLS()
+	defer tls.Close()
+
+	if Xfabs(tls, -3.14) != 3.14 {
+		t.Fail()
+	}
+	if Xfloor(tls, 3.9) != 3.0 {
+		t.Fail()
+	}
+	if Xsqrt(tls, 16.0) != 4.0 {
+		t.Fail()
+	}
+	if Xcos(tls, 0) != 1.0 {
+		t.Fail()
+	}
+	if Xsin(tls, 0) != 0.0 {
+		t.Fail()
+	}
+	if Xlog(tls, 1.0) != 0.0 {
+		t.Fail()
+	}
+	if Xlog10(tls, 100.0) != 2.0 {
+		t.Fail()
+	}
+	if Xacos(tls, 1.0) != 0.0 {
+		t.Fail()
+	}
+	if Xexp(tls, 0.0) != 1.0 {
+		t.Fail()
+	}
+	if Xpow(tls, 2.0, 3.0) != 8.0 {
+		t.Fail()
+	}
+}
+
+func TestTypeConversionShims(t *testing.T) {
+	if !Bool(true) || Bool(false) {
+		t.Fail()
+	}
+	if BoolInt32(true) != 1 || BoolInt32(false) != 0 {
+		t.Fail()
+	}
+	if BoolInt8(true) != 1 || BoolInt8(false) != 0 {
+		t.Fail()
+	}
+	if BoolInt64(true) != 1 || BoolInt64(false) != 0 {
+		t.Fail()
+	}
+	if BoolUint32(true) != 1 || BoolUint32(false) != 0 {
+		t.Fail()
+	}
+	if BoolUint64(true) != 1 || BoolUint64(false) != 0 {
+		t.Fail()
+	}
+	if BoolUintptr(true) != 1 || BoolUintptr(false) != 0 {
+		t.Fail()
+	}
+
+	if Float32FromFloat32(1.5) != 1.5 || Float32FromFloat64(2.5) != 2.5 || Float32FromInt32(3) != 3.0 {
+		t.Fail()
+	}
+	if Float64FromFloat32(1.5) != 1.5 || Float64FromFloat64(2.5) != 2.5 || Float64FromInt32(3) != 3.0 {
+		t.Fail()
+	}
+
+	if Int16FromInt32(10) != 10 || Int16FromUint8(10) != 10 {
+		t.Fail()
+	}
+	if Int32FromInt32(10) != 10 || Int32FromInt64(10) != 10 || Int32FromUint16(10) != 10 ||
+		Int32FromUint32(10) != 10 || Int32FromUint64(10) != 10 || Int32FromUint8(10) != 10 ||
+		Int64FromInt32(10) != 10 {
+		t.Fail()
+	}
+
+	if Uint16FromInt32(10) != 10 || Uint16FromInt16(10) != 10 {
+		t.Fail()
+	}
+	if Uint32FromInt16(10) != 10 || Uint32FromInt32(10) != 10 || Uint32FromInt8(10) != 10 || Uint32FromUint32(10) != 10 {
+		t.Fail()
+	}
+	if Uint64FromInt16(10) != 10 || Uint64FromInt32(10) != 10 || Uint64FromInt64(10) != 10 || Uint64FromUint64(10) != 10 {
+		t.Fail()
+	}
+	if Uint8FromInt16(10) != 10 || Uint8FromInt32(10) != 10 || UintptrFromInt32(10) != 10 {
+		t.Fail()
+	}
+}
+
+func TestSlicePointerAndUintptrHelpers(t *testing.T) {
+	u8 := []uint8{1, 2, 3}
+	if PtrUint8(u8) == 0 || PtrUint8(nil) != 0 {
+		t.Fail()
+	}
+
+	i16 := []int16{1, 2, 3}
+	if PtrInt16(i16) == 0 || PtrInt16(nil) != 0 {
+		t.Fail()
+	}
+
+	f32 := []float32{1.0, 2.0}
+	if PtrFloat32(f32) == 0 || PtrFloat32(nil) != 0 {
+		t.Fail()
+	}
+
+	var ptrVal uintptr = 0
+	p := uintptr(unsafe.Pointer(&ptrVal))
+	StoreUintptr(p, 0x12345678)
+	if LoadUintptr(p) != 0x12345678 {
+		t.Fatalf("expected 0x12345678, got %x", LoadUintptr(p))
+	}
+	if LoadUintptr(0) != 0 {
+		t.Fail()
+	}
+	StoreUintptr(0, 0x123)
+}
+
+func TestAbortAndAssertFail(t *testing.T) {
+	tls := NewTLS()
+	defer tls.Close()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected Xabort to panic")
+		}
+	}()
+	Xabort(tls)
+}
+
+func TestAssertFail(t *testing.T) {
+	tls := NewTLS()
+	defer tls.Close()
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected X__assert_fail to panic")
+		}
+	}()
+	msg := []byte("x > 0\x00")
+	file := []byte("test.c\x00")
+	X__assert_fail(tls, uintptr(unsafe.Pointer(&msg[0])), uintptr(unsafe.Pointer(&file[0])), 10, 0)
+}

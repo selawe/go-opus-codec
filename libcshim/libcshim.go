@@ -2,9 +2,11 @@ package libcshim
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"math/bits"
 	"os"
+	"strings"
 	"unsafe"
 )
 
@@ -214,7 +216,7 @@ func VaInt32(ap *uintptr) int32 {
 
 // ---- Memory allocation / libc-ish primitives ----
 
-// Xmalloc allocates size bytes and returns a 16-byte aligned pointer.
+// Xmalloc allocates size bytes and returns a 16-byte aligned pointer, or 0 if allocation fails.
 func Xmalloc(tls *TLS, size uint64) uintptr {
 	if tls == nil {
 		return 0
@@ -222,8 +224,8 @@ func Xmalloc(tls *TLS, size uint64) uintptr {
 	if size == 0 {
 		size = 1
 	}
-	if size > uint64(^uint(0)>>1) {
-		panic("libcshim: Xmalloc too large")
+	if size > uint64(^uint(0)>>1)-16 {
+		return 0
 	}
 	buf := make([]byte, int(size)+16)
 	base := uintptr(unsafe.Pointer(unsafe.SliceData(buf)))
@@ -304,13 +306,47 @@ func Xpthread_setspecific(tls *TLS, key uint32, value uintptr) int32 {
 
 // ---- Fatal/assert/debug ----
 
-var Xstderr uintptr = 0
+// Xstderr represents standard error file descriptor handle in transpiled C code.
+const Xstderr uintptr = 0
 
+var stderrWriter io.Writer = os.Stderr
+
+// Xfprintf formats and writes data to os.Stderr using format and C-style varargs at ap.
 func Xfprintf(_ *TLS, _ uintptr, format uintptr, ap uintptr) int32 {
-	// Best-effort debug printing. Used by Opus_celt_fatal.
-	_ = ap
 	fmtStr := GoString(format)
-	_, _ = fmt.Fprintf(os.Stderr, "%s", fmtStr)
+	if ap == 0 {
+		_, _ = fmt.Fprint(stderrWriter, fmtStr)
+		return 0
+	}
+
+	var sb strings.Builder
+	for i := 0; i < len(fmtStr); i++ {
+		if fmtStr[i] == '%' && i+1 < len(fmtStr) {
+			i++
+			switch fmtStr[i] {
+			case '%':
+				sb.WriteByte('%')
+			case 's':
+				ptr := VaUintptr(&ap)
+				sb.WriteString(GoString(ptr))
+			case 'd', 'i':
+				val := VaInt32(&ap)
+				sb.WriteString(fmt.Sprintf("%d", val))
+			case 'u':
+				val := uint32(VaUintptr(&ap))
+				sb.WriteString(fmt.Sprintf("%d", val))
+			case 'p':
+				val := VaUintptr(&ap)
+				sb.WriteString(fmt.Sprintf("%#x", val))
+			default:
+				sb.WriteByte('%')
+				sb.WriteByte(fmtStr[i])
+			}
+		} else {
+			sb.WriteByte(fmtStr[i])
+		}
+	}
+	_, _ = fmt.Fprint(stderrWriter, sb.String())
 	return 0
 }
 

@@ -34,3 +34,26 @@ func FreePseudostackTLS(tls *libc.TLS) {
 	libc.Xfree(tls, p)
 	_ = libc.Xpthread_setspecific(tls, opusPseudostackTLSKey, 0)
 }
+
+// EnsurePseudostackTLS ensures the ccgo pseudostack buffer is allocated on tls.
+func EnsurePseudostackTLS(tls *libc.TLS) {
+	if tls == nil {
+		return
+	}
+	p := libc.Xpthread_getspecific(tls, opusPseudostackTLSKey)
+	if p == 0 {
+		p = libc.Xmalloc(tls, 16)
+		if p != 0 {
+			libc.Xmemset(tls, p, 0, 16)
+		}
+		libc.Xpthread_setspecific(tls, opusPseudostackTLSKey, p)
+	}
+	if p != 0 {
+		offGlobal := uintptr(unsafe.Sizeof(uintptr(0)))
+		if *(*uintptr)(unsafe.Pointer(p + offGlobal)) == 0 {
+			scratch := libc.Xmalloc(tls, uint64(GLOBAL_STACK_SIZE))
+			*(*uintptr)(unsafe.Pointer(p)) = scratch
+			*(*uintptr)(unsafe.Pointer(p + offGlobal)) = scratch
+		}
+	}
+}
