@@ -27,7 +27,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var (
 		outPath     = fs.String("out", "out.opus", "output .opus file")
-		cpuProfile  = fs.String("cpuprofile", "cpu.pprof", "write CPU profile to file (set to empty to disable)")
+		cpuProfile  = fs.String("cpuprofile", "", "write CPU profile to file (disabled by default)")
 		bitrate     = fs.Int("bitrate", 64000, "target bitrate in bits/sec")
 		vbr         = fs.Bool("vbr", true, "enable variable bitrate")
 		complexity  = fs.Int("complexity", 10, "encoder complexity (0-10)")
@@ -157,50 +157,96 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
-	pcm := make([]int16, frameSize*wr.Channels())
+	frameSamples := frameSize * wr.Channels()
+	pcm := make([]int16, frameSamples)
 	packet := make([]byte, 4000)
-	var totalSamplesPerCh uint64
+	var inputSamplesPerCh uint64
+	var encodedSamplesPerCh uint64
+	var eofReached bool
+	pending := make([]int16, 0, 2*frameSamples)
+	readBuf := make([]int16, frameSamples)
 
 	for {
-		n, rerr := wr.ReadInt16PCM(pcm)
-		if rerr != nil && !errors.Is(rerr, io.EOF) {
-			return fail(stderr, rerr)
-		}
-		if n == 0 {
-			break
-		}
-		// n is in samples (interleaved). Ensure we have whole frames.
-		if n%wr.Channels() != 0 {
-			return fail(stderr, fmt.Errorf("wav: sample count not multiple of channels"))
-		}
-		framesRead := n / wr.Channels()
-		isLast := errors.Is(rerr, io.EOF)
-		if framesRead < frameSize {
-			// Pad to a full Opus frame.
-			for i := n; i < len(pcm); i++ {
-				pcm[i] = 0
+		for len(pending) < frameSamples && !eofReached {
+			n, rerr := wr.ReadInt16PCM(readBuf)
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
+				_ = os.Remove(*outPath)
+				return fail(stderr, rerr)
 			}
-			isLast = true
+			if n > 0 {
+				if n%wr.Channels() != 0 {
+					_ = os.Remove(*outPath)
+					return fail(stderr, fmt.Errorf("wav: sample count not multiple of channels"))
+				}
+				pending = append(pending, readBuf[:n]...)
+				inputSamplesPerCh += uint64(n / wr.Channels())
+			}
+			if errors.Is(rerr, io.EOF) {
+				eofReached = true
+			}
 		}
 
-		nBytes, err := enc.Encode(pcm, frameSize, packet)
-		if err != nil {
-			return fail(stderr, err)
-		}
+		if !eofReached {
+			copy(pcm, pending[:frameSamples])
+			pending = pending[frameSamples:]
 
-		totalSamplesPerCh += uint64(framesRead)
-		granule := uint64(head.PreSkip) + totalSamplesPerCh
+			nBytes, err := enc.Encode(pcm, frameSize, packet)
+			if err != nil {
+				_ = os.Remove(*outPath)
+				return fail(stderr, err)
+			}
+			encodedSamplesPerCh += uint64(frameSize)
+			granule := uint64(head.PreSkip) + encodedSamplesPerCh
 
-		if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
-			return fail(stderr, err)
-		}
+			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
+				_ = os.Remove(*outPath)
+				return fail(stderr, err)
+			}
+		} else {
+			targetSamplesPerCh := ((inputSamplesPerCh + uint64(lookahead) + uint64(frameSize) - 1) / uint64(frameSize)) * uint64(frameSize)
+			if targetSamplesPerCh == 0 {
+				targetSamplesPerCh = uint64(frameSize)
+			}
+			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh
 
-		if isLast {
+			for encodedSamplesPerCh < targetSamplesPerCh {
+				isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
+
+				toCopy := len(pending)
+				if toCopy > frameSamples {
+					toCopy = frameSamples
+				}
+				copy(pcm[:toCopy], pending[:toCopy])
+				for i := toCopy; i < frameSamples; i++ {
+					pcm[i] = 0
+				}
+				if toCopy > 0 {
+					pending = pending[toCopy:]
+				}
+
+				nBytes, err := enc.Encode(pcm, frameSize, packet)
+				if err != nil {
+					_ = os.Remove(*outPath)
+					return fail(stderr, err)
+				}
+				encodedSamplesPerCh += uint64(frameSize)
+
+				granule := uint64(head.PreSkip) + encodedSamplesPerCh
+				if isLast {
+					granule = eosGranule
+				}
+
+				if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
+					_ = os.Remove(*outPath)
+					return fail(stderr, err)
+				}
+			}
 			break
 		}
 	}
 
 	if err := pw.Flush(); err != nil {
+		_ = os.Remove(*outPath)
 		return fail(stderr, err)
 	}
 	return 0

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/selawe/go-opus-codec/ogg"
 	"github.com/selawe/go-opus-codec/wav"
 )
 
@@ -247,3 +248,75 @@ func TestDecodeOggOpus_ValidationErrors(t *testing.T) {
 		t.Error("expected error for corrupt ogg stream, got nil")
 	}
 }
+
+func TestDecodeOggOpusToWAV_OutputLimit(t *testing.T) {
+	wavData := generateSineWAV(t, 48000, 1, 1500)
+	var oggBuf bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wavData), &oggBuf, nil); err != nil {
+		t.Fatalf("EncodeWAVToOggOpus: %v", err)
+	}
+
+	outWAV := &memWriteSeeker{}
+	// 1500 samples * 2 bytes = 3000 bytes. Limit to 1000 bytes.
+	err := DecodeOggOpusToWAV(&oggBuf, outWAV, WithMaxOutputBytes(1000))
+	if !errors.Is(err, ErrOutputLimitExceeded) {
+		t.Fatalf("expected ErrOutputLimitExceeded, got %v", err)
+	}
+}
+
+func TestConvertFiles_CleanupOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	badSrc := filepath.Join(tmpDir, "bad.wav")
+	dstOgg := filepath.Join(tmpDir, "out.ogg")
+	if err := os.WriteFile(badSrc, []byte("not a wav file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ConvertWAVFileToOggOpus(badSrc, dstOgg, nil); err == nil {
+		t.Fatal("expected error converting invalid WAV")
+	}
+	if _, err := os.Stat(dstOgg); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected %s to be cleaned up, but it exists", dstOgg)
+	}
+
+	badOgg := filepath.Join(tmpDir, "bad.ogg")
+	dstWAV := filepath.Join(tmpDir, "out.wav")
+	if err := os.WriteFile(badOgg, []byte("not an ogg file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConvertOggOpusFileToWAV(badOgg, dstWAV); err == nil {
+		t.Fatal("expected error converting invalid Ogg")
+	}
+	if _, err := os.Stat(dstWAV); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected %s to be cleaned up, but it exists", dstWAV)
+	}
+}
+
+func TestEncodeWAVToOggOpus_EmptyInputHasEOS(t *testing.T) {
+	emptyWAV := generateSineWAV(t, 48000, 1, 0)
+	var oggBuf bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(emptyWAV), &oggBuf, nil); err != nil {
+		t.Fatalf("EncodeWAVToOggOpus empty: %v", err)
+	}
+
+	pr := ogg.NewPageReader(&oggBuf)
+	var hasEOS bool
+	for {
+		p, err := pr.ReadPage()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadPage: %v", err)
+		}
+		if p.IsEOS() {
+			hasEOS = true
+		}
+	}
+	if !hasEOS {
+		t.Fatal("empty input was encoded without EOS page")
+	}
+}
+
+
+

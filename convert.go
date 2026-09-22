@@ -237,10 +237,10 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		} else {
 			// EOF reached. Per RFC 7845 Section 4, the encoder must encode enough silence
 			// padding so that all original input samples pass through the encoder's lookahead delay.
-			if inputSamplesPerCh == 0 {
-				break
-			}
 			targetSamplesPerCh := ((inputSamplesPerCh + uint64(lookahead) + uint64(frameSize) - 1) / uint64(frameSize)) * uint64(frameSize)
+			if targetSamplesPerCh == 0 {
+				targetSamplesPerCh = uint64(frameSize)
+			}
 			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh
 
 			for encodedSamplesPerCh < targetSamplesPerCh {
@@ -265,7 +265,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				encodedSamplesPerCh += uint64(frameSize)
 
 				granule := uint64(head.PreSkip) + encodedSamplesPerCh
-				if granule > eosGranule || isLast {
+				if isLast {
 					granule = eosGranule
 				}
 
@@ -286,15 +286,43 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	return nil
 }
 
+// ErrOutputLimitExceeded is returned by DecodeOggOpusToWAV when the decoded
+// PCM data exceeds the maximum output size configured via WithMaxOutputBytes.
+var ErrOutputLimitExceeded = errors.New("opusgo: decode output limit exceeded")
+
+// DecodeOption configures optional behavior for DecodeOggOpusToWAV.
+type DecodeOption func(*decodeConfig)
+
+type decodeConfig struct {
+	maxOutputBytes int64
+}
+
+// WithMaxOutputBytes sets an upper bound on the number of uncompressed PCM data
+// bytes written to the WAV output. If <= 0, no custom limit is applied (up to
+// the RIFF 4 GiB container limit).
+func WithMaxOutputBytes(maxBytes int64) DecodeOption {
+	return func(c *decodeConfig) {
+		c.maxOutputBytes = maxBytes
+	}
+}
+
 // DecodeOggOpusToWAV reads an Ogg Opus stream from oggReader and writes
 // a 48kHz 16-bit linear PCM WAV stream to wavWriter.
 // wavWriter must implement io.WriteSeeker so WAV header chunk sizes can be finalized on completion.
-func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker) error {
+// Optional DecodeOption arguments (e.g. WithMaxOutputBytes) may be provided.
+func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...DecodeOption) error {
 	if oggReader == nil {
 		return errors.New("oggReader cannot be nil")
 	}
 	if wavWriter == nil {
 		return errors.New("wavWriter cannot be nil")
+	}
+
+	var cfg decodeConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
 	}
 
 	r, err := ogg.NewOpusReader(oggReader)
@@ -320,6 +348,7 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker) error {
 
 	preSkipRemaining := int(r.Head.PreSkip)
 	totalSamplesDecoded := uint64(0)
+	var totalBytesWritten int64
 
 	for {
 		pkt, err := r.ReadAudioPacket()
@@ -366,9 +395,14 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker) error {
 		}
 
 		if len(frames) > 0 {
+			bytesToWrite := int64(len(frames) * 2)
+			if cfg.maxOutputBytes > 0 && totalBytesWritten+bytesToWrite > cfg.maxOutputBytes {
+				return ErrOutputLimitExceeded
+			}
 			if err := ww.WriteInt16PCM(frames); err != nil {
 				return fmt.Errorf("wav write: %w", err)
 			}
+			totalBytesWritten += bytesToWrite
 		}
 	}
 
@@ -390,18 +424,18 @@ func ConvertWAVFileToOggOpus(srcPath, dstPath string, opts *EncodeOptions) error
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
 	}
-	defer func() {
-		_ = outF.Close()
-	}()
 
-	if err := EncodeWAVToOggOpus(inF, outF, opts); err != nil {
-		return err
+	encodeErr := EncodeWAVToOggOpus(inF, outF, opts)
+	closeErr := outF.Close()
+	if encodeErr != nil {
+		_ = os.Remove(dstPath)
+		return encodeErr
 	}
-	return outF.Close()
+	return closeErr
 }
 
 // ConvertOggOpusFileToWAV decodes an Ogg Opus file at srcPath to a WAV file at dstPath.
-func ConvertOggOpusFileToWAV(srcPath, dstPath string) error {
+func ConvertOggOpusFileToWAV(srcPath, dstPath string, opts ...DecodeOption) error {
 	inF, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
@@ -412,14 +446,14 @@ func ConvertOggOpusFileToWAV(srcPath, dstPath string) error {
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
 	}
-	defer func() {
-		_ = outF.Close()
-	}()
 
-	if err := DecodeOggOpusToWAV(inF, outF); err != nil {
-		return err
+	decodeErr := DecodeOggOpusToWAV(inF, outF, opts...)
+	closeErr := outF.Close()
+	if decodeErr != nil {
+		_ = os.Remove(dstPath)
+		return decodeErr
 	}
-	return outF.Close()
+	return closeErr
 }
 
 func frameSizeFromMS(ms int) (int, error) {
