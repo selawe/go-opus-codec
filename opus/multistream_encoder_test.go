@@ -296,3 +296,11 @@ func TestMultistreamDecoder_ValidationErrors(t *testing.T) {
 		t.Errorf("expected ErrUnsupportedMapping, got %v", err)
 	}
 }
+
+// A rejection from the C side (bad sample rate) must return an error rather
+// than panic with a TLS.Free underflow.
+func TestNewMultistreamEncoderInvalidSampleRate(t *testing.T) {
+	if _, err := NewMultistreamEncoder(44100, 2, 1, 1, []uint8{0, 1}, ApplicationAudio); err == nil {
+		t.Fatal("expected error for unsupported sample rate")
+	}
+}

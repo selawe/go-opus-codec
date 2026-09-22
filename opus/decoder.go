@@ -10,7 +10,7 @@
 //   - Packet inspection: ParsePacketTOC, PacketFrames, PacketHasLBRR, PacketDuration,
 //     PacketChannels, PacketBandwidth, and PacketTotalSamples.
 //   - Safe Packet Loss Concealment (PLC): Decoding nil packets synthesizes missing audio.
-//   - Codec controls: Reset, SetGain, SetInBandFEC, SetDTX, SetPacketLossPerc, and SetBitrate.
+//   - Codec controls: Reset, SetGain, SetInbandFEC, SetDTX, SetPacketLossPerc, and SetBitrate.
 //   - Thread safety: All Decoder and Encoder methods are thread-safe and protected by mutexes.
 package opus
 
@@ -45,6 +45,8 @@ type Decoder struct {
 	channels   int
 
 	multistream bool
+
+	lastFrameSize int
 
 	pcmI16 []int16
 	pcmF32 []float32
@@ -113,7 +115,7 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 		return nil, fmt.Errorf("opus: decoder_create failed: %w", err)
 	}
 
-	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels}
+	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, lastFrameSize: sampleRate * 20 / 1000}
 	runtime.SetFinalizer(dec, (*Decoder).Close)
 	return dec, nil
 }
@@ -168,7 +170,7 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 		return nil, fmt.Errorf("opus: multistream_decoder_create failed: %w", err)
 	}
 
-	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, multistream: true}
+	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, multistream: true, lastFrameSize: sampleRate * 20 / 1000}
 	runtime.SetFinalizer(dec, (*Decoder).Close)
 	return dec, nil
 }
@@ -200,7 +202,7 @@ func (d *Decoder) Close() error {
 	return nil
 }
 
-// SampleRate returns the sample rate in Hz (always 48000 for Opus).
+// SampleRate returns the sample rate in Hz configured for the decoder.
 func (d *Decoder) SampleRate() int { return d.sampleRate }
 
 // Channels returns the number of channels decoded (1 for mono, 2 for stereo, up to 8 for surround).
@@ -259,6 +261,9 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 	if ret < 0 {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrBadPacket, opusccErrorString(ret), ret)
 	}
+	if len(packet) > 0 && !decodeFEC {
+		d.lastFrameSize = int(ret)
+	}
 	nDecoded := int(ret) * d.channels
 	copy(pcm[:nDecoded], d.pcmI16[:nDecoded])
 	runtime.KeepAlive(d)
@@ -315,6 +320,9 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 	if ret < 0 {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrBadPacket, opusccErrorString(ret), ret)
 	}
+	if len(packet) > 0 && !decodeFEC {
+		d.lastFrameSize = int(ret)
+	}
 	nDecoded := int(ret) * d.channels
 	copy(pcm[:nDecoded], d.pcmF32[:nDecoded])
 	runtime.KeepAlive(d)
@@ -326,13 +334,37 @@ func (d *Decoder) Reset() error {
 	return d.ctl(int32(opuscc.OPUS_RESET_STATE))
 }
 
-// ResetState resets the internal decoder state. It is an alias for Reset matching OPUS_RESET_STATE.
+// ResetState is an alias for Reset.
 func (d *Decoder) ResetState() error {
 	return d.Reset()
 }
 
-// SetGain sets the decoder output gain in Q7.8 dB units (RFC 7845 Section 5.1.1).
-// For example, 0 is 0 dB, 256 is +1 dB, -256 is -1 dB.
+// LastFrameSize returns the frame size in samples per channel from the most recently decoded frame.
+// Defaults to 20ms (e.g. 960 samples at 48 kHz) if no frame has been decoded yet.
+func (d *Decoder) LastFrameSize() int {
+	if d == nil {
+		return 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lastFrameSize > 0 {
+		return d.lastFrameSize
+	}
+	return d.sampleRate * 20 / 1000
+}
+
+// SetLastFrameSize sets the expected frame size in samples per channel used for PLC.
+func (d *Decoder) SetLastFrameSize(size int) {
+	if d == nil || size <= 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lastFrameSize = size
+}
+
+// SetGain configures the decoder's output gain in dB as an 8.8 fixed-point integer (Q8).
+// A value of 0 indicates unity gain (0 dB).
 func (d *Decoder) SetGain(gainQ8 int) error {
 	return d.ctlInt32(int32(opuscc.OPUS_SET_GAIN_REQUEST), int32(gainQ8))
 }
@@ -419,22 +451,41 @@ func (d *Decoder) FinalRange() (uint32, error) {
 }
 
 // DecodePacket decodes an Ogg OpusAudioPacket into interleaved signed 16-bit PCM.
-// If pcm is nil or smaller than the maximum packet size (120ms at 48kHz), a new buffer is allocated.
-// If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4.
+// If pcm is nil or smaller than required, a new buffer is allocated.
+// If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4
+// using the frame size of the stream (defaulting to 20ms).
 // Returns the decoded sub-slice of pcm and the number of samples per channel.
 func (decoder *Decoder) DecodePacket(packet *ogg.OpusAudioPacket, pcm []int16) ([]int16, int, error) {
-	const maxMsPerFrame = 120
-	maxSize := ogg.OpusSampleRateHz * maxMsPerFrame / 1000
-	if len(pcm) < maxSize*decoder.channels {
-		pcm = make([]int16, maxSize*decoder.channels)
-	}
+	return decoder.decodePacketInternal(packet, pcm, false)
+}
 
+// DecodePacketFEC decodes forward error correction (FEC) data from nextPacket to recover
+// a lost previous packet. If nextPacket is nil or contains no data, standard PLC is used.
+// Returns the decoded sub-slice of pcm and the number of samples per channel.
+func (decoder *Decoder) DecodePacketFEC(nextPacket *ogg.OpusAudioPacket, pcm []int16) ([]int16, int, error) {
+	return decoder.decodePacketInternal(nextPacket, pcm, true)
+}
+
+func (decoder *Decoder) decodePacketInternal(packet *ogg.OpusAudioPacket, pcm []int16, decodeFEC bool) ([]int16, int, error) {
 	var data []byte
 	if packet != nil {
 		data = packet.Data
 	}
 
-	n, err := decoder.Decode(data, pcm, maxSize, false)
+	frameSize := ogg.OpusSampleRateHz * 120 / 1000
+	if len(data) == 0 {
+		decodeFEC = false
+		frameSize = decoder.LastFrameSize()
+	} else if decodeFEC {
+		frameSize = decoder.LastFrameSize()
+	}
+
+	needed := frameSize * decoder.channels
+	if len(pcm) < needed {
+		pcm = make([]int16, needed)
+	}
+
+	n, err := decoder.Decode(data, pcm, frameSize, decodeFEC)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -443,22 +494,41 @@ func (decoder *Decoder) DecodePacket(packet *ogg.OpusAudioPacket, pcm []int16) (
 }
 
 // DecodePacketF32 decodes an Ogg OpusAudioPacket into interleaved 32-bit float PCM.
-// If pcm is nil or smaller than the maximum packet size (120ms at 48kHz), a new buffer is allocated.
-// If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4.
+// If pcm is nil or smaller than required, a new buffer is allocated.
+// If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4
+// using the frame size of the stream (defaulting to 20ms).
 // Returns the decoded sub-slice of pcm and the number of samples per channel.
 func (decoder *Decoder) DecodePacketF32(packet *ogg.OpusAudioPacket, pcm []float32) ([]float32, int, error) {
-	const maxMsPerFrame = 120
-	maxSize := ogg.OpusSampleRateHz * maxMsPerFrame / 1000
-	if len(pcm) < maxSize*decoder.channels {
-		pcm = make([]float32, maxSize*decoder.channels)
-	}
+	return decoder.decodePacketF32Internal(packet, pcm, false)
+}
 
+// DecodePacketFECF32 decodes forward error correction (FEC) data from nextPacket to recover
+// a lost previous packet. If nextPacket is nil or contains no data, standard PLC is used.
+// Returns the decoded sub-slice of pcm and the number of samples per channel.
+func (decoder *Decoder) DecodePacketFECF32(nextPacket *ogg.OpusAudioPacket, pcm []float32) ([]float32, int, error) {
+	return decoder.decodePacketF32Internal(nextPacket, pcm, true)
+}
+
+func (decoder *Decoder) decodePacketF32Internal(packet *ogg.OpusAudioPacket, pcm []float32, decodeFEC bool) ([]float32, int, error) {
 	var data []byte
 	if packet != nil {
 		data = packet.Data
 	}
 
-	n, err := decoder.DecodeF32(data, pcm, maxSize, false)
+	frameSize := ogg.OpusSampleRateHz * 120 / 1000
+	if len(data) == 0 {
+		decodeFEC = false
+		frameSize = decoder.LastFrameSize()
+	} else if decodeFEC {
+		frameSize = decoder.LastFrameSize()
+	}
+
+	needed := frameSize * decoder.channels
+	if len(pcm) < needed {
+		pcm = make([]float32, needed)
+	}
+
+	n, err := decoder.DecodeF32(data, pcm, frameSize, decodeFEC)
 	if err != nil {
 		return nil, 0, err
 	}

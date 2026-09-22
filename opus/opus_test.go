@@ -109,6 +109,113 @@ func TestDecoderPLC_RFC6716(t *testing.T) {
 	}
 }
 
+func TestDecodePacketPLCFrameDuration(t *testing.T) {
+	enc, err := NewEncoder(48000, 2, ApplicationAudio)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	defer enc.Close()
+
+	dec, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer dec.Close()
+
+	pcm := make([]int16, 960*2)
+	pkt := make([]byte, 1000)
+	nBytes, err := enc.Encode(pcm, 960, pkt)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	// Decode a 20ms packet (960 samples per channel)
+	_, n, err := dec.DecodePacket(&ogg.OpusAudioPacket{Data: pkt[:nBytes]}, nil)
+	if err != nil {
+		t.Fatalf("DecodePacket: %v", err)
+	}
+	if n != 960 {
+		t.Fatalf("expected 960 samples, got %d", n)
+	}
+
+	// Simulate packet loss: DecodePacket(nil) should synthesize 960 samples (20ms), NOT 5760 samples (120ms)
+	plcDecoded, plcN, err := dec.DecodePacket(nil, nil)
+	if err != nil {
+		t.Fatalf("DecodePacket(nil): %v", err)
+	}
+	if plcN != 960 {
+		t.Fatalf("expected 960 PLC samples per channel (matching stream frame size), got %d (120ms concealment bug)", plcN)
+	}
+	if len(plcDecoded) != 960*2 {
+		t.Fatalf("expected len %d, got %d", 960*2, len(plcDecoded))
+	}
+}
+
+func TestDecodePacketFEC(t *testing.T) {
+	enc, err := NewEncoder(48000, 1, ApplicationVoIP)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	defer enc.Close()
+
+	if err := enc.SetInbandFEC(true); err != nil {
+		t.Fatalf("SetInbandFEC: %v", err)
+	}
+	if err := enc.SetPacketLossPerc(30); err != nil {
+		t.Fatalf("SetPacketLossPerc: %v", err)
+	}
+
+	dec, err := NewDecoder(48000, 1)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	defer dec.Close()
+
+	pcm1 := generateSineWave(440, 48000, 1, 960)
+	pcm2 := generateSineWave(880, 48000, 1, 960)
+	pkt1 := make([]byte, 1000)
+	pkt2 := make([]byte, 1000)
+
+	n1, err := enc.Encode(pcm1, 960, pkt1)
+	if err != nil {
+		t.Fatalf("Encode 1: %v", err)
+	}
+	n2, err := enc.Encode(pcm2, 960, pkt2)
+	if err != nil {
+		t.Fatalf("Encode 2: %v", err)
+	}
+
+	// First packet decoded normally to establish stream state
+	_, _, err = dec.DecodePacket(&ogg.OpusAudioPacket{Data: pkt1[:n1]}, nil)
+	if err != nil {
+		t.Fatalf("DecodePacket 1: %v", err)
+	}
+
+	// Test DecodePacketFEC to recover lost frame using pkt2
+	fecPcm, nFec, err := dec.DecodePacketFEC(&ogg.OpusAudioPacket{Data: pkt2[:n2]}, nil)
+	if err != nil {
+		t.Fatalf("DecodePacketFEC: %v", err)
+	}
+	if nFec != 960 {
+		t.Fatalf("expected 960 samples from FEC decode, got %d", nFec)
+	}
+	if len(fecPcm) != 960 {
+		t.Fatalf("expected pcm len 960, got %d", len(fecPcm))
+	}
+
+	// Test DecodePacketFEC with nil falls back to PLC cleanly
+	plcAfterFec, nPlc, err := dec.DecodePacketFEC(nil, nil)
+	if err != nil {
+		t.Fatalf("DecodePacketFEC(nil): %v", err)
+	}
+	if nPlc != 960 {
+		t.Fatalf("expected 960 PLC samples, got %d", nPlc)
+	}
+	if len(plcAfterFec) != 960 {
+		t.Fatalf("expected len 960, got %d", len(plcAfterFec))
+	}
+}
+
 func TestDecoderFloat32(t *testing.T) {
 	enc, err := NewEncoder(48000, 1, ApplicationAudio)
 	if err != nil {
@@ -300,5 +407,21 @@ func TestNewDecoderFromHead_OutputGain(t *testing.T) {
 
 	if energyWithGain <= energyNoGain {
 		t.Fatalf("expected higher energy with +3dB gain: withGain=%f, noGain=%f", energyWithGain, energyNoGain)
+	}
+}
+
+func TestNewEncoderFromHead_44100(t *testing.T) {
+	head := ogg.OpusHead{
+		Channels:             2,
+		ChannelMappingFamily: 0,
+		InputSampleRate:      44100,
+	}
+	enc, err := NewEncoderFromHead(head, ApplicationAudio)
+	if err != nil {
+		t.Fatalf("NewEncoderFromHead with 44100 Hz input sample rate failed: %v", err)
+	}
+	defer enc.Close()
+	if enc.SampleRate() != 48000 {
+		t.Fatalf("expected 48000 Hz, got %d", enc.SampleRate())
 	}
 }

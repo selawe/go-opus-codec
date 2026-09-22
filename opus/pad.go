@@ -47,8 +47,7 @@ func putPadTLS(tls *libc.TLS) {
 }
 
 // PacketPad pads an Opus packet to newLen bytes.
-// If cap(packet) >= newLen, the padding is written in-place and packet[:newLen] is returned.
-// Otherwise, a new buffer of size newLen is allocated and returned with padding applied.
+// A new buffer of size newLen is allocated and returned with padding applied.
 func PacketPad(packet []byte, newLen int) ([]byte, error) {
 	if len(packet) == 0 {
 		return nil, errors.New("opus: cannot pad empty packet")

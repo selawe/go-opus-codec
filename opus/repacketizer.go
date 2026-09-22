@@ -21,6 +21,10 @@ type Repacketizer struct {
 	st  uintptr
 
 	packets [][]byte
+
+	// out is a heap-backed staging buffer for Out/OutRange. The caller's dst
+	// may live on its goroutine stack, which can move while ccgo code runs.
+	out []byte
 }
 
 // NewRepacketizer creates and initializes a new Opus repacketizer.
@@ -29,6 +33,8 @@ func NewRepacketizer() (*Repacketizer, error) {
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
 	}
+
+	opusccenc.EnsurePseudostackTLS(tls)
 
 	st := opusccenc.Opus_opus_repacketizer_create(tls)
 	if st == 0 {
@@ -154,11 +160,12 @@ func (rp *Repacketizer) Out(dst []byte) (int, error) {
 		return 0, errors.New("opus: destination buffer is empty")
 	}
 
-	dstPtr := libc.PtrByte(dst)
-	ret := opusccenc.Opus_opus_repacketizer_out(rp.tls, rp.st, dstPtr, int32(len(dst)))
+	stage := rp.stageOut(len(dst))
+	ret := opusccenc.Opus_opus_repacketizer_out(rp.tls, rp.st, libc.PtrByte(stage), int32(len(stage)))
 	if ret < 0 {
 		return 0, fmt.Errorf("opus: repacketizer_out failed: %s (%d)", opusccencErrorString(rp.tls, ret), ret)
 	}
+	copy(dst, stage[:ret])
 	runtime.KeepAlive(rp)
 	return int(ret), nil
 }
@@ -181,11 +188,20 @@ func (rp *Repacketizer) OutRange(begin, end int, dst []byte) (int, error) {
 		return 0, errors.New("opus: destination buffer is empty")
 	}
 
-	dstPtr := libc.PtrByte(dst)
-	ret := opusccenc.Opus_opus_repacketizer_out_range(rp.tls, rp.st, int32(begin), int32(end), dstPtr, int32(len(dst)))
+	stage := rp.stageOut(len(dst))
+	ret := opusccenc.Opus_opus_repacketizer_out_range(rp.tls, rp.st, int32(begin), int32(end), libc.PtrByte(stage), int32(len(stage)))
 	if ret < 0 {
 		return 0, fmt.Errorf("opus: repacketizer_out_range failed: %s (%d)", opusccencErrorString(rp.tls, ret), ret)
 	}
+	copy(dst, stage[:ret])
 	runtime.KeepAlive(rp)
 	return int(ret), nil
+}
+
+// stageOut returns a heap-backed scratch slice of length n. rp.mu must be held.
+func (rp *Repacketizer) stageOut(n int) []byte {
+	if cap(rp.out) < n {
+		rp.out = make([]byte, n)
+	}
+	return rp.out[:n]
 }

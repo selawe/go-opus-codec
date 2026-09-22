@@ -114,7 +114,6 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 	}
 
 	bp := tls.Alloc(4)
-	defer tls.Free(4)
 	libc.StoreInt32(bp, 0)
 
 	mappingPtr := libc.PtrUint8(mapping)
@@ -129,6 +128,9 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 		uintptr(bp),
 	)
 	errCode := libc.LoadInt32(bp)
+	// Free before any tls.Close(): Close resets the TLS stack pointer, so a
+	// deferred Free would underflow on the error path.
+	tls.Free(4)
 	if st == 0 || errCode != opusccenc.OPUS_OK {
 		msg := opusccencErrorString(tls, errCode)
 		opusccenc.FreePseudostackTLS(tls)
@@ -152,7 +154,7 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 // It supports channel mapping family 0 (mono/stereo) and family 1 (multichannel surround sound).
 func NewEncoderFromHead(head ogg.OpusHead, application int) (*Encoder, error) {
 	fs := int(head.InputSampleRate)
-	if fs == 0 {
+	if fs != 8000 && fs != 12000 && fs != 16000 && fs != 24000 && fs != 48000 {
 		fs = ogg.OpusSampleRateHz
 	}
 
@@ -303,9 +305,10 @@ func (e *Encoder) ctl(request int32) error {
 	return nil
 }
 
-// Lookahead returns the encoder lookahead in samples at 48 kHz.
+// Lookahead returns the encoder lookahead in samples at the encoder's sample rate.
 //
-// This is typically used as the OpusHead PreSkip value.
+// When writing an Ogg OpusHead header, RFC 7845 Section 5.1 requires PreSkip to be
+// represented in 48 kHz samples: lookahead * 48000 / sampleRate.
 func (e *Encoder) Lookahead() (int, error) {
 	if e == nil {
 		return 0, errors.New("opus: encoder closed")

@@ -17,6 +17,7 @@ type SoftClipper struct {
 	channels int
 	mem      []float32
 	tls      *libc.TLS
+	stage    []float32 // heap-backed staging buffer, see stageF32
 }
 
 // NewSoftClipper creates a stateful SoftClipper for the given channel count.
@@ -59,10 +60,11 @@ func (sc *SoftClipper) Process(pcm []float32) error {
 		return fmt.Errorf("opus: pcm sample count %d must be multiple of channels %d", len(pcm), sc.channels)
 	}
 	nbSamples := int32(len(pcm) / sc.channels)
-	dataPtr := libc.PtrFloat32(pcm)
+	buf := stageF32(&sc.stage, pcm)
 	memPtr := libc.PtrFloat32(sc.mem)
 
-	opuscc.Opus_opus_pcm_soft_clip(sc.tls, dataPtr, nbSamples, int32(sc.channels), memPtr)
+	opuscc.Opus_opus_pcm_soft_clip(sc.tls, libc.PtrFloat32(buf), nbSamples, int32(sc.channels), memPtr)
+	copy(pcm, buf)
 	runtime.KeepAlive(sc)
 	return nil
 }
@@ -123,6 +125,20 @@ func putSoftClipTLS(tls *libc.TLS) {
 	softClipTLSPool.Put(tls)
 }
 
+// stageF32 copies src into the heap-backed buffer *dst (growing it if needed)
+// and returns it. The caller's slice may live on its goroutine stack, which can
+// move while transpiled code runs, so raw pointers must only target heap memory.
+func stageF32(dst *[]float32, src []float32) []float32 {
+	if cap(*dst) < len(src) {
+		*dst = make([]float32, len(src))
+	}
+	buf := (*dst)[:len(src)]
+	copy(buf, src)
+	return buf
+}
+
+var softClipStagePool = sync.Pool{New: func() any { return new([]float32) }}
+
 // SoftClip is a stateless helper that applies soft clipping to a single buffer of float32 PCM samples in-place.
 func SoftClip(pcm []float32, channels int) error {
 	if channels <= 0 {
@@ -142,9 +158,12 @@ func SoftClip(pcm []float32, channels int) error {
 
 	mem := make([]float32, channels)
 	nbSamples := int32(len(pcm) / channels)
-	dataPtr := libc.PtrFloat32(pcm)
+	stage := softClipStagePool.Get().(*[]float32)
+	defer softClipStagePool.Put(stage)
+	buf := stageF32(stage, pcm)
 	memPtr := libc.PtrFloat32(mem)
 
-	opuscc.Opus_opus_pcm_soft_clip(tls, dataPtr, nbSamples, int32(channels), memPtr)
+	opuscc.Opus_opus_pcm_soft_clip(tls, libc.PtrFloat32(buf), nbSamples, int32(channels), memPtr)
+	copy(pcm, buf)
 	return nil
 }

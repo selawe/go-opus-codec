@@ -133,3 +133,34 @@ func FuzzPacketUnpad(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParsePacketTOC exercises ParsePacketTOC with arbitrary bytes.
+func FuzzParsePacketTOC(f *testing.F) {
+	for b := 0; b < 256; b++ {
+		f.Add(byte(b))
+	}
+	f.Fuzz(func(t *testing.T, b byte) {
+		_, _, _, _, _ = ParsePacketTOC(b)
+	})
+}
+
+// FuzzRepacketizer feeds arbitrary packet bytes into Repacketizer.
+func FuzzRepacketizer(f *testing.F) {
+	seedPacketCorpus(f)
+	rp, err := NewRepacketizer()
+	if err != nil {
+		f.Fatalf("NewRepacketizer: %v", err)
+	}
+	f.Cleanup(func() { _ = rp.Close() })
+
+	out := make([]byte, 1276)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_ = rp.Reset()
+		if err := rp.Cat(data); err != nil {
+			return
+		}
+		_ = rp.Frames()
+		_, _ = rp.Out(out)
+		_, _ = rp.OutRange(0, rp.Frames(), out)
+	})
+}
