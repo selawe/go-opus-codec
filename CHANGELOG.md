@@ -3,6 +3,31 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.4] - 2026-09-22
+
+### Fixed
+- `opus.NewMultistreamEncoder`: no longer panics with a `TLS.Free underflow` when the underlying C call rejects the parameters (e.g. an unsupported sample rate) (`996e308`)
+- `opus.NewEncoderFromHead`: validate `InputSampleRate` against the Opus-supported rates instead of only checking for zero, so headers with e.g. 44100 Hz fall back to 48000 correctly (`996e308`)
+- `opus.Repacketizer.Out`/`OutRange` and `opus.SoftClip`/`SoftClipper.Process`: stage caller-supplied slices into a heap-backed buffer before passing raw pointers into transpiled C code, matching `Decoder`/`Encoder` (`996e308`)
+- `opus.Decoder.DecodePacket`/`DecodePacketF32`: Packet Loss Concealment now synthesizes the stream's actual last frame duration instead of always 120ms (`996e308`)
+- `ogg.PageReader.ReadPage`: a truncated final page now returns a clean `io.EOF` instead of `ErrResyncFailed` (`c1ca5d1`)
+- `ogg.PacketReader.SeekToPage`/`LastPageGranule`: preserve `VerifyCRC`/`Resync`/`MaxResync` across seeks, treat an invalid granule position correctly, and handle seeking into a continued page without failing (`c1ca5d1`)
+- `wav.Writer.WriteInt16PCM`: reject writes that would overflow the RIFF 4 GiB size limit instead of silently wrapping the byte counter (`7e3f7ed`)
+- `wav.Reader`: truncated data chunks return the partial samples read instead of an error; accept `WAVE_FORMAT_EXTENSIBLE` PCM; reject a zero sample rate (`7e3f7ed`)
+- `player.OpusPlayer`: no longer replays stale PCM after a failed decode, no longer returns a premature `(0, nil)` before real EOF, corrects pre-skip trim accounting on the first packet, rejects negative seek offsets, and resets the finished flag on seek (`4c4ab32`)
+- `EncodeWAVToOggOpus`/`wav2oggopus`: always flush the encoder lookahead and emit a final EOS page, including for empty input; `ConvertWAVFileToOggOpus`/`ConvertOggOpusFileToWAV` remove partially written output on failure (`67b73ba`)
+- `libcshim.Xmalloc`: return 0 on an oversized allocation instead of panicking; `Xfprintf` now formats its C varargs instead of ignoring them (`5a620a5`)
+
+### Added
+- `opus.Decoder.DecodePacketFEC`/`DecodePacketFECF32`: decode libopus in-band FEC data from the next packet to recover a lost frame (`996e308`)
+- `opus.Decoder.LastFrameSize`/`SetLastFrameSize` to inspect/hint the PLC concealment frame size (`996e308`)
+- `DecodeOggOpusToWAV`/`ConvertOggOpusFileToWAV`: optional `WithMaxOutputBytes` to cap decoded PCM output size (`67b73ba`)
+
+### CI & Tooling
+- Release workflow now runs the full RFC 6716 conformance suite and fails (instead of silently skipping) if test vectors are missing (`83f2318`)
+- Add a Go version matrix (1.24 and stable), a `go vet -unsafeptr=false` step over hand-written packages, a check that `GOARCH=386` fails to build, and a coverage report upload (`83f2318`)
+- Add a daily scheduled fuzzing workflow across all fuzz targets, including new `ogg.PageReader`, `ogg.PacketReader`, `wav.NewReader`, and `opus.Repacketizer` targets (`83f2318`)
+
 ## [0.2.3] - 2026-09-11
 
 ### Performance
