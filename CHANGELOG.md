@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.5] - 2026-09-23
+
+### Fixed
+- `ogg.PacketReader`: Replaced the 64k allocation FIXME with a deterministic, spec-compliant max-page-size guarantee, preventing potential truncation panics or misses on malformed edge-cases.
+- `libcshim`: Added comprehensive architectural documentation for internal `abort`, `assert`, and panic patterns. Verified and documented that `TLS.Free` panics cannot be weaponized via external stream bytes.
+- Resolved over 150 unchecked errors (`errcheck`), redundant type conversions (`unconvert`), and formatting misses across core components and test files.
+
+### CI & Tooling
+- **golangci-lint upgrade:** Migrated the linting framework from v1 to v2 (v2.13.2) across `.golangci.yml` and GitHub Actions. Integrated `errorlint`, `unconvert`, `misspell`, `gofmt`, dan `revive` untuk kualitas kode jangka panjang.
+- Elevated unit test code coverage on `player` and `wav` packages (>76%+) by explicitly exercising fault-injection logic (RIFF misalignments, EOF handling).
+
 ## [0.2.4] - 2026-09-22
 
 ### Fixed
