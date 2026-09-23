@@ -1,6 +1,7 @@
 package test
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,7 +48,7 @@ func TestRFC6716_MiniVector(t *testing.T) {
 	for {
 		frame, err := reader.Next()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			t.Fatalf("frame %d read: %v", frameIdx, err)
@@ -190,7 +191,7 @@ func runConformanceVector(vectorDir, vec string, rate, ch int) (int, error) {
 	for {
 		frame, err := reader.Next()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return frameCount, fmt.Errorf("frame %d read: %w", frameCount, err)
@@ -235,7 +236,7 @@ func printMatrixASCII(t *testing.T, results map[matrixKey]matrixResult, rates, c
 
 	for _, r := range rates {
 		for _, ch := range channels {
-			sb.WriteString(fmt.Sprintf("| %-8d | %-2d |", r, ch))
+			fmt.Fprintf(&sb, "| %-8d | %-2d |", r, ch)
 			for _, vec := range vectors {
 				totalTests++
 				res, ok := results[matrixKey{rate: r, channels: ch, vector: vec}]
@@ -250,7 +251,7 @@ func printMatrixASCII(t *testing.T, results map[matrixKey]matrixResult, rates, c
 		}
 	}
 	sb.WriteString("+----------+----+----+----+----+----+----+----+----+----+----+----+----+\n")
-	sb.WriteString(fmt.Sprintf("Total Score: %d / %d Tests Passed (%.1f%%)\n", totalPassed, totalTests, float64(totalPassed)/float64(totalTests)*100))
+	fmt.Fprintf(&sb, "Total Score: %d / %d Tests Passed (%.1f%%)\n", totalPassed, totalTests, float64(totalPassed)/float64(totalTests)*100)
 
 	if totalPassed < totalTests {
 		sb.WriteString("\nFailures:\n")
@@ -259,9 +260,9 @@ func printMatrixASCII(t *testing.T, results map[matrixKey]matrixResult, rates, c
 				for _, vec := range vectors {
 					res, ok := results[matrixKey{rate: r, channels: ch, vector: vec}]
 					if !ok {
-						sb.WriteString(fmt.Sprintf("  rate=%d ch=%d vec=%s: test did not run\n", r, ch, vec))
+						fmt.Fprintf(&sb, "  rate=%d ch=%d vec=%s: test did not run\n", r, ch, vec)
 					} else if res.err != nil {
-						sb.WriteString(fmt.Sprintf("  rate=%d ch=%d vec=%s: %v\n", r, ch, vec, res.err))
+						fmt.Fprintf(&sb, "  rate=%d ch=%d vec=%s: %v\n", r, ch, vec, res.err)
 					}
 				}
 			}
@@ -281,7 +282,7 @@ func exportMatrixMarkdown(outPath string, results map[matrixKey]matrixResult, ra
 
 	for _, r := range rates {
 		for _, ch := range channels {
-			sb.WriteString(fmt.Sprintf("| %d | %d |", r, ch))
+			fmt.Fprintf(&sb, "| %d | %d |", r, ch)
 			for _, vec := range vectors {
 				res, ok := results[matrixKey{rate: r, channels: ch, vector: vec}]
 				if ok && res.passed {

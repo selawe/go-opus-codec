@@ -2,6 +2,7 @@ package ogg
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 )
@@ -42,7 +43,7 @@ func BenchmarkPageReader(b *testing.B) {
 		pr := NewPageReader(bytes.NewReader(raw))
 		for {
 			_, err := pr.ReadPage()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
@@ -82,7 +83,7 @@ func BenchmarkPageReader_Steady(b *testing.B) {
 		pr.r.Reset(&br)
 		for {
 			_, err := pr.ReadPage()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {

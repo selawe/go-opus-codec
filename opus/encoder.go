@@ -125,7 +125,7 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 		int32(coupledStreams),
 		mappingPtr,
 		int32(application),
-		uintptr(bp),
+		bp,
 	)
 	errCode := libc.LoadInt32(bp)
 	// Free before any tls.Close(): Close resets the TLS stack pointer, so a
@@ -158,12 +158,13 @@ func NewEncoderFromHead(head ogg.OpusHead, application int) (*Encoder, error) {
 		fs = ogg.OpusSampleRateHz
 	}
 
-	if head.ChannelMappingFamily == 0 {
+	switch head.ChannelMappingFamily {
+	case 0:
 		if head.Channels != 1 && head.Channels != 2 {
 			return nil, fmt.Errorf("%w: mapping family 0 requires 1 or 2 channels, got %d", ErrUnsupportedMapping, head.Channels)
 		}
 		return NewEncoder(fs, int(head.Channels), application)
-	} else if head.ChannelMappingFamily == 1 {
+	case 1:
 		// Mapping family 1 uses multistream.
 		if head.StreamCount == 0 {
 			return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
@@ -180,7 +181,7 @@ func NewEncoderFromHead(head ogg.OpusHead, application int) (*Encoder, error) {
 			head.ChannelMapping,
 			application,
 		)
-	} else {
+	default:
 		return nil, fmt.Errorf("%w: unsupported channel mapping family %d", ErrUnsupportedMapping, head.ChannelMappingFamily)
 	}
 }
@@ -332,14 +333,14 @@ func (e *Encoder) Lookahead() (int, error) {
 			e.tls,
 			e.st,
 			int32(opusccenc.OPUS_GET_LOOKAHEAD_REQUEST),
-			libc.VaList(bp, uintptr(outPtr)),
+			libc.VaList(bp, outPtr),
 		)
 	} else {
 		ret = opusccenc.Opus_opus_encoder_ctl(
 			e.tls,
 			e.st,
 			int32(opusccenc.OPUS_GET_LOOKAHEAD_REQUEST),
-			libc.VaList(bp, uintptr(outPtr)),
+			libc.VaList(bp, outPtr),
 		)
 	}
 	if ret != opusccenc.OPUS_OK {
@@ -372,14 +373,14 @@ func (e *Encoder) FinalRange() (uint32, error) {
 			e.tls,
 			e.st,
 			int32(opusccenc.OPUS_GET_FINAL_RANGE_REQUEST),
-			libc.VaList(bp, uintptr(outPtr)),
+			libc.VaList(bp, outPtr),
 		)
 	} else {
 		ret = opusccenc.Opus_opus_encoder_ctl(
 			e.tls,
 			e.st,
 			int32(opusccenc.OPUS_GET_FINAL_RANGE_REQUEST),
-			libc.VaList(bp, uintptr(outPtr)),
+			libc.VaList(bp, outPtr),
 		)
 	}
 	if ret != opusccenc.OPUS_OK {
@@ -476,7 +477,7 @@ func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (int, error)
 		)
 	}
 	if ret < 0 {
-		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, int32(ret)), ret)
+		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, ret), ret)
 	}
 	copy(packet, e.encBuf[:ret])
 	runtime.KeepAlive(e)
@@ -548,7 +549,7 @@ func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (int, e
 		)
 	}
 	if ret < 0 {
-		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, int32(ret)), ret)
+		return 0, fmt.Errorf("%w: %s (%d)", ErrEncodeFailed, opusccencErrorString(e.tls, ret), ret)
 	}
 	copy(packet, e.encBuf[:ret])
 	runtime.KeepAlive(e)

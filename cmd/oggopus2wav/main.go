@@ -44,4 +44,3 @@ func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
 }
-

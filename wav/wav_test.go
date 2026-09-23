@@ -297,21 +297,21 @@ func TestWAVReader_Extensible(t *testing.T) {
 	buf.WriteString("RIFF")
 	_ = binary.Write(&buf, binary.LittleEndian, uint32(40+36))
 	buf.WriteString("WAVEfmt ")
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(40)) // extensible size 40
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(40))     // extensible size 40
 	_ = binary.Write(&buf, binary.LittleEndian, uint16(0xFFFE)) // WAVE_FORMAT_EXTENSIBLE
 	_ = binary.Write(&buf, binary.LittleEndian, uint16(6))      // channels 6
 	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000))  // sampleRate
 	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000*6*2))
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(12))     // blockAlign
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))     // bitsPerSample
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(22))     // cbSize
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))     // validBitsPerSample
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x3F))   // channelMask (5.1)
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(12))   // blockAlign
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))   // bitsPerSample
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(22))   // cbSize
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))   // validBitsPerSample
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x3F)) // channelMask (5.1)
 	// SubFormat GUID for PCM: {00000001-0000-0010-8000-00aa00389b71}
-	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))      // subFormat PCM
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1)) // subFormat PCM
 	buf.Write([]byte{0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71})
 	buf.WriteString("data")
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(12))     // 1 frame of 6 samples
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(12)) // 1 frame of 6 samples
 	for i := int16(1); i <= 6; i++ {
 		_ = binary.Write(&buf, binary.LittleEndian, i)
 	}
@@ -369,4 +369,3 @@ func TestWAVReader_TruncatedData(t *testing.T) {
 		t.Fatalf("expected 10 samples from partial read before EOF, got %d", n)
 	}
 }
-

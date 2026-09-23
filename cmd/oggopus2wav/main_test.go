@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -190,7 +191,7 @@ func TestOggOpus2Wav_EOSTrimming(t *testing.T) {
 		if n > 0 {
 			totalWavSamples += n
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

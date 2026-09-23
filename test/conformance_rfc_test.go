@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"math"
 	"testing"
@@ -174,7 +175,7 @@ func TestRFC_FullPipelineConformance(t *testing.T) {
 
 	for {
 		pkt, err := reader2.ReadAudioPacket()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

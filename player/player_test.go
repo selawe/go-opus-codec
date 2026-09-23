@@ -853,5 +853,50 @@ func TestPlayer_FirstPacketPreSkip(t *testing.T) {
 	}
 }
 
+func TestPlayerCoverage(t *testing.T) {
+	head := ogg.OpusHead{
+		Version:         1,
+		Channels:        2,
+		PreSkip:         312,
+		InputSampleRate: 48000,
+	}
+	tags := ogg.OpusTags{Vendor: "test"}
+	headPkt, _ := ogg.BuildOpusHeadPacket(head)
+	tagsPkt, _ := ogg.BuildOpusTagsPacket(tags)
 
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, 0x1234)
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		t.Fatalf("write head: %v", err)
+	}
+	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		t.Fatalf("write tags: %v", err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
 
+	r := bytes.NewReader(buf.Bytes())
+
+	// Test NewPlayerF32FromReader
+	p, err := NewPlayerF32FromReader(r)
+	if err != nil {
+		t.Fatalf("NewPlayerF32FromReader: %v", err)
+	}
+
+	// Test TotalDuration
+	dur, err := p.TotalDuration()
+	if err != nil {
+		t.Fatalf("TotalDuration err: %v", err)
+	}
+	if dur != 0 {
+		t.Fatalf("Expected duration 0, got %v", dur)
+	}
+
+	// Test ReadPacket
+	outBuf := make([]byte, 1024)
+	n, err := p.ReadPacket(outBuf)
+	if !errors.Is(err, io.EOF) { // no audio packets, expects EOF
+		t.Fatalf("ReadPacket expected EOF, got err=%v n=%d", err, n)
+	}
+}

@@ -99,7 +99,7 @@ func (wr *Writer) Close() error {
 	// Patch RIFF chunk size and data chunk size.
 	// RIFF size = 4 (WAVE) + (8+fmt) + (8+data)
 	// We wrote: 12 + (8+16) + 8 + data
-	riffSize := uint32(4 + (8 + 16) + (8 + wr.dataBytes))
+	riffSize := 4 + (8 + 16) + (8 + wr.dataBytes)
 
 	if _, err := wr.w.Seek(4, io.SeekStart); err != nil {
 		return err

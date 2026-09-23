@@ -169,7 +169,6 @@ func TestTruncatedPageReturnsEOF(t *testing.T) {
 	}
 }
 
-
 func TestRFC3533_MultiPagePacketSpanning(t *testing.T) {
 	// A packet larger than 255 * 255 = 65,025 bytes must span across multiple pages
 	var buf bytes.Buffer
@@ -677,5 +676,3 @@ func TestSeekToPage_ContinuedPage(t *testing.T) {
 		t.Fatalf("expected audio-3, got %s", string(pkt.Data))
 	}
 }
-
-

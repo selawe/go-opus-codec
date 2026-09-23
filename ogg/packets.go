@@ -20,6 +20,12 @@ var (
 // to protect against unbounded memory allocation from malicious or corrupted bitstreams.
 const DefaultMaxPacketSize = 2 * 1024 * 1024
 
+// maxOggPageSize is the largest possible size of a single Ogg page:
+// 27-byte header + 255-byte segment table + 255*255 bytes of payload = 65307 bytes.
+// Scanning this many bytes backwards from EOF is guaranteed to contain the start of
+// the final page in a well-formed stream. 65536 is used as a round upper bound.
+const maxOggPageSize = 65536
+
 // Packet is a reassembled Ogg packet.
 type Packet struct {
 	Data            []byte
@@ -86,7 +92,7 @@ func (r *PacketReader) findNextPage(seeker io.ReadSeeker, position int64, seekBu
 	buffered := bufio.NewReader(seeker)
 
 	// rounds := 0
-	for seekBuffer.Len() < 65536 {
+	for seekBuffer.Len() < maxOggPageSize {
 		// rounds += 1
 
 		reader := io.LimitReader(buffered, 4096)
@@ -311,8 +317,9 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			return 0, err
 		}
 
-		// FIXME: we could probably read less than 64k, but its ok for now
-		backup := max(0, total-65536)
+		// A single Ogg page is at most maxOggPageSize bytes, so backing up that far from
+		// EOF is guaranteed to include the start of the final page in a well-formed stream.
+		backup := max(0, total-maxOggPageSize)
 		position, err := seeker.Seek(backup, io.SeekStart)
 		if err != nil {
 			return 0, err
@@ -340,7 +347,7 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			return 0, fmt.Errorf("ogg: could not find last page granule: %v", err)
+			return 0, fmt.Errorf("ogg: could not find last page granule: %w", err)
 		}
 		if page.GranulePosition != math.MaxUint64 {
 			lastGranule = int64(page.GranulePosition)

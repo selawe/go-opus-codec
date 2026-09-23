@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -48,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	count := 0
 	for {
 		pkt, err := r.ReadAudioPacket()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

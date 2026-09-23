@@ -56,10 +56,9 @@ jobs:
 
       - name: Run golangci-lint
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.63.4
-          args: --timeout=5m
+          version: v2.13.2
         env:
           GODEBUG: gotypesalias=1
 

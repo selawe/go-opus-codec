@@ -249,11 +249,12 @@ func parseOpusHead(b []byte) (OpusHead, error) {
 		return OpusHead{}, fmt.Errorf("%w: unsupported version %d (major version must be 0)", ErrBadOpusHead, h.Version)
 	}
 
-	if h.ChannelMappingFamily == 0 {
+	switch h.ChannelMappingFamily {
+	case 0:
 		if h.Channels > 2 {
 			return OpusHead{}, fmt.Errorf("%w: family 0 requires channels <= 2, got %d", ErrBadOpusHead, h.Channels)
 		}
-	} else if h.ChannelMappingFamily == 1 {
+	case 1:
 		if len(b) < 21 {
 			return OpusHead{}, fmt.Errorf("%w: mapping too short", ErrBadOpusHead)
 		}
@@ -274,7 +275,7 @@ func parseOpusHead(b []byte) (OpusHead, error) {
 		}
 		h.ChannelMapping = make([]uint8, h.Channels)
 		copy(h.ChannelMapping, b[21:need])
-	} else {
+	default:
 		return OpusHead{}, fmt.Errorf("%w: unsupported channel mapping family %d", ErrBadOpusHead, h.ChannelMappingFamily)
 	}
 	return h, nil

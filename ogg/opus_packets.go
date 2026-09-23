@@ -16,7 +16,8 @@ func BuildOpusHeadPacket(h OpusHead) ([]byte, error) {
 	if h.Channels == 0 {
 		return nil, fmt.Errorf("%w: channels=0", ErrBadOpusHead)
 	}
-	if h.ChannelMappingFamily == 0 {
+	switch h.ChannelMappingFamily {
+	case 0:
 		if h.Channels > 2 {
 			return nil, fmt.Errorf("%w: family 0 requires channels <= 2, got %d", ErrBadOpusHead, h.Channels)
 		}
@@ -29,7 +30,7 @@ func BuildOpusHeadPacket(h OpusHead) ([]byte, error) {
 		binary.LittleEndian.PutUint16(b[16:18], uint16(h.OutputGainQ8))
 		b[18] = 0
 		return b, nil
-	} else if h.ChannelMappingFamily == 1 {
+	case 1:
 		if int(h.Channels) != len(h.ChannelMapping) {
 			return nil, fmt.Errorf("%w: mapping len mismatch", ErrBadOpusHead)
 		}

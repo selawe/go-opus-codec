@@ -1,4 +1,4 @@
-.PHONY: all test test-cgo0 test-race build build-examples benchmark cross-compile fmt vet lint clean help
+.PHONY: all test test-cgo0 test-race build build-examples benchmark cross-compile fmt vet lint lint-fix clean help
 
 all: test-cgo0 build
 
@@ -55,6 +55,10 @@ vet:
 ## lint: Run golangci-lint on handwritten packages (excluding transpiled C shims via .golangci.yml)
 lint:
 	GODEBUG=gotypesalias=1 golangci-lint run ./...
+
+## lint-fix: Run golangci-lint with auto-fix on handwritten packages
+lint-fix:
+	GODEBUG=gotypesalias=1 golangci-lint run --fix ./...
 
 ## clean: Remove build artifacts and temporary files
 clean:

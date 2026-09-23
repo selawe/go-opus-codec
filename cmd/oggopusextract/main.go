@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -43,7 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	r.SetVerifyCRC(!*noCRC)
 
-	var w io.Writer = stdout
+	var w = stdout
 	if *out != "" {
 		f, err := os.Create(*out)
 		if err != nil {
@@ -57,7 +58,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	for {
 		pkt, err := r.ReadAudioPacket()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

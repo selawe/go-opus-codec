@@ -1,32 +1,65 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
-linters-settings:
-  govet:
-    disable:
-      - unsafeptr
 
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
+    - misspell
+    - errorlint
+    - unconvert
 
-issues:
-  exclude-dirs:
-    - opuscc
-    - opusccenc
-  exclude-rules:
-    - path: (opuscc|opusccenc)
-      linters:
-        - errcheck
-        - gosimple
-        - govet
-        - ineffassign
-        - staticcheck
-        - unused
-        - typecheck
+  settings:
+    govet:
+      disable:
+        - unsafeptr
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+      exclude-functions:
+        - (io.ReadCloser).Close
+        - (io.WriteCloser).Close
+        - (*os.File).Close
+        - (*bufio.Writer).Flush
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Printf
+        - fmt.Println
+        - (*github.com/selawe/go-opus-codec/player.OpusPlayer[int16]).Close
+        - (*github.com/selawe/go-opus-codec/player.OpusPlayer[float32]).Close
+        - (*github.com/selawe/go-opus-codec/wav.Writer).Close
+        - github.com/selawe/go-opus-codec/opus.X__assert_fail
+        - X__assert_fail
+        - (*github.com/selawe/go-opus-codec/opus.Decoder).Close
+        - (*github.com/selawe/go-opus-codec/opus.Encoder).Close
+        - (*github.com/selawe/go-opus-codec/opus.Repacketizer).Close
+        - (*github.com/selawe/go-opus-codec/opus.SoftClipper).Close
+
+  exclusions:
+    generated: lax
+    paths:
+      - opuscc
+      - opusccenc
+    rules:
+      - linters:
+          - errcheck
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+          - misspell
+          - errorlint
+          - unconvert
+        path: (opuscc|opusccenc)
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - opuscc
+      - opusccenc

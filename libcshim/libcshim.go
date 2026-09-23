@@ -146,6 +146,12 @@ func (t *TLS) Reset() {
 }
 
 // Free releases the last Alloc(n) region.
+//
+// A "TLS.Free underflow" panic indicates an internal accounting bug in the
+// transpiled codec (a Free without a matching Alloc), not malformed input:
+// the opus.Encoder/Decoder wrappers validate all caller-supplied parameters
+// (sample rate, channels, frame size) before invoking the codec, and malformed
+// packet bytes are handled without reaching this path (see opus fuzz targets).
 func (t *TLS) Free(n int) {
 	if t == nil || n <= 0 {
 		return
@@ -290,7 +296,7 @@ func Xpthread_getspecific(tls *TLS, key uint32) uintptr {
 	if tls == nil || tls.keys == nil {
 		return 0
 	}
-	return tls.keys[Tpthread_key_t(key)]
+	return tls.keys[key]
 }
 
 func Xpthread_setspecific(tls *TLS, key uint32, value uintptr) int32 {
@@ -300,7 +306,7 @@ func Xpthread_setspecific(tls *TLS, key uint32, value uintptr) int32 {
 	if tls.keys == nil {
 		tls.keys = make(map[Tpthread_key_t]uintptr)
 	}
-	tls.keys[Tpthread_key_t(key)] = value
+	tls.keys[key] = value
 	return 0
 }
 
@@ -331,13 +337,13 @@ func Xfprintf(_ *TLS, _ uintptr, format uintptr, ap uintptr) int32 {
 				sb.WriteString(GoString(ptr))
 			case 'd', 'i':
 				val := VaInt32(&ap)
-				sb.WriteString(fmt.Sprintf("%d", val))
+				fmt.Fprintf(&sb, "%d", val)
 			case 'u':
 				val := uint32(VaUintptr(&ap))
-				sb.WriteString(fmt.Sprintf("%d", val))
+				fmt.Fprintf(&sb, "%d", val)
 			case 'p':
 				val := VaUintptr(&ap)
-				sb.WriteString(fmt.Sprintf("%#x", val))
+				fmt.Fprintf(&sb, "%#x", val)
 			default:
 				sb.WriteByte('%')
 				sb.WriteByte(fmtStr[i])

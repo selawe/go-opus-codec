@@ -317,6 +317,3 @@ func TestEncodeWAVToOggOpus_EmptyInputHasEOS(t *testing.T) {
 		t.Fatal("empty input was encoded without EOS page")
 	}
 }
-
-
-

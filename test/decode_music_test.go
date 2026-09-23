@@ -1,6 +1,7 @@
 package test
 
 import (
+	"errors"
 	"io"
 	"os"
 	"testing"
@@ -40,7 +41,7 @@ func TestDecodeMusic64kbpsSampleCount(t *testing.T) {
 
 	for {
 		pkt, err := r.ReadAudioPacket()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

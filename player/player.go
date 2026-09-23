@@ -158,11 +158,13 @@ func (player *OpusPlayer[T]) Close() error {
 
 	var err error
 	if player.decoder != nil {
-		player.decoder.Close()
+		err = player.decoder.Close()
 		player.decoder = nil
 	}
 	if player.closer != nil {
-		err = player.closer.Close()
+		if cerr := player.closer.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
 		player.closer = nil
 	}
 	return err
@@ -293,7 +295,8 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 		// we have to produce stereo audio, so each input sample becomes two output samples
 		atMost := min(len(p)/8, len(player.bufferFloat32)-player.position)
 		count := 0
-		if vol == 1.0 {
+		switch vol {
+		case 1.0:
 			for count < atMost {
 				sample := player.bufferFloat32[player.position+count]
 				v := math.Float32bits(sample)
@@ -308,14 +311,14 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 				p[count*8+7] = byte(v >> 24)
 				count += 1
 			}
-		} else if vol == 0.0 {
+		case 0.0:
 			for count < atMost {
 				for b := 0; b < 8; b++ {
 					p[count*8+b] = 0
 				}
 				count += 1
 			}
-		} else {
+		default:
 			for count < atMost {
 				sample := player.bufferFloat32[player.position+count] * vol
 				v := math.Float32bits(sample)
@@ -341,7 +344,8 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 		availFrames := min(len(p)/bytesPerFrame, (len(player.bufferFloat32)-player.position)/channels)
 		count := availFrames * channels
 
-		if vol == 1.0 {
+		switch vol {
+		case 1.0:
 			for i := 0; i < count; i++ {
 				sample := player.bufferFloat32[player.position+i]
 				v := math.Float32bits(sample)
@@ -350,11 +354,11 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 				p[i*4+2] = byte(v >> 16)
 				p[i*4+3] = byte(v >> 24)
 			}
-		} else if vol == 0.0 {
+		case 0.0:
 			for i := 0; i < count*4; i++ {
 				p[i] = 0
 			}
-		} else {
+		default:
 			for i := 0; i < count; i++ {
 				sample := player.bufferFloat32[player.position+i] * vol
 				v := math.Float32bits(sample)
@@ -435,7 +439,8 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 		// we have to produce stereo audio, so each input sample becomes two output samples
 		atMost := min(len(p)/4, len(player.bufferInt16)-player.position)
 		count := 0
-		if vol == 1.0 {
+		switch vol {
+		case 1.0:
 			for count < atMost {
 				s := player.bufferInt16[player.position+count]
 				low := byte(s & 0xFF)
@@ -447,7 +452,7 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 				p[count*4+3] = high
 				count += 1
 			}
-		} else if vol == 0.0 {
+		case 0.0:
 			for count < atMost {
 				p[count*4] = 0
 				p[count*4+1] = 0
@@ -455,7 +460,7 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 				p[count*4+3] = 0
 				count += 1
 			}
-		} else {
+		default:
 			for count < atMost {
 				scaled := float64(player.bufferInt16[player.position+count]) * vol
 				if scaled > 32767.0 {
@@ -489,17 +494,18 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 		availFrames := min(len(p)/bytesPerFrame, (len(player.bufferInt16)-player.position)/channels)
 		count := availFrames * channels
 
-		if vol == 1.0 {
+		switch vol {
+		case 1.0:
 			for i := 0; i < count; i++ {
 				s := player.bufferInt16[player.position+i]
 				p[i*2] = byte(s & 0xFF)
 				p[i*2+1] = byte((s >> 8) & 0xFF)
 			}
-		} else if vol == 0.0 {
+		case 0.0:
 			for i := 0; i < count*2; i++ {
 				p[i] = 0
 			}
-		} else {
+		default:
 			for i := 0; i < count; i++ {
 				scaled := float64(player.bufferInt16[player.position+i]) * vol
 				if scaled > 32767.0 {
@@ -647,7 +653,9 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 		return err
 	}
 	if player.decoder != nil {
-		player.decoder.Close()
+		if cerr := player.decoder.Close(); cerr != nil {
+			return cerr
+		}
 	}
 	player.decoder = decoder
 

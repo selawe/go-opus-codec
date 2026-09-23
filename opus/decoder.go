@@ -61,12 +61,13 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 
 	var dec *Decoder
 	var err error
-	if head.ChannelMappingFamily == 0 {
+	switch head.ChannelMappingFamily {
+	case 0:
 		if head.Channels != 1 && head.Channels != 2 {
 			return nil, fmt.Errorf("%w: mapping family 0 requires 1 or 2 channels, got %d", ErrUnsupportedMapping, head.Channels)
 		}
 		dec, err = NewDecoder(fs, int(head.Channels))
-	} else if head.ChannelMappingFamily == 1 {
+	case 1:
 		// Mapping family 1 uses multistream.
 		if head.StreamCount == 0 {
 			return nil, fmt.Errorf("%w: missing stream count", ErrUnsupportedMapping)
@@ -76,7 +77,7 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 		}
 
 		dec, err = NewMultistreamDecoder(fs, int(head.Channels), int(head.StreamCount), int(head.CoupledStreamCount), head.ChannelMapping)
-	} else {
+	default:
 		return nil, fmt.Errorf("%w: unsupported channel mapping family %d", ErrUnsupportedMapping, head.ChannelMappingFamily)
 	}
 	if err != nil {
@@ -253,9 +254,9 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 
 	var ret int32
 	if d.multistream {
-		ret = opuscc.Opus_opus_multistream_decode(d.tls, d.st, dataPtr, opuscc.OpusT_opus_int32(dataLen), pcmPtr, int32(frameSize), fec)
+		ret = opuscc.Opus_opus_multistream_decode(d.tls, d.st, dataPtr, dataLen, pcmPtr, int32(frameSize), fec)
 	} else {
-		ret = opuscc.Opus_opus_decode(d.tls, d.st, dataPtr, opuscc.OpusT_opus_int32(dataLen), pcmPtr, int32(frameSize), fec)
+		ret = opuscc.Opus_opus_decode(d.tls, d.st, dataPtr, dataLen, pcmPtr, int32(frameSize), fec)
 	}
 
 	if ret < 0 {
@@ -312,9 +313,9 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 
 	var ret int32
 	if d.multistream {
-		ret = opuscc.Opus_opus_multistream_decode_float(d.tls, d.st, dataPtr, opuscc.OpusT_opus_int32(dataLen), pcmPtr, int32(frameSize), fec)
+		ret = opuscc.Opus_opus_multistream_decode_float(d.tls, d.st, dataPtr, dataLen, pcmPtr, int32(frameSize), fec)
 	} else {
-		ret = opuscc.Opus_opus_decode_float(d.tls, d.st, dataPtr, opuscc.OpusT_opus_int32(dataLen), pcmPtr, int32(frameSize), fec)
+		ret = opuscc.Opus_opus_decode_float(d.tls, d.st, dataPtr, dataLen, pcmPtr, int32(frameSize), fec)
 	}
 
 	if ret < 0 {
@@ -440,9 +441,9 @@ func (d *Decoder) FinalRange() (uint32, error) {
 
 	var ret int32
 	if d.multistream {
-		ret = opuscc.Opus_opus_multistream_decoder_ctl(d.tls, d.st, int32(opuscc.OPUS_GET_FINAL_RANGE_REQUEST), libc.VaList(bp, uintptr(outPtr)))
+		ret = opuscc.Opus_opus_multistream_decoder_ctl(d.tls, d.st, opuscc.OPUS_GET_FINAL_RANGE_REQUEST, libc.VaList(bp, outPtr))
 	} else {
-		ret = opuscc.Opus_opus_decoder_ctl(d.tls, d.st, int32(opuscc.OPUS_GET_FINAL_RANGE_REQUEST), libc.VaList(bp, uintptr(outPtr)))
+		ret = opuscc.Opus_opus_decoder_ctl(d.tls, d.st, opuscc.OPUS_GET_FINAL_RANGE_REQUEST, libc.VaList(bp, outPtr))
 	}
 	if ret != opuscc.OPUS_OK {
 		return 0, fmt.Errorf("opus: get final range failed: %s (%d)", opusccErrorString(ret), ret)
