@@ -37,6 +37,7 @@ jobs:
           cache: true
 
       - name: Run go vet
+        shell: bash
         run: |
           output=$(go vet -unsafeptr=false ./... 2>&1 | grep -vE 'opuscc|opusccenc' || true)
           if [ -n "$output" ]; then

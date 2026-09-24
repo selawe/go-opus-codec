@@ -14,4 +14,4 @@ export OPUS_RFC6716_TESTVECTORS="$TARGET_DIR"
 export OPUS_REQUIRE_TESTVECTORS=1
 
 cd "$ROOT_DIR"
-go test -v -timeout 30m -run TestRFC6716_FullConformanceMatrix ./test "$@"
+go test -v -timeout 30m -run 'TestRFC6716_FullConformanceMatrix|TestRFC6716_PCMOutput' ./test "$@"

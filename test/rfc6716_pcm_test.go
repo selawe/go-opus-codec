@@ -28,7 +28,7 @@ func TestRFC6716_PCMOutput(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(vectorDir, "testvector01.dec")); err != nil {
 		const hint = "RFC 6716 test vectors not found. Set OPUS_RFC6716_TESTVECTORS or run scripts/download_testvectors.sh"
-		if os.Getenv("OPUS_REQUIRE_TESTVECTORS") != "" || os.Getenv("CI") != "" {
+		if os.Getenv("OPUS_REQUIRE_TESTVECTORS") != "" {
 			t.Fatal(hint)
 		}
 		t.Skip(hint)
