@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.6] - 2026-09-24
+
+### Fixed
+- **SILK/VoIP audio was loud noise in both encoder and decoder** (present since the first release). `libcshim`'s `Uint32FromInt16`, `Uint32FromInt8`, `Uint64FromInt16`, `Uint64FromInt32` and `UintptrFromInt32` zero-extended negative values instead of sign-extending them as C does, and the same casts were inlined into the transpiled SILK decoder. The decoder output saturated to full scale on SILK and hybrid packets, and the encoder produced garbled audio at several times the target bitrate in `ApplicationVoIP` at speech bitrates, which is the typical WebRTC voice setup. CELT-only streams (e.g. `ApplicationAudio` at higher bitrates) were not affected. Decoder output now matches reference libopus within ±1 LSB on all 12 RFC 6716 test vectors, and the encoder's output matches libopus (`64abaca`)
+
+### Added / Test
+- `TestRFC6716_PCMOutput`: compare decoded PCM against the reference `.dec` files. The existing conformance matrix only checks the range decoder's final state and could not detect synthesis errors (`64abaca`)
+- `TestSILKRoundtrip`: VoIP encode/decode roundtrip at 12/16/32 kbps checking bitrate and SNR (`64abaca`)
+- Sign-extension tests for the `libcshim` integer conversion helpers (`64abaca`)
+
 ## [0.2.5] - 2026-09-23
 
 ### Fixed
