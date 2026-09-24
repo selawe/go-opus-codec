@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.7] - 2026-09-24
+
+No library code changes since 0.2.6. This release exists because the CI and release workflows had been failing since 0.2.4, so no GitHub Release was published for 0.2.4–0.2.6.
+
+### CI & Tooling
+- Unit test jobs no longer fail when the RFC 6716 vectors are absent. The vector tests skip unless `OPUS_REQUIRE_TESTVECTORS` is set, and `scripts/run_conformance.sh` sets it, so the conformance job and the release gate still fail on a missing corpus (`5f8cc8d`)
+- `scripts/run_conformance.sh` also runs `TestRFC6716_PCMOutput` (`5f8cc8d`)
+- Examples `convert`, `decode`, `net` and `play` now declare `go 1.24.0`, matching the Go version CI installs (`5f8cc8d`)
+- The `go vet` step runs under bash on Windows runners (`5f8cc8d`)
+- The examples job installs `libasound2-dev`, which `examples/net` and `examples/play` need through oto's ALSA backend (`90fa0a5`)
+
 ## [0.2.6] - 2026-09-24
 
 ### Fixed
