@@ -407,6 +407,30 @@ func TestTypeConversionShims(t *testing.T) {
 	}
 }
 
+// C converts a negative signed integer to a wider unsigned type by sign
+// extension; the transpiled SILK codec relies on this for negative
+// quantization indices, filter taps and pointer offsets.
+func TestSignedToUnsignedConversionsSignExtend(t *testing.T) {
+	if got := Uint32FromInt16(-2); got != 0xfffffffe {
+		t.Errorf("Uint32FromInt16(-2) = %#x", got)
+	}
+	if got := Uint32FromInt8(-2); got != 0xfffffffe {
+		t.Errorf("Uint32FromInt8(-2) = %#x", got)
+	}
+	if got := Uint64FromInt16(-2); got != 0xfffffffffffffffe {
+		t.Errorf("Uint64FromInt16(-2) = %#x", got)
+	}
+	if got := Uint64FromInt32(-2); got != 0xfffffffffffffffe {
+		t.Errorf("Uint64FromInt32(-2) = %#x", got)
+	}
+	if got := UintptrFromInt32(-2); got != ^uintptr(1) {
+		t.Errorf("UintptrFromInt32(-2) = %#x", got)
+	}
+	if got := Uint8FromInt16(-2); got != 0xfe {
+		t.Errorf("Uint8FromInt16(-2) = %#x", got)
+	}
+}
+
 func TestSlicePointerAndUintptrHelpers(t *testing.T) {
 	u8 := []uint8{1, 2, 3}
 	if PtrUint8(u8) == 0 || PtrUint8(nil) != 0 {

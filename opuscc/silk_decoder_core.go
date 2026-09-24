@@ -361,7 +361,7 @@ func Opus_silk_decode_core(tls *libc.TLS, psDec uintptr, psDecCtrl uintptr, xq u
 		if rand_seed < 0 {
 			*(*OpusT_opus_int32)(unsafe.Pointer(psDec + 4 + uintptr(i)*4)) = -*(*OpusT_opus_int32)(unsafe.Pointer(psDec + 4 + uintptr(i)*4))
 		}
-		rand_seed = int32(uint32(rand_seed) + uint32(uint16(*(*OpusT_opus_int16)(unsafe.Pointer(pulses + uintptr(i)*2)))))
+		rand_seed = int32(uint32(rand_seed) + uint32(*(*OpusT_opus_int16)(unsafe.Pointer(pulses + uintptr(i)*2))))
 		i = i + 1
 	}
 	/* Copy LPC state */

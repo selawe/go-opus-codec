@@ -34,7 +34,7 @@ func Opus_silk_NLSF_decode(tls *libc.TLS, pNLSF_Q15 uintptr, NLSFIndices uintptr
 		if !(i < int32((*OpusT_silk_NLSF_CB_struct)(unsafe.Pointer(psNLSF_CB)).Forder)) {
 			break
 		}
-		NLSF_Q15_tmp = int32(uint32(int32((*(*[16]OpusT_opus_int16)(unsafe.Pointer(bp + 48)))[i]))<<int32(14))/int32(*(*OpusT_opus_int16)(unsafe.Pointer(pCB_Wght_Q9 + uintptr(i)*2))) + int32(uint32(uint16(int16(*(*OpusT_opus_uint8)(unsafe.Pointer(pCB_element + uintptr(i))))))<<int32(7))
+		NLSF_Q15_tmp = int32(uint32(int32((*(*[16]OpusT_opus_int16)(unsafe.Pointer(bp + 48)))[i]))<<int32(14))/int32(*(*OpusT_opus_int16)(unsafe.Pointer(pCB_Wght_Q9 + uintptr(i)*2))) + int32(uint32(int16(*(*OpusT_opus_uint8)(unsafe.Pointer(pCB_element + uintptr(i)))))<<int32(7))
 		if NLSF_Q15_tmp > int32(32767) {
 			v2 = int32(32767)
 		} else {

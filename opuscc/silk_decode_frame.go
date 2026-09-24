@@ -308,7 +308,7 @@ func Opus_silk_decode_parameters(tls *libc.TLS, psDec uintptr, psDecCtrl uintptr
 				if !(i < int32(LTP_ORDER)) {
 					break
 				}
-				*(*OpusT_opus_int16)(unsafe.Pointer(psDecCtrl + 96 + uintptr(k*int32(LTP_ORDER)+i)*2)) = int16(int32(uint32(uint8(*(*OpusT_opus_int8)(unsafe.Pointer(cbk_ptr_Q7 + uintptr(Ix*int32(LTP_ORDER)+i))))) << int32(7)))
+				*(*OpusT_opus_int16)(unsafe.Pointer(psDecCtrl + 96 + uintptr(k*int32(LTP_ORDER)+i)*2)) = int16(int32(uint32(*(*OpusT_opus_int8)(unsafe.Pointer(cbk_ptr_Q7 + uintptr(Ix*int32(LTP_ORDER)+i)))) << int32(7)))
 				i = i + 1
 			}
 			k = k + 1

@@ -434,6 +434,9 @@ func BoolUintptr(v bool) uintptr {
 	return 0
 }
 
+// The XFromY conversions below mirror C integer conversion semantics (and
+// modernc.org/libc): a signed value converted to a wider unsigned type is
+// sign-extended, e.g. Uint64FromInt32(-1) == 0xffffffffffffffff.
 func Float32FromFloat32(v float32) float32 { return v }
 func Float32FromFloat64(v float64) float32 { return float32(v) }
 func Float32FromInt32(v int32) float32     { return float32(v) }
@@ -455,17 +458,17 @@ func Int64FromInt32(v int32) int64   { return int64(v) }
 
 func Uint16FromInt32(v int32) uint16   { return uint16(v) }
 func Uint16FromInt16(v int16) uint16   { return uint16(v) }
-func Uint32FromInt16(v int16) uint32   { return uint32(uint16(v)) }
+func Uint32FromInt16(v int16) uint32   { return uint32(v) }
 func Uint32FromInt32(v int32) uint32   { return uint32(v) }
-func Uint32FromInt8(v int8) uint32     { return uint32(uint8(v)) }
+func Uint32FromInt8(v int8) uint32     { return uint32(v) }
 func Uint32FromUint32(v uint32) uint32 { return v }
-func Uint64FromInt16(v int16) uint64   { return uint64(uint16(v)) }
-func Uint64FromInt32(v int32) uint64   { return uint64(uint32(v)) }
+func Uint64FromInt16(v int16) uint64   { return uint64(v) }
+func Uint64FromInt32(v int32) uint64   { return uint64(v) }
 func Uint64FromInt64(v int64) uint64   { return uint64(v) }
 func Uint64FromUint64(v uint64) uint64 { return v }
 func Uint8FromInt16(v int16) uint8     { return uint8(uint16(v)) }
 func Uint8FromInt32(v int32) uint8     { return uint8(v) }
-func UintptrFromInt32(v int32) uintptr { return uintptr(uint32(v)) }
+func UintptrFromInt32(v int32) uintptr { return uintptr(v) }
 
 // GoString reads a NUL-terminated C string from p.
 func GoString(p uintptr) string {
