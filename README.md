@@ -25,7 +25,8 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
 > - **Concurrency Safety**: Full mutex synchronization across `opus.Decoder`, `opus.Encoder`, `opus.Repacketizer`, and `player.OpusPlayer`.
 > - **Memory Safety**: Heap staging buffers and chunked block allocator in `libcshim` to eliminate pointer instability.
 > - **Performance**: Slice-by-8 parallel CRC32 (~3.9x speedup), Ogg multi-packet page batching, and byte resynchronization.
-> - **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.
+> - **Any Input Sample Rate**: `EncodeWAVToOggOpus` and `wav2oggopus` accept WAV at any rate (8/12/16/24/48 kHz encoded natively, others such as 44.1 kHz resampled) using the streaming `resample` package, adapted from upstream [kazzmir/opus-go](https://github.com/kazzmir/opus-go).
+- **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.
 > - **Compile-Time Guard**: Rejection of 32-bit builds to prevent runtime pointer misalignment.
 
 > [!WARNING]
@@ -52,6 +53,7 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
   - [5. CBR Packet Padding & Unpadding](#5-cbr-packet-padding--unpadding)
   - [6. Float32 Dynamic Range Soft Clipping](#6-float32-dynamic-range-soft-clipping)
   - [7. Muxing & Demuxing Ogg Opus Containers](#7-muxing--demuxing-ogg-opus-containers)
+  - [8. Encoding Audio of Any Sample Rate & Resampling](#8-encoding-audio-of-any-sample-rate--resampling)
 - [Examples Directory](#examples-directory)
 - [Command Line Utilities](#command-line-utilities)
 - [Testing & Conformance](#testing--conformance)
@@ -423,6 +425,37 @@ Notes for writing and reading real streams:
 
 ---
 
+### 8. Encoding Audio of Any Sample Rate & Resampling
+libopus only encodes 8, 12, 16, 24 and 48 kHz. The high-level helper handles everything else for you:
+
+```go
+in, _ := os.Open("cd_quality_44k1.wav") // any rate, mono or stereo, 16-bit PCM
+out, _ := os.Create("out.opus")
+defer in.Close()
+defer out.Close()
+
+// 44.1 kHz is resampled to 48 kHz; OpusHead.InputSampleRate keeps the original 44100.
+err := opusgo.EncodeWAVToOggOpus(in, out, &opusgo.EncodeOptions{Bitrate: 96000})
+```
+
+The decoded stream has exactly `ceil(frames * 48000 / rate)` samples per channel, and pre-skip and granule positions are counted at 48 kHz as RFC 7845 requires. Use `Encoder.PreSkip()` (not `Lookahead()`, which is in the encoder's own rate) when you write your own `OpusHead` for an encoder that does not run at 48 kHz.
+
+To resample PCM yourself, `resample` is a streaming polyphase windowed-sinc converter (at least 40 dB alias rejection, passband within 0.1 dB up to 16 kHz, zero-phase so no extra pre-skip):
+
+```go
+import "github.com/selawe/go-opus-codec/resample"
+
+r := resample.New(2, 44100, 48000) // channels, from, to (panics on non-positive arguments)
+var out []int16
+for chunk := range chunks {        // any chunking; interleaved 16-bit PCM
+    out = append(out, r.ProcessInt16(chunk)...)
+}
+out = append(out, r.FlushInt16()...) // ends the stream; output length is exact
+// or, for a whole buffer at once: resample.Int16(pcm, 2, 44100, 48000)
+```
+
+---
+
 ## Examples Directory
 
 The repository includes complete, executable examples in the [`examples/`](examples/) directory. Each example contains its own `README.md` with full code explanation and expected output:
@@ -433,7 +466,7 @@ The repository includes complete, executable examples in the [`examples/`](examp
 | [`examples/roundtrip_pcm`](examples/roundtrip_pcm) | End-to-end PCM encode/decode with SoftClip, encoder tuning, and PLC loss recovery | **Pure Go** | `cd examples/roundtrip_pcm && go run .` |
 | [`examples/stream_mux`](examples/stream_mux) | Generating RFC 7845 Ogg Opus files from scratch & demuxing tags/audio | **Pure Go** | `cd examples/stream_mux && go run .` |
 | [`examples/cbr_padding`](examples/cbr_padding) | Enforcing constant packet sizes via `PacketPad` and `PacketUnpad` | **Pure Go** | `cd examples/cbr_padding && go run .` |
-| [`examples/convert`](examples/convert) | High-performance MP3 to Ogg Opus converter with resampler and progress bar | `go-mp3` | `cd examples/convert && go run . in.mp3 out.opus` |
+| [`examples/convert`](examples/convert) | High-performance MP3 to Ogg Opus converter with the `resample` package and progress bar | `go-mp3` | `cd examples/convert && go run . in.mp3 out.opus` |
 | [`examples/decode`](examples/decode) | Throughput benchmarking of Opus file decoding to `io.Discard` | **Pure Go** | `cd examples/decode && go run . audio.opus` |
 | [`examples/play`](examples/play) | Local audio playback with sample-accurate seeking (int16 & float32) | `oto/v3` | `cd examples/play && go run . audio.opus` |
 | [`examples/net`](examples/net) | Real-time playback of remote HTTP/HTTPS Opus audio streams | `oto/v3` | `cd examples/net && go run . https://url/stream.opus` |
@@ -448,7 +481,7 @@ The repository provides several production-ready command line tools in `cmd/`:
   ```sh
   go run ./cmd/oggopus2wav --out out.wav input.opus
   ```
-- **Encode WAV to Ogg Opus**:
+- **Encode WAV to Ogg Opus** (any sample rate, mono or stereo 16-bit PCM; non-libopus rates such as 44.1 kHz are resampled to 48 kHz):
   ```sh
   go run ./cmd/wav2oggopus --bitrate 64000 --out out.opus input.wav
   ```

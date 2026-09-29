@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Any input sample rate for encoding.** `EncodeWAVToOggOpus`, `ConvertWAVFileToOggOpus` and `wav2oggopus` used to reject everything but 48 kHz WAV. Rates libopus supports (8, 12, 16 and 24 kHz) are now encoded natively and any other rate, 44.1 kHz above all, is resampled to 48 kHz. `OpusHead.InputSampleRate` records the real input rate, pre-skip and granule positions are counted at 48 kHz (RFC 7845 Section 4), and the decoded stream has exactly `ceil(frames*48000/rate)` samples per channel. Input with more than two channels is still rejected (`b530ed6`, `71c9ab3`)
+- New package `resample`: a streaming polyphase windowed-sinc sample-rate converter with an exact output length, at least 40 dB alias rejection and a passband within 0.1 dB up to 16 kHz. Adapted from kazzmir/opus-go (PR #22, by James Riley Wilburn, BSD-3-Clause) with additional quality tests (`b60ae59`)
+- `opus.Encoder.PreSkip`: the encoder delay in 48 kHz samples, ready for `OpusHead.PreSkip`. `Lookahead` is in samples at the encoder's own rate (idea from kazzmir/opus-go PR #20) (`61994e3`)
+- `EncodeOptions.ComplexityExplicit`, so complexity 0 can be requested (it used to be indistinguishable from an unset field and silently became 10) (`cf3ddc6`)
+
+### Changed
+- `wav2oggopus` delegates encoding to the library instead of carrying its own copy of the encode loop (net -158 lines). It accepts any sample rate, the channel error now reads `only mono (1) and stereo (2)`, and `-bitrate 0` means the 64000 default instead of libopus's own default. `--complexity 0` still works; a negative value keeps 10 (`71c9ab3`)
+- `resample` performance: a bounds-check-free filter loop for the stream interior makes 44.1 -> 48 kHz stereo 3.9x faster (9.26 ms -> 2.39 ms per second of audio) with bit-identical output (`18d5f50`)
+- `examples/convert` resamples with the `resample` package instead of linear interpolation (`28d93d1`)
+
 ## [0.3.1] - 2026-09-29
 
 Patch release: fixes an output-handling regression introduced in 0.3.0 and makes the test suite portable to Windows and macOS. No API changes.
