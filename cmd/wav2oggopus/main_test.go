@@ -370,3 +370,44 @@ func TestWav2OggOpus_BatchesPages(t *testing.T) {
 		t.Errorf("last page is not EOS")
 	}
 }
+
+func TestWav2OggOpus_RefusesToOverwriteInput(t *testing.T) {
+	wavPath := buildTestWAV(t, 48000, 1, 4800)
+	before, err := os.ReadFile(wavPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", wavPath, "--cpuprofile", "", wavPath}, &stdout, &stderr); code == 0 {
+		t.Fatal("expected a non-zero exit code when --out is the input file")
+	}
+	after, err := os.ReadFile(wavPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("input WAV was modified")
+	}
+}
+
+func TestWav2OggOpus_ReplacesExistingOutputAndLeavesNoTempFiles(t *testing.T) {
+	wavPath := buildTestWAV(t, 48000, 1, 4800)
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "out.opus")
+	if err := os.WriteFile(outPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", outPath, "--cpuprofile", "", wavPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code %d (stderr=%q)", code, stderr.String())
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil || !bytes.HasPrefix(got, []byte("OggS")) {
+		t.Fatalf("output not replaced (err=%v)", err)
+	}
+	if ents, _ := os.ReadDir(outDir); len(ents) != 1 {
+		t.Errorf("temp files left behind: %v", ents)
+	}
+}

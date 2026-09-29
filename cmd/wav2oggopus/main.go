@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/selawe/go-opus-codec/internal/atomicfile"
 	"github.com/selawe/go-opus-codec/ogg"
 	"github.com/selawe/go-opus-codec/opus"
 	"github.com/selawe/go-opus-codec/wav"
@@ -112,17 +113,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
-	outF, err := os.Create(*outPath)
+	// Written to a temp file (or a fresh file) and only made visible by Commit, so a
+	// failure never leaves a partial output nor destroys an existing one.
+	outF, err := atomicfile.Create(*outPath, inPath)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	defer func() {
-		_ = outF.Close()
-	}()
+	defer outF.Abort()
 	outBW := bufio.NewWriterSize(outF, 1<<20)
-	defer func() {
-		_ = outBW.Flush()
-	}()
 
 	serial := randomSerial()
 	pw := ogg.NewPacketWriter(outBW, serial)
@@ -177,12 +175,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		for len(pending) < frameSamples && !eofReached {
 			n, rerr := wr.ReadInt16PCM(readBuf)
 			if rerr != nil && !errors.Is(rerr, io.EOF) {
-				_ = os.Remove(*outPath)
 				return fail(stderr, rerr)
 			}
 			if n > 0 {
 				if n%wr.Channels() != 0 {
-					_ = os.Remove(*outPath)
 					return fail(stderr, fmt.Errorf("wav: sample count not multiple of channels"))
 				}
 				pending = append(pending, readBuf[:n]...)
@@ -199,14 +195,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 			nBytes, err := enc.Encode(pcm, frameSize, packet)
 			if err != nil {
-				_ = os.Remove(*outPath)
 				return fail(stderr, err)
 			}
 			encodedSamplesPerCh += uint64(frameSize)
 			granule := encodedSamplesPerCh
 
 			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
-				_ = os.Remove(*outPath)
 				return fail(stderr, err)
 			}
 		} else {
@@ -233,7 +227,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 				nBytes, err := enc.Encode(pcm, frameSize, packet)
 				if err != nil {
-					_ = os.Remove(*outPath)
 					return fail(stderr, err)
 				}
 				encodedSamplesPerCh += uint64(frameSize)
@@ -244,7 +237,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 				}
 
 				if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
-					_ = os.Remove(*outPath)
 					return fail(stderr, err)
 				}
 			}
@@ -253,7 +245,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := pw.Flush(); err != nil {
-		_ = os.Remove(*outPath)
+		return fail(stderr, err)
+	}
+	if err := outBW.Flush(); err != nil {
+		return fail(stderr, err)
+	}
+	if err := outF.Commit(); err != nil {
 		return fail(stderr, err)
 	}
 	return 0
