@@ -48,6 +48,7 @@ type Decoder struct {
 
 	lastFrameSize int
 
+	pktBuf []byte
 	pcmI16 []int16
 	pcmF32 []float32
 }
@@ -244,7 +245,7 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 		d.pcmI16 = d.pcmI16[:nNeeded]
 	}
 
-	dataPtr := libc.PtrByte(packet)
+	dataPtr := libc.PtrByte(d.stagePacket(packet))
 	dataLen := int32(len(packet))
 	pcmPtr := libc.PtrInt16(d.pcmI16)
 	fec := int32(0)
@@ -303,7 +304,7 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 		d.pcmF32 = d.pcmF32[:nNeeded]
 	}
 
-	dataPtr := libc.PtrByte(packet)
+	dataPtr := libc.PtrByte(d.stagePacket(packet))
 	dataLen := int32(len(packet))
 	pcmPtr := libc.PtrFloat32(d.pcmF32)
 	fec := int32(0)
@@ -328,6 +329,21 @@ func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeF
 	copy(pcm[:nDecoded], d.pcmF32[:nDecoded])
 	runtime.KeepAlive(d)
 	return int(ret), nil
+}
+
+// stagePacket copies packet into a heap-backed buffer. The caller's slice may
+// live on its goroutine stack, which can move while transpiled code runs, so raw
+// pointers must only target heap memory. d.mu must be held.
+func (d *Decoder) stagePacket(packet []byte) []byte {
+	if len(packet) == 0 {
+		return nil
+	}
+	if cap(d.pktBuf) < len(packet) {
+		d.pktBuf = make([]byte, len(packet))
+	}
+	d.pktBuf = d.pktBuf[:len(packet)]
+	copy(d.pktBuf, packet)
+	return d.pktBuf
 }
 
 // Reset resets the internal decoder state (e.g. after seeking or stream discontinuity).
