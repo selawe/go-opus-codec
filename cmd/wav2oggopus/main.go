@@ -126,6 +126,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	serial := randomSerial()
 	pw := ogg.NewPacketWriter(outBW, serial)
+	// Batch packets (about one second per page) instead of one page per packet.
+	pw.MaxPageSize = 8 << 10
+	pw.MaxPagePackets = max(1, ogg.OpusSampleRateHz/frameSize)
 
 	head := ogg.OpusHead{
 		Version:         1,
@@ -154,6 +157,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
+		return fail(stderr, err)
+	}
+	// RFC 7845 Section 3: OpusTags must end its page and audio starts on a fresh one.
+	if err := pw.FlushPage(); err != nil {
 		return fail(stderr, err)
 	}
 

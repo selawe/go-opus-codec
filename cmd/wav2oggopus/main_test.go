@@ -291,7 +291,7 @@ func TestFrameSizeFromMS(t *testing.T) {
 // RFC 7845 Section 4: interior granules count decoded samples without a
 // pre-skip offset, they never decrease, and EOS carries PreSkip + input length.
 func TestWav2OggOpus_GranulePositions(t *testing.T) {
-	const frames = 1900
+	const frames = 120*960 + 700
 	wavPath := buildTestWAV(t, 48000, 1, frames)
 	outPath := filepath.Join(t.TempDir(), "out.opus")
 
@@ -322,8 +322,8 @@ func TestWav2OggOpus_GranulePositions(t *testing.T) {
 			}
 			prev = pkt.GranulePos
 		}
-		if i == 1 && pkt.GranulePos != 960 {
-			t.Errorf("first granule = %d, want 960", pkt.GranulePos)
+		if pkt.GranuleValid && !pkt.EOS && pkt.GranulePos%960 != 0 {
+			t.Errorf("interior granule %d is not a multiple of 960 (pre-skip leaked in)", pkt.GranulePos)
 		}
 		last = pkt
 	}
@@ -332,5 +332,41 @@ func TestWav2OggOpus_GranulePositions(t *testing.T) {
 	}
 	if want := uint64(r.Head.PreSkip) + frames; last.GranulePos != want {
 		t.Errorf("EOS granule = %d, want %d", last.GranulePos, want)
+	}
+}
+
+func TestWav2OggOpus_BatchesPages(t *testing.T) {
+	const frames = 4 * 48000
+	wavPath := buildTestWAV(t, 48000, 1, frames)
+	outPath := filepath.Join(t.TempDir(), "out.opus")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", outPath, "--cpuprofile", "", wavPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code %d (stderr=%q)", code, stderr.String())
+	}
+	f, err := os.Open(outPath)
+	if err != nil {
+		t.Fatalf("open output: %v", err)
+	}
+	defer f.Close()
+
+	pr := ogg.NewPageReader(f)
+	var pages []*ogg.Page
+	for {
+		p, err := pr.ReadPage()
+		if err != nil {
+			break
+		}
+		pages = append(pages, p)
+	}
+	const packets = frames / 960
+	if len(pages) < 4 || (len(pages)-2)*4 > packets {
+		t.Fatalf("%d pages for %d audio packets: packets are not batched", len(pages), packets)
+	}
+	if !bytes.HasPrefix(pages[1].SegmentData, []byte("OpusTags")) || bytes.HasPrefix(pages[2].SegmentData, []byte("OpusTags")) {
+		t.Errorf("OpusTags must sit alone on page 1, audio must start on page 2")
+	}
+	if !pages[len(pages)-1].IsEOS() {
+		t.Errorf("last page is not EOS")
 	}
 }
