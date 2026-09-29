@@ -792,8 +792,8 @@ func TestPageReader_TruncationIsDistinguishable(t *testing.T) {
 		}
 	}
 	_, err = pr.ReadPage()
-	if err != io.EOF {
-		t.Fatalf("clean end of stream: got %v, want io.EOF", err)
+	if !errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("clean end of stream: got %v, want a plain io.EOF", err)
 	}
 
 	// Cut inside the fixed header, inside the segment table, and inside the body.

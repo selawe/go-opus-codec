@@ -590,8 +590,8 @@ func TestOpusReader_TruncatedFileReportsUnexpectedEOF(t *testing.T) {
 		if err == nil {
 			continue
 		}
-		if err != io.EOF {
-			t.Fatalf("complete file: got %v, want io.EOF", err)
+		if !errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("complete file: got %v, want a plain io.EOF", err)
 		}
 		break
 	}

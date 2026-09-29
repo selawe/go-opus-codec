@@ -88,9 +88,9 @@ func (f *File) Commit() error {
 
 	var err error
 	if f.remove != "" { // regular file: make sure the data reached the disk
-		err = f.File.Sync()
+		err = f.Sync()
 	}
-	if cerr := f.File.Close(); err == nil {
+	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil && f.rename {
@@ -109,7 +109,7 @@ func (f *File) Abort() {
 		return
 	}
 	f.done = true
-	_ = f.File.Close()
+	_ = f.Close()
 	if f.remove != "" {
 		_ = os.Remove(f.remove)
 	}
