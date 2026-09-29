@@ -109,6 +109,15 @@ Because `go-opus-codec` is 100% pure Go without cgo, cross-compilation is trivia
 | **FreeBSD** | `amd64` | ✅ Supported | FreeBSD 64-bit |
 | **32-Bit Systems** (`386`, `arm`, `wasm`) | 32-bit | ⛔ Blocked | Blocked at compile time to prevent pointer misalignment |
 
+> [!IMPORTANT]
+> **Race detector / `checkptr`**: the transpiled libopus code addresses Go memory through `uintptr`, which Go's pointer checker (`-d=checkptr`, switched on automatically by `-race`) reports as `fatal error: checkptr: pointer arithmetic result points to invalid allocation`. That aborts the process on the first `Decoder`/`Encoder` call, so a plain `go test -race` of code that uses this library crashes. Disable only the pointer checker and keep the race detector:
+>
+> ```sh
+> go test -race -gcflags=all=-d=checkptr=0 ./...
+> ```
+>
+> `-race` itself keeps working: the public types are mutex-protected and the suite is race-clean under this flag. The flag is only needed when building with `-race` (or `-d=checkptr`) and can stay off for normal builds. See [Testing & Conformance](#standard-unit-tests--race-detection).
+
 > [!NOTE]
 > **64-Bit Requirement**: The underlying transpiled libopus code requires 64-bit little-endian pointers (LP64). A compile-time guard (`const _ = uint(unsafe.Sizeof(uintptr(0))) - 8`) in `libcshim` rejects 32-bit builds cleanly during compilation.
 
@@ -453,12 +462,16 @@ The repository provides several production-ready command line tools in `cmd/`:
 # Run all unit tests offline (< 1 sec)
 go test -v ./...
 
-# Run race detector
-go test -race -gcflags=all=-d=checkptr=0 ./player ./opus
+# Run race detector. -d=checkptr=0 is required (see the note under "Supported Platforms"):
+# the transpiled codec passes Go memory as uintptr, which -race's checkptr rejects.
+go test -race -gcflags=all=-d=checkptr=0 . ./ogg ./wav ./player ./test ./opus
 
 # Run static analysis
 go vet -unsafeptr=false ./opus/... ./test/... ./wav/...
 ```
+
+> [!TIP]
+> Without `-gcflags=all=-d=checkptr=0`, `go test -race` fails immediately with `checkptr: pointer arithmetic result points to invalid allocation`. That is expected for this library and not a data race. The same applies to your own tests that import `opus` or `player`.
 
 ### Official RFC 6716 / RFC 8251 Conformance Suite
 Run the 120-test matrix against official IETF test vectors:
@@ -495,7 +508,7 @@ Measured on an AMD Ryzen 9 5900HX (`go test -bench=. -benchmem`), decoding real 
 - `go-opus-codec` decodes ~1.6x slower than libopus C, but ~1.2x faster than `pion/opus`.
 - `go-opus-codec` encodes ~2.4x slower than libopus C (no pure-Go encoder exists in `pion/opus` to compare against).
 - **True zero-allocation in steady-state (0 B/op, 0 allocs/op):** Per-call heap allocations on encode and decode hot-paths have been completely eliminated down to **0 B/op and 0 allocs/op** by preventing variadic argument escaping in `libcshim.VaList` and isolating one-time lazy buffer initialization before `b.ResetTimer()`.
-- `libcshim`'s pthread-TLS emulation used to lock+map-lookup a single well-known key (`opusPseudostackTLSKey`) on every access, even though every caller (`opus.Decoder`, `Encoder`, `Repacketizer`) already serializes access with its own mutex around the whole call. Removing that redundant locking (confirmed safe via `go test -race`, which stays clean) shaved off the CPU profile's `Xpthread_getspecific`/mutex overhead entirely and got decode from 119,603 → 114,593 ns/op (~3%).
+- `libcshim`'s pthread-TLS emulation used to lock+map-lookup a single well-known key (`opusPseudostackTLSKey`) on every access, even though every caller (`opus.Decoder`, `Encoder`, `Repacketizer`) already serializes access with its own mutex around the whole call. Removing that redundant locking (confirmed safe via `go test -race -gcflags=all=-d=checkptr=0`, which stays clean) shaved off the CPU profile's `Xpthread_getspecific`/mutex overhead entirely and got decode from 119,603 → 114,593 ns/op (~3%).
 - **This is not a like-for-like "C vs Go" comparison.** The transpile in this repo was generated with `-DOPUS_DISABLE_INTRINSICS -U__SSE__ -U__SSE2__ -U__SSE3__ -U__SSSE3__ -U__AVX__ -U__AVX2__` (see the header comment in `opuscc/common.go`), i.e. all SIMD intrinsics were disabled at transpile time. The system `libopus.so` linked via cgo is typically built **with** SIMD enabled. The gap above is partly "no-SIMD Go vs SIMD-enabled C," not purely a language/runtime difference.
 
 ### Running it yourself
