@@ -504,19 +504,19 @@ It is isolated in its own module specifically so the cgo dependency on `libopus-
 
 ### Results
 
-Measured on an AMD Ryzen 9 5900HX (`go test -bench=. -benchmem`), decoding real packets from `testvectors/testvector01.bit` / encoding synthetic 48kHz stereo 20ms frames at 64kbps, complexity 10:
+Measured on an AMD Ryzen 9 5900HX under WSL2 with Go 1.27.1 (median of 5 runs of `go test -tags nolibopusfile -bench 'Benchmark(Encode|Decode)_(GoOpusCodec|Libopus|PionOpus)$' -benchmem -benchtime=2s -count=5`), decoding real packets from `testvectors/testvector01.bit` / encoding synthetic 48kHz stereo 20ms frames at 64kbps, complexity 10:
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| Decode — go-opus-codec (this repo) | 114,593 | 0 | 0 |
-| Decode — libopus (cgo) | 72,893 | 0 | 0 |
-| Decode — pion/opus | 139,052 | 82 | 1 |
-| Encode — go-opus-codec (this repo) | 251,235 | 0 | 0 |
-| Encode — libopus (cgo) | 104,925 | 0 | 0 |
+| Decode — go-opus-codec (this repo) | 79,748 | 0 | 0 |
+| Decode — libopus (cgo) | 47,237 | 0 | 0 |
+| Decode — pion/opus | 89,589 | 205 | 0 |
+| Encode — go-opus-codec (this repo) | 308,675 | 0 | 0 |
+| Encode — libopus (cgo) | 143,125 | 0 | 0 |
 
 **Takeaways:**
-- `go-opus-codec` decodes ~1.6x slower than libopus C, but ~1.2x faster than `pion/opus`.
-- `go-opus-codec` encodes ~2.4x slower than libopus C (no pure-Go encoder exists in `pion/opus` to compare against).
+- `go-opus-codec` decodes ~1.7x slower than libopus C, but ~1.1x faster than `pion/opus`.
+- `go-opus-codec` encodes ~2.2x slower than libopus C (no pure-Go encoder exists in `pion/opus` to compare against).
 - **True zero-allocation in steady-state (0 B/op, 0 allocs/op):** Per-call heap allocations on encode and decode hot-paths have been completely eliminated down to **0 B/op and 0 allocs/op** by preventing variadic argument escaping in `libcshim.VaList` and isolating one-time lazy buffer initialization before `b.ResetTimer()`.
 - `libcshim`'s pthread-TLS emulation used to lock+map-lookup a single well-known key (`opusPseudostackTLSKey`) on every access, even though every caller (`opus.Decoder`, `Encoder`, `Repacketizer`) already serializes access with its own mutex around the whole call. Removing that redundant locking (confirmed safe via `go test -race -gcflags=all=-d=checkptr=0`, which stays clean) shaved off the CPU profile's `Xpthread_getspecific`/mutex overhead entirely and got decode from 119,603 → 114,593 ns/op (~3%).
 - **This is not a like-for-like "C vs Go" comparison.** The transpile in this repo was generated with `-DOPUS_DISABLE_INTRINSICS -U__SSE__ -U__SSE2__ -U__SSE3__ -U__SSSE3__ -U__AVX__ -U__AVX2__` (see the header comment in `opuscc/common.go`), i.e. all SIMD intrinsics were disabled at transpile time. The system `libopus.so` linked via cgo is typically built **with** SIMD enabled. The gap above is partly "no-SIMD Go vs SIMD-enabled C," not purely a language/runtime difference.
