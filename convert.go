@@ -162,6 +162,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 
 	pw := ogg.NewPacketWriter(bw, serial)
 	pw.MaxPageSize = maxAudioPageBytes
+	pw.MaxPagePackets = max(1, ogg.OpusSampleRateHz/frameSize) // about one second per page
 
 	head := ogg.OpusHead{
 		Version:              1,
@@ -203,7 +204,6 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	var inputSamplesPerCh uint64
 	var encodedSamplesPerCh uint64
 	var eofReached bool
-	var pagePackets int
 	pending := make([]int16, 0, 2*frameSamples)
 	readBuf := make([]int16, frameSamples)
 
@@ -239,9 +239,6 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 
 			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
 				return fmt.Errorf("ogg write: %w", err)
-			}
-			if err := flushPageEverySecond(pw, &pagePackets, frameSize); err != nil {
-				return fmt.Errorf("ogg flush page: %w", err)
 			}
 		} else {
 			// EOF reached. Per RFC 7845 Section 4, the encoder must encode enough silence
@@ -283,9 +280,6 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
 					return fmt.Errorf("ogg write: %w", err)
 				}
-				if err := flushPageEverySecond(pw, &pagePackets, frameSize); err != nil {
-					return fmt.Errorf("ogg flush page: %w", err)
-				}
 			}
 			break
 		}
@@ -304,19 +298,6 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 // grouped to cut the 27+ byte page header paid per packet, which otherwise adds
 // 10-20 kbps at low bitrates.
 const maxAudioPageBytes = 8 << 10
-
-// flushPageEverySecond ends the current page once it holds about one second of
-// audio, so low-bitrate streams keep fine seek granularity (255 tiny packets
-// would otherwise span several seconds). The counter is conservative: it also
-// counts packets that the writer already flushed on its own.
-func flushPageEverySecond(pw *ogg.PacketWriter, pagePackets *int, frameSize int) error {
-	*pagePackets++
-	if *pagePackets*frameSize < ogg.OpusSampleRateHz {
-		return nil
-	}
-	*pagePackets = 0
-	return pw.FlushPage()
-}
 
 // ErrOutputLimitExceeded is returned by DecodeOggOpusToWAV when the decoded
 // PCM data exceeds the maximum output size configured via WithMaxOutputBytes.
