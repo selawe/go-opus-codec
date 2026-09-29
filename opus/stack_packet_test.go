@@ -16,7 +16,7 @@ const stackChildEnv = "OPUS_STACK_PACKET_CHILD"
 // test re-runs itself with it to turn a silent stale read into a hard failure.
 func TestDecodeStackResidentPacket(t *testing.T) {
 	if os.Getenv(stackChildEnv) == "" {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestDecodeStackResidentPacket$", "-test.count=1")
+		cmd := exec.Command(os.Args[0], "-test.run=^(TestDecodeStackResidentPacket|TestMultistreamStackResidentMapping)$", "-test.count=1")
 		cmd.Env = append(os.Environ(), stackChildEnv+"=1", "GODEBUG=efence=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -61,6 +61,34 @@ func TestDecodeStackResidentPacket(t *testing.T) {
 			if r, err := d.DecodeF32(stackPkt[:n], stackF32[:], 960, false); err != nil || r != 960 {
 				t.Errorf("DecodeF32 = %d, %v", r, err)
 			}
+		}()
+	}
+	wg.Wait()
+}
+
+// Same hazard for the channel mapping table handed to the multistream constructors.
+func TestMultistreamStackResidentMapping(t *testing.T) {
+	if os.Getenv(stackChildEnv) == "" {
+		t.Skip("covered by the efence child run of TestDecodeStackResidentPacket")
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 20; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mapping := [6]uint8{0, 4, 1, 2, 3, 5}
+			d, err := NewMultistreamDecoder(48000, 6, 4, 2, mapping[:])
+			if err != nil {
+				t.Errorf("NewMultistreamDecoder: %v", err)
+				return
+			}
+			d.Close()
+			e, err := NewMultistreamEncoder(48000, 6, 4, 2, mapping[:], ApplicationAudio)
+			if err != nil {
+				t.Errorf("NewMultistreamEncoder: %v", err)
+				return
+			}
+			e.Close()
 		}()
 	}
 	wg.Wait()

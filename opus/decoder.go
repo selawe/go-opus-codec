@@ -150,7 +150,9 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 		return nil, errors.New("opus: failed to allocate TLS")
 	}
 
-	mappingPtr := libc.PtrUint8(mapping)
+	// Heap copy: the caller's table may live on a goroutine stack that can move.
+	mappingCopy := append([]uint8(nil), mapping...)
+	mappingPtr := libc.PtrUint8(mappingCopy)
 
 	st, err := opuscc.Opus_opus_multistream_decoder_create(
 		tls,
@@ -160,6 +162,7 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 		int32(coupledStreams),
 		mappingPtr,
 	)
+	runtime.KeepAlive(mappingCopy)
 	if err != nil || st == 0 {
 		if oe := (*opuscc.OpusError)(nil); errors.As(err, &oe) {
 			msg := opusccErrorString(oe.Code)

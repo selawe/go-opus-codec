@@ -116,7 +116,9 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 	bp := tls.Alloc(4)
 	libc.StoreInt32(bp, 0)
 
-	mappingPtr := libc.PtrUint8(mapping)
+	// Heap copy: the caller's table may live on a goroutine stack that can move.
+	mappingCopy := append([]uint8(nil), mapping...)
+	mappingPtr := libc.PtrUint8(mappingCopy)
 	st := opusccenc.Opus_opus_multistream_encoder_create(
 		tls,
 		opusccenc.OpusT_opus_int32(sampleRate),
@@ -127,6 +129,7 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 		int32(application),
 		bp,
 	)
+	runtime.KeepAlive(mappingCopy)
 	errCode := libc.LoadInt32(bp)
 	// Free before any tls.Close(): Close resets the TLS stack pointer, so a
 	// deferred Free would underflow on the error path.
