@@ -352,6 +352,17 @@ func (e *Encoder) Lookahead() (int, error) {
 	return int(libc.LoadInt32(outPtr)), nil
 }
 
+// PreSkip returns the encoder delay in 48 kHz samples, ready to store in OpusHead.PreSkip
+// (RFC 7845 Section 5.1), whatever rate the encoder runs at. Lookahead reports the same delay
+// in samples at the encoder's own rate, so it is smaller by 48000/SampleRate.
+func (e *Encoder) PreSkip() (int, error) {
+	la, err := e.Lookahead()
+	if err != nil {
+		return 0, err
+	}
+	return la * 48000 / e.sampleRate, nil
+}
+
 // FinalRange returns the final range of the entropy encoder from the most recently encoded frame.
 func (e *Encoder) FinalRange() (uint32, error) {
 	if e == nil {
