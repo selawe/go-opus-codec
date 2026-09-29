@@ -714,3 +714,50 @@ func TestPacketWriter_MaxPagePackets(t *testing.T) {
 		}
 	}
 }
+
+// On a seekable stream LastPageGranule must not disturb the read cursor:
+// packets after the call continue exactly where reading stopped.
+func TestLastPageGranule_KeepsReadPosition(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	pw.MaxPageSize = 64
+	const total = 400
+	for i := 0; i < total; i++ {
+		payload := []byte(fmt.Sprintf("packet-%04d", i))
+		if err := pw.WritePacket(payload, uint64(i+1)*960, i == 0, i == total-1); err != nil {
+			t.Fatalf("WritePacket %d: %v", i, err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	pr := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	const readBefore = 37
+	for i := 0; i < readBefore; i++ {
+		if _, err := pr.ReadPacket(); err != nil {
+			t.Fatalf("ReadPacket %d: %v", i, err)
+		}
+	}
+
+	granule, err := pr.LastPageGranule()
+	if err != nil {
+		t.Fatalf("LastPageGranule: %v", err)
+	}
+	if want := int64(total) * 960; granule != want {
+		t.Fatalf("granule = %d, want %d", granule, want)
+	}
+
+	for i := readBefore; i < total; i++ {
+		pkt, err := pr.ReadPacket()
+		if err != nil {
+			t.Fatalf("ReadPacket %d after LastPageGranule: %v", i, err)
+		}
+		if want := fmt.Sprintf("packet-%04d", i); string(pkt.Data) != want {
+			t.Fatalf("packet %d = %q, want %q", i, pkt.Data, want)
+		}
+	}
+	if _, err := pr.ReadPacket(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF after last packet, got %v", err)
+	}
+}

@@ -306,12 +306,24 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 	}
 }
 
-// return the last granule position in the stream
-// this is a destructive operation that will position the stream at the end
-// so no more packets can be read after this, unless the stream is seek'd somewhere
+// LastPageGranule returns the last granule position in the stream.
+//
+// If the underlying reader is seekable the scan uses a private page reader and
+// restores the reader's position afterwards, so packets can keep being read.
+// Otherwise it reads through to the end of the stream, which is destructive:
+// no more packets can be read afterwards.
 func (r *PacketReader) LastPageGranule() (int64, error) {
+	pages := r.pr
 	seeker, ok := r.reader.(io.ReadSeeker)
 	if ok {
+		// The underlying offset already accounts for the page reader's read-ahead
+		// buffer, so seeking back to it resumes reading exactly where it stopped.
+		resume, err := seeker.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _, _ = seeker.Seek(resume, io.SeekStart) }()
+
 		total, err := seeker.Seek(0, io.SeekEnd)
 		if err != nil {
 			return 0, err
@@ -336,13 +348,12 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			return 0, err
 		}
 
-		r.pr = r.newPageReader(seeker)
-		r.reset()
+		pages = r.newPageReader(seeker)
 	}
 
 	lastGranule := int64(-1)
 	for {
-		page, err := r.pr.ReadPage()
+		page, err := pages.ReadPage()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break

@@ -900,3 +900,35 @@ func TestPlayerCoverage(t *testing.T) {
 		t.Fatalf("ReadPacket expected EOF, got err=%v n=%d", err, n)
 	}
 }
+
+// Length and TotalSamples are documented as safe to call at any time; calling
+// them mid-playback must not truncate the rest of the stream.
+func TestPlayer_LengthDoesNotDisturbPlayback(t *testing.T) {
+	for _, stream := range []bool{true, false} {
+		p, err := NewPlayerFromFile(testFilePath, stream)
+		if err != nil {
+			t.Fatalf("stream=%v: NewPlayerFromFile: %v", stream, err)
+		}
+
+		head := make([]byte, 200000)
+		if _, err := io.ReadFull(p, head); err != nil {
+			t.Fatalf("stream=%v: initial read: %v", stream, err)
+		}
+		length := p.Length()
+		if _, err := p.TotalSamples(); err != nil {
+			t.Fatalf("stream=%v: TotalSamples: %v", stream, err)
+		}
+		if _, err := p.TotalDuration(); err != nil {
+			t.Fatalf("stream=%v: TotalDuration: %v", stream, err)
+		}
+
+		rest, err := io.Copy(io.Discard, p)
+		if err != nil {
+			t.Fatalf("stream=%v: read rest: %v", stream, err)
+		}
+		if got := int64(len(head)) + rest; got != length {
+			t.Errorf("stream=%v: read %d bytes in total, Length() = %d", stream, got, length)
+		}
+		p.Close()
+	}
+}

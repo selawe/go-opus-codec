@@ -599,9 +599,9 @@ func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
 
 // Total length in bytes of the decoded stream (not samples).
 //
-// note that this method reads packets to determine the end of the stream
-// if the underlying reader is seekable, you may want to seek back to the start after calling this method.
-// the length is cached, however, so it is safe and efficient to call multiple times on the same stream.
+// If the underlying reader is seekable, the read position is preserved and playback can continue
+// normally. If it is not seekable, this reads through to the end of the stream and no further audio
+// can be read. The length is cached, so it is safe and efficient to call multiple times.
 func (player *OpusPlayer[T]) Length() int64 {
 	player.mu.Lock()
 	defer player.mu.Unlock()
@@ -727,15 +727,15 @@ func (player *OpusPlayer[T]) CurrentTime() time.Duration {
 	return time.Duration(player.totalSamples) * time.Second / time.Duration(ogg.OpusSampleRateHz)
 }
 
-// Return the total number of samples in the stream per channel. This is a destructive operation,
-// so you should seek back to the start if you need to read the stream again.
+// Return the total number of samples in the stream per channel. The read position is preserved when
+// the underlying reader is seekable; on a non-seekable stream this consumes the stream to the end.
 func (player *OpusPlayer[T]) TotalSamples() (int64, error) {
 	player.mu.Lock()
 	defer player.mu.Unlock()
 	return player.reader.TotalSamples()
 }
 
-// Return the total duration of the stream. This is a destructive operation, similar to TotalSamples.
+// Return the total duration of the stream. It has the same seekability behavior as TotalSamples.
 func (player *OpusPlayer[T]) TotalDuration() (time.Duration, error) {
 	player.mu.Lock()
 	defer player.mu.Unlock()
