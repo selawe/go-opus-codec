@@ -35,6 +35,12 @@ type Packet struct {
 	GranuleValid    bool
 	BOS             bool
 	EOS             bool
+
+	// Discontinuity is true when pages were lost (or reordered) immediately before this
+	// packet, detected from a gap in the page sequence numbers. Packets that were damaged
+	// by the loss are dropped rather than returned, so a decoder should conceal the missing
+	// audio (packet loss concealment) before decoding a packet with this flag set.
+	Discontinuity bool
 }
 
 // PacketReader converts Ogg pages into packets by applying lacing rules.
@@ -50,6 +56,13 @@ type PacketReader struct {
 	pendingBOS    bool
 	queue         []*Packet
 	MaxPacketSize int
+
+	// Page sequence tracking (RFC 3533 Section 6): lastSeq is the sequence number of the
+	// previous page, valid only when haveSeq is set. gap marks that pages were lost and
+	// that the next packet returned must be flagged with Discontinuity.
+	lastSeq uint32
+	haveSeq bool
+	gap     bool
 }
 
 // NewPacketReader creates a new PacketReader that demuxes packets from the Ogg stream in r.
@@ -73,6 +86,8 @@ func (r *PacketReader) reset() {
 	r.queue = nil
 	r.havePending = false
 	r.pendingBOS = false
+	r.haveSeq = false
+	r.gap = false
 }
 
 // keep reading bytes until we find the start of an ogg page
@@ -400,8 +415,20 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 			return nil, fmt.Errorf("%w: got=%d want=%d", ErrSerialMismatch, page.BitstreamSerial, *r.serial)
 		}
 
+		// A gap in the page sequence means pages were lost (or corrupt pages skipped by
+		// resync). Whatever packet was being assembled is damaged: drop it, and skip the
+		// continuation of a packet whose start we never saw, instead of splicing the two.
+		lost := r.haveSeq && page.PageSequence != r.lastSeq+1
+		r.lastSeq, r.haveSeq = page.PageSequence, true
+		if lost {
+			r.pending = nil
+			r.havePending = false
+			r.pendingBOS = false
+			r.gap = true
+		}
+
 		skipOrphan := page.IsContinuedPacket() && !r.havePending
-		if skipOrphan && !r.pr.Resync {
+		if skipOrphan && !r.pr.Resync && !lost {
 			return nil, ErrBadContinuedPage
 		}
 		if !page.IsContinuedPacket() {
@@ -467,6 +494,10 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 		}
 
 		granuleValid := page.GranulePosition != math.MaxUint64
+		if r.gap {
+			pagePackets[0].Discontinuity = true
+			r.gap = false
+		}
 		last := pagePackets[len(pagePackets)-1]
 		last.GranuleValid = granuleValid
 		last.EOS = page.IsEOS()

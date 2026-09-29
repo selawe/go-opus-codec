@@ -818,3 +818,159 @@ func TestPageReader_TruncationIsDistinguishable(t *testing.T) {
 		}
 	}
 }
+
+// splitPages returns the raw bytes of every page in an Ogg stream.
+func splitPages(t *testing.T, raw []byte) [][]byte {
+	t.Helper()
+	var out [][]byte
+	pr := NewPageReader(bytes.NewReader(raw))
+	off := 0
+	for {
+		p, err := pr.ReadPage()
+		if errors.Is(err, io.EOF) {
+			return out
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 27 + len(p.SegmentTable) + len(p.SegmentData)
+		out = append(out, raw[off:off+n])
+		off += n
+	}
+}
+
+func readAllPackets(t *testing.T, raw []byte) []*Packet {
+	t.Helper()
+	pr := NewPacketReader(bytes.NewReader(raw))
+	var out []*Packet
+	for {
+		p, err := pr.ReadPacket()
+		if errors.Is(err, io.EOF) {
+			return out
+		}
+		if err != nil {
+			t.Fatalf("ReadPacket: %v", err)
+		}
+		out = append(out, p)
+	}
+}
+
+// A lost page in the middle of a multi-page packet used to be bridged silently:
+// the reader appended the next continuation page to the stale bytes and returned
+// one corrupt packet. The damaged packet must be dropped instead.
+func TestPacketReader_LostPageDoesNotSpliceContinuedPacket(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	a := bytes.Repeat([]byte{0xA}, 100)
+	b := bytes.Repeat([]byte{0xB}, 200000) // spans 4 pages
+	c := bytes.Repeat([]byte{0xC}, 100)
+	for i, pk := range [][]byte{a, b, c} {
+		if err := pw.WritePacket(pk, uint64(i+1)*960, false, i == 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	pages := splitPages(t, buf.Bytes())
+	if len(pages) != 6 {
+		t.Fatalf("expected 6 pages, got %d", len(pages))
+	}
+
+	// Sanity: the intact stream has no discontinuity.
+	for i, p := range readAllPackets(t, buf.Bytes()) {
+		if p.Discontinuity {
+			t.Errorf("intact stream: packet %d flagged as discontinuity", i)
+		}
+	}
+
+	damaged := bytes.Join(append(append([][]byte{}, pages[:3]...), pages[4:]...), nil) // drop page seq 3
+	for _, resync := range []bool{true, false} {
+		pr := NewPacketReader(bytes.NewReader(damaged))
+		pr.SetResync(resync)
+		var got []*Packet
+		for {
+			p, err := pr.ReadPacket()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("resync=%v: ReadPacket: %v", resync, err)
+			}
+			got = append(got, p)
+		}
+		if len(got) != 2 || !bytes.Equal(got[0].Data, a) || !bytes.Equal(got[1].Data, c) {
+			lens := []int{}
+			for _, p := range got {
+				lens = append(lens, len(p.Data))
+			}
+			t.Fatalf("resync=%v: got packets with lengths %v, want [A, C] (damaged B dropped)", resync, lens)
+		}
+		if got[0].Discontinuity {
+			t.Errorf("resync=%v: packet before the gap must not be flagged", resync)
+		}
+		if !got[1].Discontinuity {
+			t.Errorf("resync=%v: first packet after the gap must be flagged Discontinuity", resync)
+		}
+	}
+}
+
+func TestPacketReader_LostWholePageIsFlagged(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	for i := 0; i < 5; i++ {
+		if err := pw.WritePacket([]byte{byte(i), 1, 2}, uint64(i+1)*960, false, i == 4); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	pages := splitPages(t, buf.Bytes())
+	damaged := bytes.Join([][]byte{pages[0], pages[1], pages[3], pages[4]}, nil) // drop the packet on page seq 2
+
+	got := readAllPackets(t, damaged)
+	if len(got) != 4 {
+		t.Fatalf("got %d packets, want 4", len(got))
+	}
+	for i, p := range got {
+		if want := i == 2; p.Discontinuity != want {
+			t.Errorf("packet %d: Discontinuity = %v, want %v", i, p.Discontinuity, want)
+		}
+	}
+}
+
+// Seeking lands on an arbitrary page, so the first page after a seek is never a gap.
+func TestPacketReader_SeekDoesNotReportDiscontinuity(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	for i := 0; i < 20; i++ {
+		if err := pw.WritePacket([]byte{byte(i), 1, 2}, uint64(i+1)*960, i == 0, i == 19); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	pr := NewPacketReader(bytes.NewReader(buf.Bytes()))
+	for i := 0; i < 3; i++ {
+		if _, err := pr.ReadPacket(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pr.SeekToPage(12 * 960); err != nil {
+		t.Fatalf("SeekToPage: %v", err)
+	}
+	for {
+		p, err := pr.ReadPacket()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Discontinuity {
+			t.Fatalf("packet %v flagged as discontinuity after a seek", p.Data)
+		}
+	}
+}
