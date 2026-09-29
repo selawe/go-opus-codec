@@ -629,6 +629,9 @@ func (player *OpusPlayer[T]) lengthLocked() int64 {
 	return total * int64(player.Channels()) * int64(player.bytesPerSample)
 }
 
+// seekPreRollSamples is the 80 ms (at 48 kHz) of pre-roll RFC 7845 Section 4.6 requires after a seek.
+const seekPreRollSamples = 80 * ogg.OpusSampleRateHz / 1000
+
 // position is a number of samples (not bytes) from the start of the stream.
 //
 // e.g., 0 is the start of the stream (after preskip), and the last available position is
@@ -648,8 +651,17 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 	// granule positions must take preskip into account
 	position += uint64(player.reader.Head.PreSkip)
 
+	// RFC 7845 Section 4.6: start decoding at least 80 ms before the target so the
+	// decoder state converges; the extra samples are decoded and discarded below.
+	seekTarget := position
+	if seekTarget > seekPreRollSamples {
+		seekTarget -= seekPreRollSamples
+	} else {
+		seekTarget = 0
+	}
+
 	// force reader to go back to the page that contains the desired position
-	granule, err := player.reader.SeekToPage(position)
+	granule, err := player.reader.SeekToPage(seekTarget)
 	if err != nil {
 		return err
 	}

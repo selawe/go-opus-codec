@@ -1049,3 +1049,49 @@ func TestPlayer_SeekCurrentZeroIsPure(t *testing.T) {
 		t.Errorf("audio after Seek(0, SeekCurrent) differs from uninterrupted playback (got %d bytes, want %d)", len(got), len(want))
 	}
 }
+
+// RFC 7845 Section 4.6: after a seek the decoder must run at least 80 ms before
+// the target so its state converges. Audio right after SeekSample must match
+// uninterrupted playback.
+func TestPlayer_SeekHasPreRoll(t *testing.T) {
+	ref, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ref.Close()
+	want, err := io.ReadAll(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	const window = 4000 * 4 // 4000 stereo int16 frames
+	for _, pos := range []uint64{47999, 96000, 250001, 700000} {
+		if err := p.SeekSample(pos); err != nil {
+			t.Fatalf("SeekSample(%d): %v", pos, err)
+		}
+		got := make([]byte, window)
+		if _, err := io.ReadFull(p, got); err != nil {
+			t.Fatalf("read after seek to %d: %v", pos, err)
+		}
+		exp := want[pos*4 : pos*4+window]
+		var sum float64
+		for i := 0; i+1 < window; i += 2 {
+			a := int16(uint16(got[i]) | uint16(got[i+1])<<8)
+			b := int16(uint16(exp[i]) | uint16(exp[i+1])<<8)
+			d := int(a) - int(b)
+			if d < 0 {
+				d = -d
+			}
+			sum += float64(d)
+		}
+		if mean := sum / (window / 2); mean > 2 {
+			t.Errorf("seek to %d: mean abs error vs continuous playback = %.1f LSB (no pre-roll?)", pos, mean)
+		}
+	}
+}
