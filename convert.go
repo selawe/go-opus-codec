@@ -13,6 +13,7 @@ import (
 	"github.com/selawe/go-opus-codec/internal/atomicfile"
 	"github.com/selawe/go-opus-codec/ogg"
 	"github.com/selawe/go-opus-codec/opus"
+	"github.com/selawe/go-opus-codec/resample"
 	"github.com/selawe/go-opus-codec/wav"
 )
 
@@ -67,9 +68,14 @@ func DefaultEncodeOptions() EncodeOptions {
 	}
 }
 
-// EncodeWAVToOggOpus reads a 48kHz 16-bit linear PCM WAV stream from wavReader,
-// encodes it to Opus audio, and multiplexes the result into an Ogg container written to oggWriter.
-// If opts is nil, DefaultEncodeOptions() is used.
+// EncodeWAVToOggOpus reads a mono or stereo 16-bit linear PCM WAV stream of any sample rate
+// from wavReader, encodes it to Opus audio, and multiplexes the result into an Ogg container
+// written to oggWriter. If opts is nil, DefaultEncodeOptions() is used.
+//
+// Rates libopus supports (8, 12, 16, 24 and 48 kHz) are encoded natively; any other rate, for
+// example 44.1 kHz, is first resampled to 48 kHz. OpusHead.InputSampleRate records the original
+// rate. Pre-skip and granule positions are always counted at 48 kHz (RFC 7845 Section 4), so the
+// decoded stream has exactly ceil(frames*48000/rate) samples per channel.
 func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOptions) error {
 	if wavReader == nil {
 		return errors.New("wavReader cannot be nil")
@@ -118,8 +124,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		}
 	}
 
-	frameSize, err := frameSizeFromMS(frameMS)
-	if err != nil {
+	if _, err := frameSizeFromMS(frameMS); err != nil { // validates the duration
 		return err
 	}
 
@@ -127,14 +132,24 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	if err != nil {
 		return fmt.Errorf("wav reader: %w", err)
 	}
-	if wr.SampleRate() != 48000 {
-		return fmt.Errorf("unsupported sample rate %d: only 48000 Hz WAV supported", wr.SampleRate())
-	}
 	if wr.Channels() < 1 || wr.Channels() > 2 {
 		return fmt.Errorf("unsupported channel count %d: only mono (1) and stereo (2) supported", wr.Channels())
 	}
 
-	enc, err := opus.NewEncoder(wr.SampleRate(), wr.Channels(), app)
+	// The encoder runs at the input rate when libopus supports it, otherwise at 48 kHz on
+	// resampled audio. scale converts encoder-rate samples to the 48 kHz units used by
+	// pre-skip and granule positions.
+	srcRate := wr.SampleRate()
+	encRate := srcRate
+	var resampler *resample.Resampler
+	if !isOpusRate(srcRate) {
+		encRate = ogg.OpusSampleRateHz
+		resampler = resample.New(wr.Channels(), srcRate, encRate)
+	}
+	scale := uint64(ogg.OpusSampleRateHz / encRate)
+	frameSize := encRate * frameMS / 1000
+
+	enc, err := opus.NewEncoder(encRate, wr.Channels(), app)
 	if err != nil {
 		return fmt.Errorf("opus encoder: %w", err)
 	}
@@ -150,9 +165,13 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		return fmt.Errorf("set complexity: %w", err)
 	}
 
-	lookahead, err := enc.Lookahead()
+	lookahead, err := enc.Lookahead() // in encoder-rate samples
 	if err != nil {
 		return fmt.Errorf("opus lookahead: %w", err)
+	}
+	preSkip, err := enc.PreSkip() // the same delay in 48 kHz samples, for OpusHead
+	if err != nil {
+		return fmt.Errorf("opus pre-skip: %w", err)
 	}
 
 	bw, ok := oggWriter.(*bufio.Writer)
@@ -163,13 +182,13 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 
 	pw := ogg.NewPacketWriter(bw, serial)
 	pw.MaxPageSize = maxAudioPageBytes
-	pw.MaxPagePackets = max(1, ogg.OpusSampleRateHz/frameSize) // about one second per page
+	pw.MaxPagePackets = max(1, encRate/frameSize) // about one second per page
 
 	head := ogg.OpusHead{
 		Version:              1,
 		Channels:             uint8(wr.Channels()),
-		PreSkip:              uint16(lookahead),
-		InputSampleRate:      48000,
+		PreSkip:              uint16(preSkip),
+		InputSampleRate:      uint32(srcRate),
 		OutputGainQ8:         0,
 		ChannelMappingFamily: 0,
 	}
@@ -218,10 +237,19 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				if n%wr.Channels() != 0 {
 					return fmt.Errorf("wav: sample count %d not a multiple of channels %d", n, wr.Channels())
 				}
-				pending = append(pending, readBuf[:n]...)
-				inputSamplesPerCh += uint64(n / wr.Channels())
+				chunk := readBuf[:n]
+				if resampler != nil {
+					chunk = resampler.ProcessInt16(chunk)
+				}
+				pending = append(pending, chunk...)
+				inputSamplesPerCh += uint64(len(chunk) / wr.Channels())
 			}
 			if errors.Is(rerr, io.EOF) {
+				if resampler != nil {
+					tail := resampler.FlushInt16()
+					pending = append(pending, tail...)
+					inputSamplesPerCh += uint64(len(tail) / wr.Channels())
+				}
 				eofReached = true
 			}
 		}
@@ -236,7 +264,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				return fmt.Errorf("opus encode: %w", err)
 			}
 			encodedSamplesPerCh += uint64(frameSize)
-			granule := encodedSamplesPerCh
+			granule := encodedSamplesPerCh * scale
 
 			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
 				return fmt.Errorf("ogg write: %w", err)
@@ -248,7 +276,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 			if targetSamplesPerCh == 0 {
 				targetSamplesPerCh = uint64(frameSize)
 			}
-			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh
+			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh*scale
 
 			for encodedSamplesPerCh < targetSamplesPerCh {
 				isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
@@ -273,7 +301,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 
 				// RFC 7845 Section 4: granule counts all decoded samples, pre-skip included,
 				// so interior pages carry no extra pre-skip offset; only EOS is trimmed.
-				granule := encodedSamplesPerCh
+				granule := encodedSamplesPerCh * scale
 				if isLast {
 					granule = eosGranule
 				}
@@ -293,6 +321,15 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		return fmt.Errorf("writer flush: %w", err)
 	}
 	return nil
+}
+
+// isOpusRate reports whether libopus encodes rate directly; every other rate is resampled.
+func isOpusRate(rate int) bool {
+	switch rate {
+	case 8000, 12000, 16000, 24000, 48000:
+		return true
+	}
+	return false
 }
 
 // maxAudioPageBytes caps the payload of a batched audio page. Packets are

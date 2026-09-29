@@ -3,6 +3,7 @@ package opusgo
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -219,10 +220,10 @@ func TestEncodeWAV_ValidationErrors(t *testing.T) {
 		t.Error("expected error for nil oggWriter, got nil")
 	}
 
-	// Unsupported sample rate
-	badRateWAV := generateSineWAV(t, 44100, 1, 1000)
-	if err := EncodeWAVToOggOpus(bytes.NewReader(badRateWAV), &bytes.Buffer{}, nil); err == nil {
-		t.Error("expected error for 44.1kHz WAV, got nil")
+	// Any sample rate is accepted (44.1 kHz is resampled), but more than two channels is not.
+	rate44k := generateSineWAV(t, 44100, 1, 1000)
+	if err := EncodeWAVToOggOpus(bytes.NewReader(rate44k), &bytes.Buffer{}, nil); err != nil {
+		t.Errorf("44.1 kHz WAV should be accepted, got %v", err)
 	}
 
 	// Unsupported frame duration
@@ -510,5 +511,118 @@ func TestConvertFiles_NeverDestroyExistingFiles(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(dst); !bytes.HasPrefix(got, []byte("OggS")) {
 		t.Fatal("destination was not replaced by the new output")
+	}
+}
+
+// decodedWAVPCM decodes an Ogg Opus stream to its (always 48 kHz) 16-bit PCM.
+func decodedWAVPCM(t *testing.T, ogg []byte) (pcm []int16, channels int) {
+	t.Helper()
+	var out memWriteSeeker
+	if err := DecodeOggOpusToWAV(bytes.NewReader(ogg), &out); err != nil {
+		t.Fatalf("DecodeOggOpusToWAV: %v", err)
+	}
+	wr, err := wav.NewReader(bytes.NewReader(out.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wr.SampleRate() != 48000 {
+		t.Fatalf("decoded sample rate = %d, want 48000", wr.SampleRate())
+	}
+	buf := make([]int16, 4096)
+	for {
+		n, err := wr.ReadInt16PCM(buf)
+		pcm = append(pcm, buf[:n]...)
+		if errors.Is(err, io.EOF) {
+			return pcm, wr.Channels()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// dominantHz estimates channel 0's frequency from zero crossings, ignoring the edges.
+func dominantHz(pcm []int16, channels int) float64 {
+	frames := len(pcm) / channels
+	lo, hi := frames/10, frames*9/10
+	n := 0
+	for i := lo + 1; i < hi; i++ {
+		if (pcm[(i-1)*channels] < 0) != (pcm[i*channels] < 0) {
+			n++
+		}
+	}
+	return float64(n) / 2 / (float64(hi-lo) / 48000)
+}
+
+// Every input rate is accepted: 8/12/16/24/48 kHz are encoded natively, anything else is
+// resampled to 48 kHz. The decoded stream always has exactly ceil(n*48000/rate) samples per
+// channel, keeps the pitch, records the real input rate, and has valid granule positions.
+func TestEncodeWAVToOggOpus_AnyInputSampleRate(t *testing.T) {
+	for _, rate := range []int{8000, 12000, 16000, 24000, 48000, 44100, 22050, 32000, 11025} {
+		for _, channels := range []int{1, 2} {
+			for _, n := range []int{0, 1, 1900, rate + 137} {
+				name := fmt.Sprintf("%dHz/%dch/%dframes", rate, channels, n)
+				src := generateSineWAV(t, rate, channels, n)
+				var oggBuf bytes.Buffer
+				if err := EncodeWAVToOggOpus(bytes.NewReader(src), &oggBuf, nil); err != nil {
+					t.Fatalf("%s: encode: %v", name, err)
+				}
+				raw := append([]byte(nil), oggBuf.Bytes()...)
+
+				r, err := ogg.NewOpusReader(bytes.NewReader(raw))
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				if int(r.Head.InputSampleRate) != rate {
+					t.Errorf("%s: OpusHead.InputSampleRate = %d, want %d", name, r.Head.InputSampleRate, rate)
+				}
+				if r.Head.PreSkip != 312 {
+					t.Errorf("%s: PreSkip = %d, want 312 (48 kHz units)", name, r.Head.PreSkip)
+				}
+
+				want := (n*48000 + rate - 1) / rate
+				var prev uint64
+				var last *ogg.OpusAudioPacket
+				for {
+					p, err := r.ReadAudioPacket()
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						t.Fatalf("%s: %v", name, err)
+					}
+					if p.GranuleValid {
+						if p.GranulePos < prev {
+							t.Fatalf("%s: granule decreased (%d after %d)", name, p.GranulePos, prev)
+						}
+						prev = p.GranulePos
+					}
+					last = p
+				}
+				if last == nil || !last.EOS {
+					t.Fatalf("%s: stream does not end with EOS", name)
+				}
+				if got := int(last.GranulePos) - int(r.Head.PreSkip); got != want {
+					t.Errorf("%s: EOS granule implies %d samples, want %d", name, got, want)
+				}
+
+				pcm, ch := decodedWAVPCM(t, raw)
+				if got := len(pcm) / ch; got != want {
+					t.Errorf("%s: decoded %d samples per channel, want %d", name, got, want)
+				}
+				if n == rate+137 {
+					if hz := dominantHz(pcm, ch); hz < 435 || hz > 445 {
+						t.Errorf("%s: decoded pitch %.1f Hz, want about 440", name, hz)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestEncodeWAVToOggOpus_RejectsMoreThanTwoChannels(t *testing.T) {
+	src := generateSineWAV(t, 48000, 3, 480)
+	if err := EncodeWAVToOggOpus(bytes.NewReader(src), io.Discard, nil); err == nil {
+		t.Fatal("expected an error for a 3-channel WAV")
 	}
 }
