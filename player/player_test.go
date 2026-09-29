@@ -1009,3 +1009,43 @@ func testGranuleBelowPreSkip(t *testing.T, channels int, f32 bool) {
 		}
 	}
 }
+
+// Seek(0, io.SeekCurrent) is the conventional way to query the position; it
+// must not re-seek or reset the decoder, or the audio after it would differ.
+func TestPlayer_SeekCurrentZeroIsPure(t *testing.T) {
+	ref, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ref.Close()
+	want, err := io.ReadAll(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	const head = 300000
+	got := make([]byte, head)
+	if _, err := io.ReadFull(p, got); err != nil {
+		t.Fatal(err)
+	}
+	pos, err := p.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if pos != head {
+		t.Errorf("Seek(0, SeekCurrent) = %d, want %d", pos, head)
+	}
+	rest, err := io.ReadAll(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, rest...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("audio after Seek(0, SeekCurrent) differs from uninterrupted playback (got %d bytes, want %d)", len(got), len(want))
+	}
+}

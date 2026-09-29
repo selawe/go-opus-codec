@@ -572,6 +572,12 @@ func (player *OpusPlayer[T]) Seek(offset int64, whence int) (int64, error) {
 
 	offset = byteToSample(offset)
 
+	// Seek(0, io.SeekCurrent) is a position query: answer it without re-seeking,
+	// which would rebuild the decoder and rescan the stream.
+	if whence == io.SeekCurrent && offset == 0 {
+		return player.totalSamples * bytesPerSample, nil
+	}
+
 	var err error
 
 	switch whence {
