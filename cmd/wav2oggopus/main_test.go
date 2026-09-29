@@ -287,3 +287,50 @@ func TestFrameSizeFromMS(t *testing.T) {
 		}
 	}
 }
+
+// RFC 7845 Section 4: interior granules count decoded samples without a
+// pre-skip offset, they never decrease, and EOS carries PreSkip + input length.
+func TestWav2OggOpus_GranulePositions(t *testing.T) {
+	const frames = 1900
+	wavPath := buildTestWAV(t, 48000, 1, frames)
+	outPath := filepath.Join(t.TempDir(), "out.opus")
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", outPath, "--cpuprofile", "", wavPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code %d (stderr=%q)", code, stderr.String())
+	}
+	outF, err := os.Open(outPath)
+	if err != nil {
+		t.Fatalf("open output: %v", err)
+	}
+	defer outF.Close()
+	r, err := ogg.NewOpusReader(outF)
+	if err != nil {
+		t.Fatalf("NewOpusReader: %v", err)
+	}
+
+	var prev uint64
+	var last *ogg.OpusAudioPacket
+	for i := 1; ; i++ {
+		pkt, err := r.ReadAudioPacket()
+		if err != nil {
+			break
+		}
+		if pkt.GranuleValid {
+			if pkt.GranulePos < prev {
+				t.Fatalf("packet %d: granule %d decreased from %d", i, pkt.GranulePos, prev)
+			}
+			prev = pkt.GranulePos
+		}
+		if i == 1 && pkt.GranulePos != 960 {
+			t.Errorf("first granule = %d, want 960", pkt.GranulePos)
+		}
+		last = pkt
+	}
+	if last == nil || !last.EOS {
+		t.Fatal("missing EOS packet")
+	}
+	if want := uint64(r.Head.PreSkip) + frames; last.GranulePos != want {
+		t.Errorf("EOS granule = %d, want %d", last.GranulePos, want)
+	}
+}

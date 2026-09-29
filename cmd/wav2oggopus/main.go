@@ -196,7 +196,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				return fail(stderr, err)
 			}
 			encodedSamplesPerCh += uint64(frameSize)
-			granule := uint64(head.PreSkip) + encodedSamplesPerCh
+			granule := encodedSamplesPerCh
 
 			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
 				_ = os.Remove(*outPath)
@@ -231,7 +231,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				}
 				encodedSamplesPerCh += uint64(frameSize)
 
-				granule := uint64(head.PreSkip) + encodedSamplesPerCh
+				granule := encodedSamplesPerCh
 				if isLast {
 					granule = eosGranule
 				}
