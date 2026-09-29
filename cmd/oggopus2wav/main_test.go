@@ -203,3 +203,35 @@ func TestOggOpus2Wav_EOSTrimming(t *testing.T) {
 		t.Fatalf("expected %d samples in wav output after EOS trimming, got %d", targetOriginalSamples, totalWavSamples)
 	}
 }
+
+func TestOggOpus2Wav_RefusesToOverwriteInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in.ogg")
+	content := []byte("OggS-not-really-but-must-survive")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if code := run([]string{"--out", path, path}, &stderr); code == 0 {
+		t.Fatal("expected a non-zero exit code when --out is the input file")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("input was modified (err=%v)", err)
+	}
+}
+
+func TestOggOpus2Wav_ErrorStillWritesCPUProfile(t *testing.T) {
+	dir := t.TempDir()
+	prof := filepath.Join(dir, "cpu.prof")
+	var stderr bytes.Buffer
+	code := run([]string{"--cpuprofile", prof, "--out", filepath.Join(dir, "o.wav"), filepath.Join(dir, "missing.ogg")}, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if fi, err := os.Stat(prof); err != nil || fi.Size() == 0 {
+		t.Errorf("CPU profile was not flushed on the error path (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "o.wav")); err == nil {
+		t.Error("output file exists after failure")
+	}
+}
