@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/selawe/go-opus-codec/internal/atomicfile"
 	"github.com/selawe/go-opus-codec/ogg"
 	"github.com/selawe/go-opus-codec/opus"
 	"github.com/selawe/go-opus-codec/wav"
@@ -433,18 +434,16 @@ func ConvertWAVFileToOggOpus(srcPath, dstPath string, opts *EncodeOptions) error
 	}
 	defer inF.Close()
 
-	outF, err := os.Create(dstPath)
+	outF, err := atomicfile.Create(dstPath, srcPath)
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
 	}
+	defer outF.Abort()
 
-	encodeErr := EncodeWAVToOggOpus(inF, outF, opts)
-	closeErr := outF.Close()
-	if encodeErr != nil {
-		_ = os.Remove(dstPath)
-		return encodeErr
+	if err := EncodeWAVToOggOpus(inF, outF, opts); err != nil {
+		return err
 	}
-	return closeErr
+	return outF.Commit()
 }
 
 // ConvertOggOpusFileToWAV decodes an Ogg Opus file at srcPath to a WAV file at dstPath.
@@ -455,18 +454,16 @@ func ConvertOggOpusFileToWAV(srcPath, dstPath string, opts ...DecodeOption) erro
 	}
 	defer inF.Close()
 
-	outF, err := os.Create(dstPath)
+	outF, err := atomicfile.Create(dstPath, srcPath)
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
 	}
+	defer outF.Abort()
 
-	decodeErr := DecodeOggOpusToWAV(inF, outF, opts...)
-	closeErr := outF.Close()
-	if decodeErr != nil {
-		_ = os.Remove(dstPath)
-		return decodeErr
+	if err := DecodeOggOpusToWAV(inF, outF, opts...); err != nil {
+		return err
 	}
-	return closeErr
+	return outF.Commit()
 }
 
 func frameSizeFromMS(ms int) (int, error) {

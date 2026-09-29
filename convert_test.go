@@ -456,3 +456,59 @@ func TestEncodeWAVToOggOpus_BatchesPages(t *testing.T) {
 		t.Errorf("decoded %d samples, want %d", got, n)
 	}
 }
+
+func TestConvertFiles_NeverDestroyExistingFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Refuse to write over the input.
+	wavPath := filepath.Join(tmpDir, "in.wav")
+	if err := os.WriteFile(wavPath, generateSineWAV(t, 48000, 1, 4800), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(wavPath)
+	if err := ConvertWAVFileToOggOpus(wavPath, wavPath, nil); err == nil {
+		t.Fatal("expected an error when dst == src")
+	}
+	if after, _ := os.ReadFile(wavPath); !bytes.Equal(before, after) {
+		t.Fatal("input WAV was modified")
+	}
+
+	oggPath := filepath.Join(tmpDir, "in.ogg")
+	if err := ConvertWAVFileToOggOpus(wavPath, oggPath, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, _ = os.ReadFile(oggPath)
+	if err := ConvertOggOpusFileToWAV(oggPath, oggPath); err == nil {
+		t.Fatal("expected an error when dst == src")
+	}
+	if after, _ := os.ReadFile(oggPath); !bytes.Equal(before, after) {
+		t.Fatal("input Ogg was modified")
+	}
+
+	// A failed conversion keeps a pre-existing destination intact.
+	bad := filepath.Join(tmpDir, "bad.wav")
+	if err := os.WriteFile(bad, []byte("not a wav file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmpDir, "keep.ogg")
+	if err := os.WriteFile(dst, []byte("previous good output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConvertWAVFileToOggOpus(bad, dst, nil); err == nil {
+		t.Fatal("expected error")
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "previous good output" {
+		t.Fatalf("existing destination was destroyed: %q", got)
+	}
+	if ents, _ := os.ReadDir(tmpDir); len(ents) != 4 {
+		t.Errorf("unexpected leftover files: %v", ents)
+	}
+
+	// A successful conversion replaces it.
+	if err := ConvertWAVFileToOggOpus(wavPath, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dst); !bytes.HasPrefix(got, []byte("OggS")) {
+		t.Fatal("destination was not replaced by the new output")
+	}
+}
