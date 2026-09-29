@@ -3,6 +3,7 @@ package opus
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,10 @@ const stackChildEnv = "OPUS_STACK_PACKET_CHILD"
 // test re-runs itself with it to turn a silent stale read into a hard failure.
 func TestDecodeStackResidentPacket(t *testing.T) {
 	if os.Getenv(stackChildEnv) == "" {
+		// efence makes the runtime fault freed stacks; that is only relied upon on Linux.
+		if runtime.GOOS != "linux" {
+			t.Skip("GODEBUG=efence stack faulting is only exercised on linux")
+		}
 		cmd := exec.Command(os.Args[0], "-test.run=^(TestDecodeStackResidentPacket|TestMultistreamStackResidentMapping)$", "-test.count=1")
 		cmd.Env = append(os.Environ(), stackChildEnv+"=1", "GODEBUG=efence=1")
 		out, err := cmd.CombinedOutput()

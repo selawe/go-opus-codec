@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -99,7 +100,8 @@ func TestExistingFileSurvivesAbortAndIsReplacedOnCommit(t *testing.T) {
 	if got := read(t, dst); got != "new" {
 		t.Fatalf("content = %q", got)
 	}
-	if fi, _ := os.Stat(dst); fi.Mode().Perm() != 0o640 {
+	// Windows has no POSIX permission bits to preserve.
+	if fi, _ := os.Stat(dst); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 		t.Errorf("mode = %v, want 0640 preserved", fi.Mode().Perm())
 	}
 	if got := names(t, dir); len(got) != 1 {
