@@ -24,11 +24,18 @@ type PacketWriter struct {
 	// If MaxPageSize <= 0 (default), each packet is emitted on its own page (1:1 mode).
 	MaxPageSize int
 
+	// MaxPagePackets, if > 0, also ends a batched page once it holds this many
+	// packets. Use it to bound page duration (for example one second of audio),
+	// which keeps seeking granular at low bitrates. It has no effect when
+	// MaxPageSize <= 0.
+	MaxPagePackets int
+
 	pageHeaderType uint8
 	pageGranule    uint64
 	pageSegTable   []byte
 	pageData       []byte
 	hasPendingPage bool
+	pagePackets    int
 
 	laceBuf    []byte
 	pageHeader [27]byte
@@ -67,6 +74,7 @@ func (pw *PacketWriter) FlushPage() error {
 	pw.pageSegTable = pw.pageSegTable[:0]
 	pw.pageData = pw.pageData[:0]
 	pw.hasPendingPage = false
+	pw.pagePackets = 0
 	return nil
 }
 
@@ -157,13 +165,15 @@ func (pw *PacketWriter) WritePacket(packet []byte, granulePos uint64, bos bool, 
 	pw.pageData = append(pw.pageData, packet...)
 	pw.pageGranule = granulePos
 	pw.hasPendingPage = true
+	pw.pagePackets++
 
 	if eos {
 		pw.pageHeaderType |= 0x04
 		return pw.FlushPage()
 	}
 
-	if len(pw.pageData) >= pw.MaxPageSize || len(pw.pageSegTable) >= 255 {
+	if len(pw.pageData) >= pw.MaxPageSize || len(pw.pageSegTable) >= 255 ||
+		(pw.MaxPagePackets > 0 && pw.pagePackets >= pw.MaxPagePackets) {
 		return pw.FlushPage()
 	}
 

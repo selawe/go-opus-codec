@@ -676,3 +676,41 @@ func TestSeekToPage_ContinuedPage(t *testing.T) {
 		t.Fatalf("expected audio-3, got %s", string(pkt.Data))
 	}
 }
+
+func TestPacketWriter_MaxPagePackets(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 7)
+	pw.MaxPageSize = 1 << 20
+	pw.MaxPagePackets = 4
+
+	for i := 0; i < 10; i++ {
+		if err := pw.WritePacket([]byte{byte(i), 1, 2}, uint64(i+1)*960, false, i == 9); err != nil {
+			t.Fatalf("WritePacket %d: %v", i, err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	pr := NewPageReader(bytes.NewReader(buf.Bytes()))
+	var counts []int
+	for {
+		p, err := pr.ReadPage()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadPage: %v", err)
+		}
+		counts = append(counts, len(p.SegmentTable))
+	}
+	want := []int{4, 4, 2}
+	if len(counts) != len(want) {
+		t.Fatalf("page packet counts = %v, want %v", counts, want)
+	}
+	for i := range want {
+		if counts[i] != want[i] {
+			t.Fatalf("page packet counts = %v, want %v", counts, want)
+		}
+	}
+}
