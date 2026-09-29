@@ -173,17 +173,52 @@ func TestWav2OggOpus_UnknownFrameMS(t *testing.T) {
 	}
 }
 
-func TestWav2OggOpus_WrongSampleRate(t *testing.T) {
-	wavPath := buildTestWAV(t, 44100, 1, 4410)
-	outPath := filepath.Join(t.TempDir(), "out.opus")
+// Any WAV sample rate is accepted: libopus rates are encoded natively, others are resampled
+// to 48 kHz. The decoded length is ceil(frames*48000/rate) and OpusHead records the real rate.
+func TestWav2OggOpus_AcceptsAnySampleRate(t *testing.T) {
+	for _, rate := range []int{8000, 16000, 24000, 44100, 22050} {
+		frames := rate + 321
+		wavPath := buildTestWAV(t, rate, 2, frames)
+		outPath := filepath.Join(t.TempDir(), "out.opus")
 
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"--out", outPath, "--cpuprofile", "", wavPath}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("expected exit code 1, got %d", code)
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--out", outPath, "--cpuprofile", "", wavPath}, &stdout, &stderr); code != 0 {
+			t.Fatalf("rate %d: exit code %d (stderr=%q)", rate, code, stderr.String())
+		}
+		f, err := os.Open(outPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := ogg.NewOpusReader(f)
+		if err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+		if int(r.Head.InputSampleRate) != rate {
+			t.Errorf("rate %d: OpusHead.InputSampleRate = %d", rate, r.Head.InputSampleRate)
+		}
+		var last *ogg.OpusAudioPacket
+		for {
+			p, err := r.ReadAudioPacket()
+			if err != nil {
+				break
+			}
+			last = p
+		}
+		f.Close()
+		want := (frames*48000 + rate - 1) / rate
+		if last == nil || !last.EOS || int(last.GranulePos)-int(r.Head.PreSkip) != want {
+			t.Errorf("rate %d: stream does not end at %d samples with EOS", rate, want)
+		}
 	}
-	if !strings.Contains(stderr.String(), "only 48kHz WAV supported") {
-		t.Fatalf("expected stderr to mention 48kHz requirement, got: %s", stderr.String())
+}
+
+func TestWav2OggOpus_ComplexityZeroIsAccepted(t *testing.T) {
+	wavPath := buildTestWAV(t, 48000, 1, 4800)
+	outPath := filepath.Join(t.TempDir(), "out.opus")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", outPath, "--cpuprofile", "", "--complexity", "0", wavPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code %d (stderr=%q)", code, stderr.String())
 	}
 }
 
@@ -199,7 +234,7 @@ func TestWav2OggOpus_InvalidChannelCount(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
 	}
-	if !strings.Contains(stderr.String(), "only mono and stereo") {
+	if !strings.Contains(stderr.String(), "only mono (1) and stereo (2)") {
 		t.Fatalf("expected stderr to mention mono/stereo requirement, got: %s", stderr.String())
 	}
 }
@@ -257,33 +292,15 @@ func TestParseApplication(t *testing.T) {
 	}
 }
 
-func TestFrameSizeFromMS(t *testing.T) {
-	cases := []struct {
-		ms      int
-		want    int
-		wantErr bool
-	}{
-		{5, 240, false},
-		{10, 480, false},
-		{20, 960, false},
-		{40, 1920, false},
-		{60, 2880, false},
-		{13, 0, true},
+func TestCheckFrameMS(t *testing.T) {
+	for _, ms := range []int{5, 10, 20, 40, 60} {
+		if err := checkFrameMS(ms); err != nil {
+			t.Errorf("checkFrameMS(%d): unexpected error: %v", ms, err)
+		}
 	}
-	for _, c := range cases {
-		got, err := frameSizeFromMS(c.ms)
-		if c.wantErr {
-			if err == nil {
-				t.Errorf("frameSizeFromMS(%d): expected error, got nil", c.ms)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("frameSizeFromMS(%d): unexpected error: %v", c.ms, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("frameSizeFromMS(%d) = %d, want %d", c.ms, got, c.want)
+	for _, ms := range []int{0, 2, 13, 25, 120, -20} {
+		if err := checkFrameMS(ms); err == nil {
+			t.Errorf("checkFrameMS(%d): expected an error", ms)
 		}
 	}
 }

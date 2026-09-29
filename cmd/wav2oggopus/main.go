@@ -2,21 +2,16 @@ package main
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/binary"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"runtime/pprof"
 	"strings"
-	"time"
 
+	opusgo "github.com/selawe/go-opus-codec"
 	"github.com/selawe/go-opus-codec/internal/atomicfile"
-	"github.com/selawe/go-opus-codec/ogg"
 	"github.com/selawe/go-opus-codec/opus"
-	"github.com/selawe/go-opus-codec/wav"
 )
 
 func main() {
@@ -65,9 +60,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-
-	frameSize, err := frameSizeFromMS(*frameMS)
-	if err != nil {
+	if err := checkFrameMS(*frameMS); err != nil {
 		return fail(stderr, err)
 	}
 
@@ -77,42 +70,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer inF.Close()
 
-	wr, err := wav.NewReader(inF)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	if wr.SampleRate() != 48000 {
-		return fail(stderr, fmt.Errorf("only 48kHz WAV supported currently (got %d)", wr.SampleRate()))
-	}
-	if wr.Channels() < 1 || wr.Channels() > 2 {
-		return fail(stderr, fmt.Errorf("only mono and stereo (1 or 2 channels) WAV files supported currently (got %d)", wr.Channels()))
-	}
-
-	enc, err := opus.NewEncoder(wr.SampleRate(), wr.Channels(), app)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	defer enc.Close()
-
-	if *bitrate > 0 {
-		if err := enc.SetBitrate(*bitrate); err != nil {
-			return fail(stderr, err)
-		}
-	}
-	if err := enc.SetVBR(*vbr); err != nil {
-		return fail(stderr, err)
-	}
-	if *complexity >= 0 {
-		if err := enc.SetComplexity(*complexity); err != nil {
-			return fail(stderr, err)
-		}
-	}
-
-	lookahead, err := enc.Lookahead()
-	if err != nil {
-		return fail(stderr, err)
-	}
-
 	// Written to a temp file (or a fresh file) and only made visible by Commit, so a
 	// failure never leaves a partial output nor destroys an existing one.
 	outF, err := atomicfile.Create(*outPath, inPath)
@@ -120,140 +77,34 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	defer outF.Abort()
-	outBW := bufio.NewWriterSize(outF, 1<<20)
 
-	serial := randomSerial()
-	pw := ogg.NewPacketWriter(outBW, serial)
-	// Batch packets (about one second per page) instead of one page per packet.
-	pw.MaxPageSize = 8 << 10
-	pw.MaxPagePackets = max(1, ogg.OpusSampleRateHz/frameSize)
-
-	head := ogg.OpusHead{
-		Version:         1,
-		Channels:        uint8(wr.Channels()),
-		PreSkip:         uint16(lookahead),
-		InputSampleRate: 48000,
-		OutputGainQ8:    0,
-		// ChannelMappingFamily=0 covers mono/stereo and lets decoders infer mapping.
-		ChannelMappingFamily: 0,
-	}
-	headPkt, err := ogg.BuildOpusHeadPacket(head)
+	// The library does the encoding: any WAV sample rate (resampled to 48 kHz when libopus
+	// does not support it), pre-skip, RFC 7845 granule positions and lookahead flushing.
+	err = opusgo.EncodeWAVToOggOpus(bufio.NewReaderSize(inF, 1<<20), outF, &opusgo.EncodeOptions{
+		Bitrate:            *bitrate,
+		CBR:                !*vbr,
+		Complexity:         *complexity,
+		ComplexityExplicit: *complexity >= 0, // a negative value keeps the encoder default of 10
+		Application:        app,
+		FrameSizeMS:        *frameMS,
+		Vendor:             *vendor,
+	})
 	if err != nil {
-		return fail(stderr, err)
-	}
-
-	tags := ogg.OpusTags{
-		Vendor:   *vendor,
-		Comments: []string{"ENCODER=opusgo", "ENCODED=" + time.Now().UTC().Format(time.RFC3339)},
-	}
-	tagsPkt, err := ogg.BuildOpusTagsPacket(tags)
-	if err != nil {
-		return fail(stderr, err)
-	}
-
-	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
-		return fail(stderr, err)
-	}
-	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
-		return fail(stderr, err)
-	}
-	// RFC 7845 Section 3: OpusTags must end its page and audio starts on a fresh one.
-	if err := pw.FlushPage(); err != nil {
-		return fail(stderr, err)
-	}
-
-	frameSamples := frameSize * wr.Channels()
-	pcm := make([]int16, frameSamples)
-	packet := make([]byte, 4000)
-	var inputSamplesPerCh uint64
-	var encodedSamplesPerCh uint64
-	var eofReached bool
-	pending := make([]int16, 0, 2*frameSamples)
-	readBuf := make([]int16, frameSamples)
-
-	for {
-		for len(pending) < frameSamples && !eofReached {
-			n, rerr := wr.ReadInt16PCM(readBuf)
-			if rerr != nil && !errors.Is(rerr, io.EOF) {
-				return fail(stderr, rerr)
-			}
-			if n > 0 {
-				if n%wr.Channels() != 0 {
-					return fail(stderr, fmt.Errorf("wav: sample count not multiple of channels"))
-				}
-				pending = append(pending, readBuf[:n]...)
-				inputSamplesPerCh += uint64(n / wr.Channels())
-			}
-			if errors.Is(rerr, io.EOF) {
-				eofReached = true
-			}
-		}
-
-		if !eofReached {
-			copy(pcm, pending[:frameSamples])
-			pending = pending[frameSamples:]
-
-			nBytes, err := enc.Encode(pcm, frameSize, packet)
-			if err != nil {
-				return fail(stderr, err)
-			}
-			encodedSamplesPerCh += uint64(frameSize)
-			granule := encodedSamplesPerCh
-
-			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
-				return fail(stderr, err)
-			}
-		} else {
-			targetSamplesPerCh := ((inputSamplesPerCh + uint64(lookahead) + uint64(frameSize) - 1) / uint64(frameSize)) * uint64(frameSize)
-			if targetSamplesPerCh == 0 {
-				targetSamplesPerCh = uint64(frameSize)
-			}
-			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh
-
-			for encodedSamplesPerCh < targetSamplesPerCh {
-				isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
-
-				toCopy := len(pending)
-				if toCopy > frameSamples {
-					toCopy = frameSamples
-				}
-				copy(pcm[:toCopy], pending[:toCopy])
-				for i := toCopy; i < frameSamples; i++ {
-					pcm[i] = 0
-				}
-				if toCopy > 0 {
-					pending = pending[toCopy:]
-				}
-
-				nBytes, err := enc.Encode(pcm, frameSize, packet)
-				if err != nil {
-					return fail(stderr, err)
-				}
-				encodedSamplesPerCh += uint64(frameSize)
-
-				granule := encodedSamplesPerCh
-				if isLast {
-					granule = eosGranule
-				}
-
-				if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
-					return fail(stderr, err)
-				}
-			}
-			break
-		}
-	}
-
-	if err := pw.Flush(); err != nil {
-		return fail(stderr, err)
-	}
-	if err := outBW.Flush(); err != nil {
 		return fail(stderr, err)
 	}
 	if err := outF.Commit(); err != nil {
 		return fail(stderr, err)
 	}
 	return 0
+}
+
+// checkFrameMS rejects frame durations libopus does not accept before any file is touched.
+func checkFrameMS(ms int) error {
+	switch ms {
+	case 5, 10, 20, 40, 60:
+		return nil
+	}
+	return fmt.Errorf("unsupported frame-ms %d (use 5|10|20|40|60)", ms)
 }
 
 func parseApplication(s string) (int, error) {
@@ -273,32 +124,6 @@ func parseApplication(s string) (int, error) {
 	default:
 		return 0, fmt.Errorf("unknown application: %q", s)
 	}
-}
-
-func frameSizeFromMS(ms int) (int, error) {
-	switch ms {
-	case 5:
-		return 240, nil
-	case 10:
-		return 480, nil
-	case 20:
-		return 960, nil
-	case 40:
-		return 1920, nil
-	case 60:
-		return 2880, nil
-	default:
-		return 0, fmt.Errorf("unsupported frame-ms %d (use 5|10|20|40|60)", ms)
-	}
-}
-
-func randomSerial() uint32 {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err == nil {
-		return binary.LittleEndian.Uint32(b[:])
-	}
-	// Fallback: time-based.
-	return uint32(time.Now().UnixNano())
 }
 
 func fail(w io.Writer, err error) int {
