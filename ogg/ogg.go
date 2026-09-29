@@ -22,6 +22,23 @@ import (
 	"io"
 )
 
+// ErrTruncatedPage is returned by PageReader.ReadPage when the stream ends inside a page
+// (a cut-off download or recording), as opposed to a clean end on a page boundary.
+//
+// It matches io.ErrUnexpectedEOF, so callers can tell truncation from a normal end. It also
+// still matches io.EOF, so code that only stops on errors.Is(err, io.EOF) keeps working;
+// callers that must treat truncation as an error should test for it first. Code comparing
+// with err == io.EOF sees only the clean end of stream.
+var ErrTruncatedPage error = truncatedPageError{}
+
+type truncatedPageError struct{}
+
+func (truncatedPageError) Error() string { return "ogg: truncated page: unexpected EOF" }
+
+func (truncatedPageError) Is(target error) bool {
+	return target == io.ErrUnexpectedEOF || target == io.EOF
+}
+
 var (
 	ErrInvalidCapturePattern = errors.New("ogg: invalid capture pattern")
 	ErrUnsupportedVersion    = errors.New("ogg: unsupported version")
@@ -163,7 +180,7 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		hdr, err := pr.r.Peek(27)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, io.EOF
+				return nil, ErrTruncatedPage
 			}
 			return nil, err
 		}
@@ -198,7 +215,7 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		hdrAndSegs, err := pr.r.Peek(27 + pageSegments)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, io.EOF
+				return nil, ErrTruncatedPage
 			}
 			return nil, err
 		}
@@ -212,7 +229,7 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		fullPage, err := pr.r.Peek(totalPageSize)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, io.EOF
+				return nil, ErrTruncatedPage
 			}
 			if errors.Is(err, bufio.ErrBufferFull) {
 				buf := make([]byte, totalPageSize)

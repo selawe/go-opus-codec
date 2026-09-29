@@ -761,3 +761,60 @@ func TestLastPageGranule_KeepsReadPosition(t *testing.T) {
 		t.Fatalf("expected EOF after last packet, got %v", err)
 	}
 }
+
+// A stream cut inside a page must be distinguishable from a clean end of stream,
+// while still satisfying errors.Is(err, io.EOF) for callers that stop on EOF.
+func TestPageReader_TruncationIsDistinguishable(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x12345678)
+	for i := 0; i < 2; i++ {
+		if err := pw.WritePacket(bytes.Repeat([]byte{byte(i + 1)}, 300), uint64(i+1)*960, i == 0, i == 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	full := buf.Bytes()
+
+	pages := NewPageReader(bytes.NewReader(full))
+	first, err := pages.ReadPage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLen := 27 + len(first.SegmentTable) + len(first.SegmentData)
+
+	// Clean end of stream: plain io.EOF, not a truncation.
+	pr := NewPageReader(bytes.NewReader(full))
+	for i := 0; i < 2; i++ {
+		if _, err := pr.ReadPage(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = pr.ReadPage()
+	if err != io.EOF {
+		t.Fatalf("clean end of stream: got %v, want io.EOF", err)
+	}
+
+	// Cut inside the fixed header, inside the segment table, and inside the body.
+	for name, cut := range map[string]int{
+		"header":        firstLen + 10,
+		"segment table": firstLen + 27 + 1,
+		"body":          len(full) - 5,
+	} {
+		pr := NewPageReader(bytes.NewReader(full[:cut]))
+		if _, err := pr.ReadPage(); err != nil {
+			t.Fatalf("%s: first page: %v", name, err)
+		}
+		_, err := pr.ReadPage()
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("%s: got %v, want io.ErrUnexpectedEOF", name, err)
+		}
+		if !errors.Is(err, io.EOF) {
+			t.Errorf("%s: got %v, want it to still match io.EOF", name, err)
+		}
+		if !errors.Is(err, ErrTruncatedPage) {
+			t.Errorf("%s: got %v, want ErrTruncatedPage", name, err)
+		}
+	}
+}

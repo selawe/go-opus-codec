@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"testing"
 )
 
@@ -524,5 +525,73 @@ func TestOpusReader_TotalSamples_TruncatedStream(t *testing.T) {
 	}
 	if dur < 0 {
 		t.Fatalf("expected non-negative duration, got %v", dur)
+	}
+}
+
+// A file cut mid-page: packets before the cut are delivered, then the reader
+// reports truncation (still matching io.EOF for callers that only stop on EOF).
+func TestOpusReader_TruncatedFileReportsUnexpectedEOF(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x11223344)
+	headPkt, err := BuildOpusHeadPacket(OpusHead{Version: 1, Channels: 1, PreSkip: 312, InputSampleRate: 48000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagsPkt, err := BuildOpusTagsPacket(OpusTags{Vendor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, pk := range [][]byte{headPkt, tagsPkt} {
+		if err := pw.WritePacket(pk, 0, i == 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := pw.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if err := pw.WritePacket([]byte{0xFC, byte(i), 2, 3}, uint64(i+1)*960, false, i == 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+
+	r, err := NewOpusReader(bytes.NewReader(raw[:len(raw)-3]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := 0
+	for {
+		_, err := r.ReadAudioPacket()
+		if err == nil {
+			got++
+			continue
+		}
+		if !errors.Is(err, io.ErrUnexpectedEOF) || !errors.Is(err, io.EOF) {
+			t.Fatalf("after %d packets: got %v, want truncation error matching both io.ErrUnexpectedEOF and io.EOF", got, err)
+		}
+		break
+	}
+	if got != 2 {
+		t.Errorf("delivered %d packets before the cut, want 2", got)
+	}
+
+	// The untouched file still ends with a plain io.EOF.
+	r, err = NewOpusReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, err := r.ReadAudioPacket()
+		if err == nil {
+			continue
+		}
+		if err != io.EOF {
+			t.Fatalf("complete file: got %v, want io.EOF", err)
+		}
+		break
 	}
 }
