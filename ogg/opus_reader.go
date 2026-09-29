@@ -81,6 +81,11 @@ type OpusAudioPacket struct {
 	GranuleValid bool   // True if the packet finishes on a page with a valid granule position
 	EOS          bool   // True if this is the final packet (End of Stream)
 	PageSequence uint32 // Ogg page sequence number
+
+	// Discontinuity is true when pages were lost right before this packet (a gap in the page
+	// sequence numbers). Damaged packets are dropped, never returned, so the audio before this
+	// packet is missing; conceal it (for example with a nil-packet decode) before decoding.
+	Discontinuity bool
 }
 
 // OpusReader reads an Ogg Opus file/stream and yields Opus audio packets.
@@ -191,6 +196,8 @@ func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 		GranuleValid: pkt.GranuleValid,
 		EOS:          pkt.EOS,
 		PageSequence: pkt.PageSequenceEnd,
+
+		Discontinuity: pkt.Discontinuity,
 	}, nil
 }
 

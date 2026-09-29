@@ -682,3 +682,51 @@ func TestOpusReader_OpusTagsBeyondHeaderLimitRejected(t *testing.T) {
 		t.Fatalf("got %v, want ErrPacketTooLarge", err)
 	}
 }
+
+func TestOpusReader_ReportsDiscontinuity(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x11223344)
+	headPkt, _ := BuildOpusHeadPacket(OpusHead{Version: 1, Channels: 1, PreSkip: 312, InputSampleRate: 48000})
+	tagsPkt, _ := BuildOpusTagsPacket(OpusTags{Vendor: "test"})
+	for i, pk := range [][]byte{headPkt, tagsPkt} {
+		if err := pw.WritePacket(pk, 0, i == 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := pw.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if err := pw.WritePacket([]byte{0xFC, byte(i), 2, 3}, uint64(i+1)*960, false, i == 4); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	pages := splitPages(t, buf.Bytes())
+	damaged := bytes.Join(append(append([][]byte{}, pages[:4]...), pages[5:]...), nil) // lose the 3rd audio page
+
+	r, err := NewOpusReader(bytes.NewReader(damaged))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flagged []int
+	n := 0
+	for {
+		pkt, err := r.ReadAudioPacket()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pkt.Discontinuity {
+			flagged = append(flagged, n)
+		}
+		n++
+	}
+	if n != 4 || len(flagged) != 1 || flagged[0] != 2 {
+		t.Errorf("got %d packets, flagged %v; want 4 packets with only index 2 flagged", n, flagged)
+	}
+}
