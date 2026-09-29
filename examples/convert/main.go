@@ -448,6 +448,10 @@ func main() {
 
 	serial := randomSerial()
 	pw := ogg.NewPacketWriter(outBW, serial)
+	// Batch packets into pages of about one second instead of one page per packet,
+	// which would add a 27+ byte page header to every packet.
+	pw.MaxPageSize = 8 << 10
+	pw.MaxPagePackets = max(1, opusSampleRate/frameSize48k)
 
 	head := ogg.OpusHead{
 		Version:              1,
@@ -477,21 +481,32 @@ func main() {
 	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
 		fatal(err)
 	}
+	// RFC 7845 Section 3: OpusTags must end its page and audio starts on a fresh one.
+	if err := pw.FlushPage(); err != nil {
+		fatal(err)
+	}
 
 	resampler := newLinearResampler(decodedReader, inSampleRate, opusSampleRate, channels)
 
 	pcm := make([]int16, frameSize48k*channels)
 	packet := make([]byte, 4000)
-	var totalSamplesPerCh48k uint64
+	var totalSamplesPerCh48k uint64 // input samples, at 48 kHz
 	var framesDone int64
+	inputDone := false
 
 	for {
-		framesActual, done, err := resampler.Fill(pcm, frameSize48k)
-		if err != nil {
-			fatal(err)
-		}
-		if framesActual == 0 && done {
-			break
+		framesActual := 0
+		if !inputDone {
+			var done bool
+			var err error
+			framesActual, done, err = resampler.Fill(pcm, frameSize48k)
+			if err != nil {
+				fatal(err)
+			}
+			inputDone = done
+			totalSamplesPerCh48k += uint64(framesActual)
+		} else {
+			clear(pcm) // flush the encoder lookahead with silence
 		}
 
 		nBytes, err := enc.Encode(pcm, frameSize48k, packet)
@@ -502,19 +517,24 @@ func main() {
 		framesDone++
 		progress.Print(framesDone, resampler.BytesRead(), false)
 
-		totalSamplesPerCh48k += uint64(framesActual)
-		// RFC 7845 Section 4: granule counts all decoded samples (pre-skip included),
-		// so interior pages carry the encoded sample count. Only the final page is
-		// trimmed to PreSkip + input length, and never beyond what was encoded.
-		granule := uint64(framesDone) * uint64(frameSize48k)
-		if done {
-			granule = min(granule, uint64(head.PreSkip)+totalSamplesPerCh48k)
+		// The encoder delays its output by the lookahead (the pre-skip), so keep encoding
+		// after the input ends until every input sample has come out of it.
+		encoded := uint64(framesDone) * uint64(frameSize48k)
+		needed := totalSamplesPerCh48k + uint64(head.PreSkip)
+		isLast := inputDone && encoded >= needed
+
+		// RFC 7845 Section 4: granule counts all decoded samples (pre-skip included), so
+		// interior pages carry the encoded sample count. Only the final page is trimmed,
+		// to PreSkip + input length.
+		granule := encoded
+		if isLast {
+			granule = needed
 		}
 
-		if err := pw.WritePacket(packet[:nBytes], granule, false, done); err != nil {
+		if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
 			fatal(err)
 		}
-		if done {
+		if isLast {
 			break
 		}
 	}
