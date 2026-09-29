@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] - 2026-09-29
+
+Patch release: fixes an output-handling regression introduced in 0.3.0 and makes the test suite portable to Windows and macOS. No API changes.
+
+### Fixed
+- `internal/atomicfile` (used by `wav2oggopus`, `oggopus2wav`, `oggopusextract` and the `Convert*File` helpers) opened device destinations with `O_TRUNC`, which Windows rejects for `NUL` (`open NUL: Incorrect function`), so `-out NUL` failed there. Only regular files are truncated now (`0448613`)
+- Symlink and device destinations are written in place. Previously a symlink such as `/dev/stdout` was renamed over, so `wav2oggopus -out /dev/stdout > file` failed or lost its data when stdout was redirected to a file (`0448613`)
+
+### Tests
+- The permission-bit assertion is skipped on Windows, and the `GODEBUG=efence` stack-residency test runs only on Linux, so the Windows and macOS CI jobs pass (`ed05463`)
+
+### CI & Tooling
+- The GitHub Release body is now built from the matching `CHANGELOG.md` section by `scripts/release_notes.sh`, followed by install and verification notes and GitHub's generated list. The release fails if the changelog has no section for the tag (`1ea7b10`)
+- `.gitattributes` forces LF for `*.sh`, so shell scripts still run in CRLF checkouts (`d7a37b4`)
+
 ## [0.3.0] - 2026-09-29
 
 Minor release (pre-1.0 semver): it adds public API (`ogg.ErrTruncatedPage`, `Discontinuity`, `PacketWriter.MaxPagePackets`, `ogg.MaxOpusHeaderPacketSize`) and changes behavior in a few places. Files written by earlier versions are unaffected and still play; the granule fix only changes what new files contain.
