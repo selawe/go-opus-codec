@@ -105,14 +105,21 @@ const OpusSampleRateHz = 48000
 // A single Opus packet can contain up to 48 frames with maximum 120 ms audio (~61,200 bytes) plus header/padding.
 const MaxOpusPacketSize = 64 * 1024
 
+// MaxOpusHeaderPacketSize is the maximum permitted size (16 MiB) for the OpusHead and OpusTags header
+// packets. RFC 7845 sets no limit on OpusTags, and embedded cover art (METADATA_BLOCK_PICTURE)
+// routinely makes it far larger than an audio packet, so headers get a more generous cap than
+// MaxOpusPacketSize. Audio packets are still limited to MaxOpusPacketSize.
+const MaxOpusHeaderPacketSize = 16 * 1024 * 1024
+
 // NewOpusReader creates a new OpusReader reading from r, parsing the mandatory OpusHead and OpusTags headers.
 func NewOpusReader(r io.Reader) (*OpusReader, error) {
 	pr := NewPacketReader(r)
-	pr.SetMaxPacketSize(MaxOpusPacketSize)
+	pr.SetMaxPacketSize(MaxOpusHeaderPacketSize)
 	or := &OpusReader{pr: pr}
 	if err := or.readHeaders(); err != nil {
 		return nil, err
 	}
+	pr.SetMaxPacketSize(MaxOpusPacketSize)
 	return or, nil
 }
 

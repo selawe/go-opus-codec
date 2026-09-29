@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -593,5 +594,91 @@ func TestOpusReader_TruncatedFileReportsUnexpectedEOF(t *testing.T) {
 			t.Fatalf("complete file: got %v, want io.EOF", err)
 		}
 		break
+	}
+}
+
+func buildStreamWithTags(t *testing.T, tags OpusTags) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x11223344)
+	headPkt, err := BuildOpusHeadPacket(OpusHead{Version: 1, Channels: 1, PreSkip: 312, InputSampleRate: 48000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagsPkt, err := BuildOpusTagsPacket(tags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, pk := range [][]byte{headPkt, tagsPkt} {
+		if err := pw.WritePacket(pk, 0, i == 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := pw.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.WritePacket([]byte{0xFC, 1, 2, 3}, 960, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// RFC 7845 Section 5.2 puts no size limit on OpusTags; embedded cover art
+// (METADATA_BLOCK_PICTURE) routinely makes it far larger than an audio packet.
+func TestOpusReader_LargeOpusTags(t *testing.T) {
+	art := strings.Repeat("A", 300*1024)
+	raw := buildStreamWithTags(t, OpusTags{Vendor: "test", Comments: []string{"TITLE=x", "METADATA_BLOCK_PICTURE=" + art}})
+
+	r, err := NewOpusReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("NewOpusReader with a %d byte OpusTags: %v", len(art), err)
+	}
+	if len(r.Tags.Comments) != 2 || len(r.Tags.Comments[1]) != len("METADATA_BLOCK_PICTURE=")+len(art) {
+		t.Fatalf("tags not parsed intact: %d comments", len(r.Tags.Comments))
+	}
+	pkt, err := r.ReadAudioPacket()
+	if err != nil {
+		t.Fatalf("ReadAudioPacket: %v", err)
+	}
+	if !bytes.Equal(pkt.Data, []byte{0xFC, 1, 2, 3}) {
+		t.Errorf("audio packet = %x", pkt.Data)
+	}
+}
+
+// The relaxed limit only applies to the headers: audio packets keep the 64 KiB cap.
+func TestOpusReader_LargeOpusTagsDoNotRelaxAudioLimit(t *testing.T) {
+	raw := buildStreamWithTags(t, OpusTags{Vendor: "test", Comments: []string{"X=" + strings.Repeat("B", 200*1024)}})
+	// Replace the tiny audio packet with an oversized one.
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x11223344)
+	r0, err := NewOpusReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headPkt, _ := BuildOpusHeadPacket(r0.Head)
+	tagsPkt, _ := BuildOpusTagsPacket(r0.Tags)
+	_ = pw.WritePacket(headPkt, 0, true, false)
+	_ = pw.Flush()
+	_ = pw.WritePacket(tagsPkt, 0, false, false)
+	_ = pw.Flush()
+	_ = pw.WritePacket(make([]byte, MaxOpusPacketSize+1000), 960, false, true)
+	_ = pw.Flush()
+
+	r, err := NewOpusReader(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ReadAudioPacket(); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("oversized audio packet: got %v, want ErrPacketTooLarge", err)
+	}
+}
+
+func TestOpusReader_OpusTagsBeyondHeaderLimitRejected(t *testing.T) {
+	raw := buildStreamWithTags(t, OpusTags{Vendor: "test", Comments: []string{"X=" + strings.Repeat("C", MaxOpusHeaderPacketSize)}})
+	if _, err := NewOpusReader(bytes.NewReader(raw)); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("got %v, want ErrPacketTooLarge", err)
 	}
 }
