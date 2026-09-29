@@ -1,10 +1,10 @@
 # MP3 to Ogg Opus Converter Example
 
-Demonstrates how to convert an MP3 audio file into an Ogg Opus container (`.opus`) in Go, using a streaming pipeline with concurrent decoding, linear resampling, and progress reporting.
+Demonstrates how to convert an MP3 audio file into an Ogg Opus container (`.opus`) in Go, using a streaming pipeline with concurrent decoding, high-quality resampling, and progress reporting.
 
 ## What This Example Demonstrates
 1. **Streaming Audio Pipeline**: Reads and decodes MP3 using `hajimehoshi/go-mp3` in a background goroutine, feeding decoded PCM bytes through a buffered channel to maximize CPU parallelism.
-2. **Linear Resampling**: Resamples arbitrary MP3 input sample rates (e.g. 44.1 kHz) to the standard Opus 48 kHz internal clock.
+2. **Resampling**: Resamples arbitrary MP3 input sample rates (e.g. 44.1 kHz) to the standard Opus 48 kHz internal clock with the library's polyphase windowed-sinc `resample` package (streaming, exact output length, no drift), instead of linear interpolation.
 3. **Opus Encoding**: Configures `opus.Encoder` (64 kbps, VBR, complexity 10) and handles encoder lookahead (`enc.Lookahead()`) for OpusHead `PreSkip`. After the input ends it keeps encoding silence until the lookahead is flushed, so no input sample is lost.
 4. **Ogg Container Writing**: Packages audio frames into RFC 7845 pages using `ogg.PacketWriter`. Packets are batched into pages of about one second (`MaxPageSize` / `MaxPagePackets`) instead of one page per packet, granule positions count decoded samples (pre-skip included), and only the final page is trimmed to `PreSkip + input length`.
 5. **Real-time Progress Bar**: Displays conversion percentage, processed frames, elapsed time, and ETA.
