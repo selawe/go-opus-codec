@@ -166,6 +166,8 @@ func main() {
 }
 ```
 
+`Length()`, `TotalSamples()` and `TotalDuration()` can be called at any time on a seekable source without disturbing playback, and seeking decodes 80 ms of pre-roll (RFC 7845 Section 4.6) so audio right after `SeekTime` matches continuous playback. On a non-seekable stream those three calls read to the end and consume it.
+
 ---
 
 ### 2. Low-Level Packet Decoding & Packet Loss Concealment (PLC)
@@ -413,6 +415,12 @@ func main() {
 }
 ```
 
+Notes for writing and reading real streams:
+- **Granule positions** (RFC 7845 Section 4) count every sample decoded so far, *pre-skip included*: page *n* of 20 ms frames carries `n*960`, not `PreSkip + n*960`. Only the last page is trimmed, to `PreSkip + input length`, and you must keep encoding silence after the input ends until the encoder lookahead (`enc.Lookahead()`) is flushed. See [`examples/stream_mux`](examples/stream_mux).
+- **Page batching**: set `pw.MaxPageSize` (bytes) and `pw.MaxPagePackets` to group packets into pages instead of one page per packet (a 27+ byte header each), and call `pw.FlushPage()` after OpusTags so audio starts on a fresh page.
+- **Damaged input**: a stream cut inside a page returns `ogg.ErrTruncatedPage` (matches `io.ErrUnexpectedEOF`, and still `io.EOF` for loops that only stop on EOF). A gap in the page sequence drops the damaged packet instead of splicing it and sets `Discontinuity` on the next `OpusAudioPacket`, so you can conceal the loss with `DecodePacket(nil, ...)`.
+- `OpusTags` may be up to `ogg.MaxOpusHeaderPacketSize` (16 MiB, for embedded cover art); audio packets are capped at `ogg.MaxOpusPacketSize` (64 KiB).
+
 ---
 
 ## Examples Directory
@@ -452,6 +460,8 @@ The repository provides several production-ready command line tools in `cmd/`:
   ```sh
   go run ./cmd/oggopusextract --out packets.bin input.opus
   ```
+
+**Output safety.** `oggopus2wav`, `wav2oggopus` and `oggopusextract` (and `ConvertWAVFileToOggOpus` / `ConvertOggOpusFileToWAV`) write through a temporary file that only replaces the destination once the conversion succeeded. A failed run therefore never leaves a partial file behind and never destroys an existing output, and writing onto the input file is refused with an error. Special files such as `/dev/stdout` are written in place. Encoded files batch packets into Ogg pages of about one second, keep OpusTags on their own page, and carry RFC 7845 granule positions, so they play back with the exact input length in libopus-based players (verified with ffmpeg).
 
 ---
 
