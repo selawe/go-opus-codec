@@ -382,18 +382,25 @@ func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxL
 		player.position += int(skip) * int(player.reader.Head.Channels)
 	}
 
+	size := maxLength
+
 	// RFC 7845 Section 4: If packet has a valid granule position (especially at EOS),
 	// trim any trailing excess samples beyond the granule position.
 	if packet.GranuleValid && player.totalSamplesDecoded > packet.GranulePos {
 		excessSamples := player.totalSamplesDecoded - packet.GranulePos
 		upper := excessSamples * uint64(player.reader.Head.Channels)
-		if upper < uint64(maxLength) {
-			return maxLength - int(upper)
+		if upper < uint64(size) {
+			size -= int(upper)
+		} else {
+			size = 0
 		}
-		return 0
 	}
 
-	return maxLength
+	// When the trim lands inside the pre-skip region (a granule below the pre-skip,
+	// as in a truncated or hostile stream) nothing is audible: never let the read
+	// position run past the end of the buffer.
+	player.position = min(player.position, size)
+	return size
 }
 
 func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {

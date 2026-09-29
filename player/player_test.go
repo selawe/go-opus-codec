@@ -932,3 +932,80 @@ func TestPlayer_LengthDoesNotDisturbPlayback(t *testing.T) {
 		p.Close()
 	}
 }
+
+// A final granule smaller than the pre-skip (truncated or hostile stream) means
+// there is no audible output; it must end cleanly instead of panicking.
+func TestPlayer_GranuleBelowPreSkip(t *testing.T) {
+	for _, ch := range []int{1, 2} {
+		for _, f32 := range []bool{false, true} {
+			testGranuleBelowPreSkip(t, ch, f32)
+		}
+	}
+}
+
+func testGranuleBelowPreSkip(t *testing.T, channels int, f32 bool) {
+	t.Helper()
+	enc, err := opus.NewEncoder(48000, channels, opus.ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	pkt := make([]byte, 1000)
+	n, err := enc.Encode(make([]int16, 960*channels), 960, pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	{
+		var buf bytes.Buffer
+		pw := ogg.NewPacketWriter(&buf, 0x12345678)
+		headBytes, err := ogg.BuildOpusHeadPacket(ogg.OpusHead{Version: 1, Channels: uint8(channels), PreSkip: 312, InputSampleRate: 48000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tagsBytes, err := ogg.BuildOpusTagsPacket(ogg.OpusTags{Vendor: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, pk := range [][]byte{headBytes, tagsBytes} {
+			if err := pw.WritePacket(pk, 0, i == 0, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := pw.Flush(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := pw.WritePacket(pkt[:n], 100, false, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := pw.Flush(); err != nil {
+			t.Fatal(err)
+		}
+
+		var got int64
+		if f32 {
+			p, err := NewPlayerF32FromReader(bytes.NewReader(buf.Bytes()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err = io.Copy(io.Discard, p)
+			if err != nil {
+				t.Fatalf("ch=%d f32: %v", channels, err)
+			}
+			p.Close()
+		} else {
+			p, err := NewPlayerFromReader(bytes.NewReader(buf.Bytes()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err = io.Copy(io.Discard, p)
+			if err != nil {
+				t.Fatalf("ch=%d int16: %v", channels, err)
+			}
+			p.Close()
+		}
+		if got != 0 {
+			t.Errorf("ch=%d f32=%v: got %d bytes, want 0", channels, f32, got)
+		}
+	}
+}
