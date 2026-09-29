@@ -16,7 +16,7 @@ func main() {
 		sampleRate    = 48000
 		channels      = 2
 		frameSize20ms = 960 // 20ms @ 48kHz
-		totalFrames   = 10  // 200ms of audio
+		inputFrames   = 10  // 200ms of input audio
 		serial        = uint32(0x12345678)
 	)
 
@@ -86,12 +86,22 @@ func main() {
 	fmt.Printf(" [Muxer] Wrote OpusTags: %d comments, vendor=%q\n",
 		len(tags.Comments), tags.Vendor)
 
-	// 1.3 Encode and write audio packets
+	// 1.3 Encode and write audio packets.
+	//
+	// The encoder delays its output by the lookahead (the OpusHead PreSkip), so extra
+	// frames are encoded after the input ends until every input sample has come out of it.
+	inputSamples := uint64(inputFrames * frameSize20ms)
+	totalFrames := int((inputSamples + uint64(head.PreSkip) + frameSize20ms - 1) / frameSize20ms)
+
 	var totalSamples uint64
 	for f := 0; f < totalFrames; f++ {
-		pcm := make([]int16, frameSize20ms*channels)
+		pcm := make([]int16, frameSize20ms*channels) // silence past the end of the input
 		for i := 0; i < frameSize20ms; i++ {
-			t := float64(f*frameSize20ms+i) / float64(sampleRate)
+			n := f*frameSize20ms + i
+			if n >= int(inputSamples) {
+				break
+			}
+			t := float64(n) / float64(sampleRate)
 			val := int16(math.Sin(2*math.Pi*440.0*t) * 16000)
 			pcm[i*channels] = val
 			pcm[i*channels+1] = val
@@ -103,9 +113,15 @@ func main() {
 			log.Fatalf("Encode frame %d failed: %v", f+1, err)
 		}
 
-		totalSamples += uint64(frameSize20ms)
-		granulePos := uint64(head.PreSkip) + totalSamples
-		isLast := (f == totalFrames-1)
+		// RFC 7845 Section 4: a granule position counts every sample the decoder has
+		// produced so far, pre-skip included. Only the last page is trimmed, to
+		// PreSkip + the real input length, so decoders drop the padding at both ends.
+		totalSamples += frameSize20ms
+		granulePos := totalSamples
+		isLast := f == totalFrames-1
+		if isLast {
+			granulePos = uint64(head.PreSkip) + inputSamples
+		}
 
 		if err := pw.WritePacket(pktBuf[:n], granulePos, false, isLast); err != nil {
 			log.Fatalf("WritePacket frame %d failed: %v", f+1, err)
@@ -176,6 +192,8 @@ func main() {
 	fmt.Printf(" [Summary] Total Packets Read  : %d\n", packetCount)
 	fmt.Printf("           Total Samples Decoded: %d per channel (%.2f ms @ %d Hz)\n",
 		totalDecodedSamples, float64(totalDecodedSamples)*1000/sampleRate, sampleRate)
+	fmt.Printf("           Audible after trimming: %d per channel (pre-skip %d dropped at the start, the rest at the end-of-stream granule)\n",
+		int(inputSamples), reader.Head.PreSkip)
 	fmt.Println("================================================================")
 	fmt.Println(" Ogg Opus Stream Mux & Demux completed successfully.")
 	fmt.Println("================================================================")
