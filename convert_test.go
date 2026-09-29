@@ -317,3 +317,69 @@ func TestEncodeWAVToOggOpus_EmptyInputHasEOS(t *testing.T) {
 		t.Fatal("empty input was encoded without EOS page")
 	}
 }
+
+// RFC 7845 Section 4: a page's granule position counts every sample decoded so
+// far, pre-skip included, so interior pages carry frames*frameSize and only the
+// EOS page carries the pre-skip plus the true input length.
+func TestEncodeWAVToOggOpus_GranulePositions(t *testing.T) {
+	const frameSize = 960 // default 20 ms at 48 kHz
+	for _, n := range []int{1900, 2 * frameSize, 43000, 48000} {
+		src := generateSineWAV(t, 48000, 1, n)
+		var oggBuf bytes.Buffer
+		if err := EncodeWAVToOggOpus(bytes.NewReader(src), &oggBuf, nil); err != nil {
+			t.Fatalf("n=%d: encode: %v", n, err)
+		}
+		r, err := ogg.NewOpusReader(&oggBuf)
+		if err != nil {
+			t.Fatalf("n=%d: NewOpusReader: %v", n, err)
+		}
+		var (
+			count int
+			prev  uint64
+			last  *ogg.OpusAudioPacket
+		)
+		for {
+			pkt, err := r.ReadAudioPacket()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("n=%d: ReadAudioPacket: %v", n, err)
+			}
+			count++
+			if pkt.GranuleValid {
+				if pkt.GranulePos < prev {
+					t.Fatalf("n=%d: packet %d: granule %d decreased from %d", n, count, pkt.GranulePos, prev)
+				}
+				prev = pkt.GranulePos
+			}
+			last = pkt
+		}
+		if last == nil || !last.EOS {
+			t.Fatalf("n=%d: last packet missing EOS", n)
+		}
+		if want := uint64(r.Head.PreSkip) + uint64(n); last.GranulePos != want {
+			t.Errorf("n=%d: EOS granule = %d, want %d", n, last.GranulePos, want)
+		}
+	}
+}
+
+func TestEncodeWAVToOggOpus_InteriorGranuleExcludesPreSkip(t *testing.T) {
+	const frameSize = 960
+	src := generateSineWAV(t, 48000, 1, 10*frameSize)
+	var oggBuf bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(src), &oggBuf, nil); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	r, err := ogg.NewOpusReader(&oggBuf)
+	if err != nil {
+		t.Fatalf("NewOpusReader: %v", err)
+	}
+	pkt, err := r.ReadAudioPacket()
+	if err != nil {
+		t.Fatalf("ReadAudioPacket: %v", err)
+	}
+	if pkt.GranulePos != frameSize {
+		t.Errorf("first packet granule = %d, want %d", pkt.GranulePos, frameSize)
+	}
+}

@@ -229,7 +229,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				return fmt.Errorf("opus encode: %w", err)
 			}
 			encodedSamplesPerCh += uint64(frameSize)
-			granule := uint64(head.PreSkip) + encodedSamplesPerCh
+			granule := encodedSamplesPerCh
 
 			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
 				return fmt.Errorf("ogg write: %w", err)
@@ -264,7 +264,9 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				}
 				encodedSamplesPerCh += uint64(frameSize)
 
-				granule := uint64(head.PreSkip) + encodedSamplesPerCh
+				// RFC 7845 Section 4: granule counts all decoded samples, pre-skip included,
+				// so interior pages carry no extra pre-skip offset; only EOS is trimmed.
+				granule := encodedSamplesPerCh
 				if isLast {
 					granule = eosGranule
 				}
