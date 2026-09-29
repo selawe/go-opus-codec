@@ -171,3 +171,34 @@ func BenchmarkResample44100To48000Stereo(b *testing.B) {
 		_ = r.Flush()
 	}
 }
+
+// The optimised filter loop must produce exactly the same samples as the simple reference
+// loop for every rate pair, channel count and chunking, including the stream edges.
+func TestOptimisedFilterMatchesReference(t *testing.T) {
+	for _, tc := range []struct{ from, to, channels, frames int }{
+		{44100, 48000, 2, 5000},
+		{22050, 48000, 1, 3001},
+		{48000, 16000, 2, 7000},
+		{8000, 48000, 1, 700},
+		{32000, 48000, 2, 5}, // shorter than the filter window
+		{44100, 48000, 1, 0}, // empty
+		{48000, 44100, 2, 6001},
+	} {
+		in := sine(tc.from, tc.channels, tc.frames, 1234)
+		fast, ref := New(tc.channels, tc.from, tc.to), New(tc.channels, tc.from, tc.to)
+		var gotFast, gotRef []float32
+		for off, step := 0, 1; off < len(in); step = step*7%501 + 1 {
+			end := min(off+step*tc.channels, len(in))
+			gotFast = append(gotFast, fast.Process(in[off:end])...)
+			ref.buf = append(ref.buf, in[off:end]...)
+			ref.inFrames += int64((end - off) / tc.channels)
+			gotRef = append(gotRef, ref.produceReference(false)...)
+			off = end
+		}
+		gotFast = append(gotFast, fast.Flush()...)
+		gotRef = append(gotRef, ref.produceReference(true)...)
+		if !slices.Equal(gotFast, gotRef) {
+			t.Errorf("%+v: optimised output differs from the reference (%d vs %d samples)", tc, len(gotFast), len(gotRef))
+		}
+	}
+}

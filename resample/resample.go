@@ -125,6 +125,40 @@ func (r *Resampler) produce(final bool) []float32 {
 		pos := r.next * r.down
 		center := pos / r.up
 		row := r.table[int(pos%r.up)*r.taps:][:r.taps]
+
+		// Interior fast path: the whole filter window lies inside the stream, so no tap
+		// needs a bounds check. Taps are still summed in ascending order per channel, so
+		// the result is bit-identical to the edge path below.
+		if first := center - int64(r.half) + 1; first >= 0 && first+int64(r.taps) <= r.inFrames {
+			win := r.buf[int(first-r.base)*r.channels:][:r.taps*r.channels]
+			switch r.channels {
+			case 1:
+				win = win[:len(row)]
+				var acc float32
+				for j, w := range row {
+					acc += w * win[j]
+				}
+				out = append(out, acc)
+			case 2:
+				win = win[:2*len(row)]
+				var a0, a1 float32
+				for j, w := range row {
+					a0 += w * win[2*j]
+					a1 += w * win[2*j+1]
+				}
+				out = append(out, a0, a1)
+			default:
+				for c := range r.channels {
+					var acc float32
+					for j, w := range row {
+						acc += w * win[j*r.channels+c]
+					}
+					out = append(out, acc)
+				}
+			}
+			continue
+		}
+
 		for c := range r.channels {
 			var acc float32
 			for j, w := range row {
