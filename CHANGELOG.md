@@ -3,7 +3,15 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-29
+
+Minor release (pre-1.0 semver): it adds public API (`ogg.ErrTruncatedPage`, `Discontinuity`, `PacketWriter.MaxPagePackets`, `ogg.MaxOpusHeaderPacketSize`) and changes behavior in a few places. Files written by earlier versions are unaffected and still play; the granule fix only changes what new files contain.
+
+Behavior changes to be aware of when upgrading:
+- Encoded files use RFC 7845 granule positions (no pre-skip offset on interior pages) and about-one-second pages.
+- `ogg.PacketReader` drops packets damaged by a page-sequence gap instead of returning them corrupt.
+- A file cut inside a page now returns `ogg.ErrTruncatedPage` instead of a plain `io.EOF`. It still matches `errors.Is(err, io.EOF)`, but code comparing with `err == io.EOF` sees only clean ends.
+- The file conversion helpers and CLI tools refuse to write onto their input and only replace an existing output after success.
 
 ### Fixed
 - **Ogg granule positions were off by the pre-skip on every page but the last** in `EncodeWAVToOggOpus`/`ConvertWAVFileToOggOpus`, `wav2oggopus`, `examples/convert` and `examples/stream_mux`. Interior pages carried `PreSkip + encoded samples` instead of `encoded samples` (RFC 7845 Section 4), so the sequence could decrease before the EOS page and libopus-based decoders such as ffmpeg dropped the last pre-skip (312) samples. Only the EOS page carries `PreSkip + input length` now (`3321d4b`, `b0868bc`, `05b80b0`, `ba87aca`)
