@@ -144,3 +144,35 @@ func TestSpecialFilesAreWrittenInPlaceAndNeverRemoved(t *testing.T) {
 		t.Fatalf("Abort removed %s: %v", os.DevNull, err)
 	}
 }
+
+// A symlink destination keeps being a symlink: the data is written through it to the
+// target instead of a rename replacing the link (the /dev/stdout case).
+func TestSymlinkDestinationIsWrittenThrough(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.bin")
+	link := filepath.Join(dir, "link.bin")
+	if err := os.WriteFile(target, []byte("old contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	f, err := Create(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "new")
+	if err := f.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced (err=%v)", err)
+	}
+	if got := read(t, target); got != "new" {
+		t.Fatalf("target = %q, want %q", got, "new")
+	}
+	if got := names(t, dir); len(got) != 2 {
+		t.Fatalf("unexpected files: %v", got)
+	}
+}

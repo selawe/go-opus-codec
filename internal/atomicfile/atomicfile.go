@@ -17,8 +17,8 @@ var ErrSameFile = errors.New("output file is the same as an input file")
 // Where the destination is a new path the file is created there directly and removed
 // again by Abort. Where it already exists as a regular file, data goes to a temporary
 // file in the same directory that replaces the destination on Commit, so a failed
-// write leaves the previous contents untouched. Special files (devices, pipes such as
-// /dev/stdout) are written in place and never removed.
+// write leaves the previous contents untouched. Special files (devices, pipes) and symlinks
+// such as /dev/stdout are written in place and never removed.
 type File struct {
 	*os.File
 
@@ -44,8 +44,15 @@ func Create(dst string, inputs ...string) (*File, error) {
 	}
 
 	if err == nil {
-		if !dstInfo.Mode().IsRegular() {
-			f, oerr := os.OpenFile(dst, os.O_WRONLY|os.O_TRUNC, 0)
+		// Devices, pipes and symlinks (for example /dev/stdout, a link to /proc/self/fd/1)
+		// are written in place: renaming over them would replace the link itself, or the
+		// file the shell already redirected to, and the data would be lost.
+		if linfo, lerr := os.Lstat(dst); !dstInfo.Mode().IsRegular() || (lerr == nil && linfo.Mode()&os.ModeSymlink != 0) {
+			flags := os.O_WRONLY
+			if dstInfo.Mode().IsRegular() { // only a real file is truncated, never a device
+				flags |= os.O_TRUNC
+			}
+			f, oerr := os.OpenFile(dst, flags, 0)
 			if oerr != nil {
 				return nil, oerr
 			}
