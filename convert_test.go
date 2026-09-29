@@ -366,7 +366,7 @@ func TestEncodeWAVToOggOpus_GranulePositions(t *testing.T) {
 
 func TestEncodeWAVToOggOpus_InteriorGranuleExcludesPreSkip(t *testing.T) {
 	const frameSize = 960
-	src := generateSineWAV(t, 48000, 1, 10*frameSize)
+	src := generateSineWAV(t, 48000, 1, 120*frameSize)
 	var oggBuf bytes.Buffer
 	if err := EncodeWAVToOggOpus(bytes.NewReader(src), &oggBuf, nil); err != nil {
 		t.Fatalf("encode: %v", err)
@@ -375,11 +375,84 @@ func TestEncodeWAVToOggOpus_InteriorGranuleExcludesPreSkip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOpusReader: %v", err)
 	}
-	pkt, err := r.ReadAudioPacket()
-	if err != nil {
-		t.Fatalf("ReadAudioPacket: %v", err)
+	for {
+		pkt, err := r.ReadAudioPacket()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadAudioPacket: %v", err)
+		}
+		if pkt.GranuleValid && !pkt.EOS && pkt.GranulePos%frameSize != 0 {
+			t.Errorf("interior granule %d is not a multiple of %d (pre-skip leaked in)", pkt.GranulePos, frameSize)
+		}
 	}
-	if pkt.GranulePos != frameSize {
-		t.Errorf("first packet granule = %d, want %d", pkt.GranulePos, frameSize)
+}
+
+// Framing must batch audio packets (RFC 3533 Section 6) while keeping the
+// RFC 7845 layout: OpusHead alone on the BOS page, OpusTags ending its page,
+// and audio starting on a fresh page.
+func TestEncodeWAVToOggOpus_BatchesPages(t *testing.T) {
+	const n = 4 * 48000
+	src := generateSineWAV(t, 48000, 1, n)
+	var oggBuf bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(src), &oggBuf, nil); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	raw := append([]byte(nil), oggBuf.Bytes()...)
+
+	pr := ogg.NewPageReader(bytes.NewReader(raw))
+	var pages []*ogg.Page
+	for {
+		p, err := pr.ReadPage()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadPage: %v", err)
+		}
+		pages = append(pages, p)
+	}
+	if len(pages) < 4 {
+		t.Fatalf("got %d pages, want at least 4", len(pages))
+	}
+	if !pages[0].IsBOS() || !bytes.HasPrefix(pages[0].SegmentData, []byte("OpusHead")) || len(pages[0].SegmentTable) > 2 {
+		t.Errorf("page 0 is not a lone OpusHead BOS page")
+	}
+	if !bytes.HasPrefix(pages[1].SegmentData, []byte("OpusTags")) {
+		t.Fatalf("page 1 does not start with OpusTags")
+	}
+	if bytes.HasPrefix(pages[2].SegmentData, []byte("OpusTags")) || pages[2].IsContinuedPacket() {
+		t.Errorf("first audio page must start a fresh packet on its own page")
+	}
+	if !pages[len(pages)-1].IsEOS() {
+		t.Errorf("last page is not EOS")
+	}
+
+	audioPages := len(pages) - 2
+	const packets = n / 960
+	if audioPages*4 > packets {
+		t.Errorf("%d audio pages for %d packets: packets are not batched", audioPages, packets)
+	}
+	var prev uint64
+	for i, p := range pages[2:] {
+		if p.GranulePosition < prev {
+			t.Fatalf("audio page %d: granule %d decreased from %d", i, p.GranulePosition, prev)
+		}
+		prev = p.GranulePosition
+		if i < audioPages-1 && len(p.SegmentTable) > 0 {
+			if dur := len(p.SegmentTable); dur > 60 {
+				t.Errorf("audio page %d holds %d packets (over ~1 s)", i, dur)
+			}
+		}
+	}
+
+	// Batched pages must still round-trip to the exact input length.
+	var wavOut memWriteSeeker
+	if err := DecodeOggOpusToWAV(bytes.NewReader(raw), &wavOut); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, _, got := readAllWAVSamples(t, wavOut.Bytes()); got != n {
+		t.Errorf("decoded %d samples, want %d", got, n)
 	}
 }

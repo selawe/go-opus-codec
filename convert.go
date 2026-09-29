@@ -161,6 +161,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	}
 
 	pw := ogg.NewPacketWriter(bw, serial)
+	pw.MaxPageSize = maxAudioPageBytes
 
 	head := ogg.OpusHead{
 		Version:              1,
@@ -190,6 +191,10 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	if err := pw.WritePacket(tagsPkt, 0, false, false); err != nil {
 		return fmt.Errorf("ogg write tags: %w", err)
 	}
+	// RFC 7845 Section 3: OpusTags must end its page and audio starts on a fresh one.
+	if err := pw.FlushPage(); err != nil {
+		return fmt.Errorf("ogg flush tags: %w", err)
+	}
 
 	frameSamples := frameSize * wr.Channels()
 	pcm := make([]int16, frameSamples)
@@ -198,6 +203,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	var inputSamplesPerCh uint64
 	var encodedSamplesPerCh uint64
 	var eofReached bool
+	var pagePackets int
 	pending := make([]int16, 0, 2*frameSamples)
 	readBuf := make([]int16, frameSamples)
 
@@ -233,6 +239,9 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 
 			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
 				return fmt.Errorf("ogg write: %w", err)
+			}
+			if err := flushPageEverySecond(pw, &pagePackets, frameSize); err != nil {
+				return fmt.Errorf("ogg flush page: %w", err)
 			}
 		} else {
 			// EOF reached. Per RFC 7845 Section 4, the encoder must encode enough silence
@@ -274,6 +283,9 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 				if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
 					return fmt.Errorf("ogg write: %w", err)
 				}
+				if err := flushPageEverySecond(pw, &pagePackets, frameSize); err != nil {
+					return fmt.Errorf("ogg flush page: %w", err)
+				}
 			}
 			break
 		}
@@ -286,6 +298,24 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		return fmt.Errorf("writer flush: %w", err)
 	}
 	return nil
+}
+
+// maxAudioPageBytes caps the payload of a batched audio page. Packets are
+// grouped to cut the 27+ byte page header paid per packet, which otherwise adds
+// 10-20 kbps at low bitrates.
+const maxAudioPageBytes = 8 << 10
+
+// flushPageEverySecond ends the current page once it holds about one second of
+// audio, so low-bitrate streams keep fine seek granularity (255 tiny packets
+// would otherwise span several seconds). The counter is conservative: it also
+// counts packets that the writer already flushed on its own.
+func flushPageEverySecond(pw *ogg.PacketWriter, pagePackets *int, frameSize int) error {
+	*pagePackets++
+	if *pagePackets*frameSize < ogg.OpusSampleRateHz {
+		return nil
+	}
+	*pagePackets = 0
+	return pw.FlushPage()
 }
 
 // ErrOutputLimitExceeded is returned by DecodeOggOpusToWAV when the decoded
