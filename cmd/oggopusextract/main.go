@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/selawe/go-opus-codec/internal/atomicfile"
 	"github.com/selawe/go-opus-codec/ogg"
 )
 
@@ -45,16 +46,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	r.SetVerifyCRC(!*noCRC)
 
 	var w = stdout
+	var outFile *atomicfile.File
 	if *out != "" {
-		f, err := os.Create(*out)
+		// Only made visible by Commit: a failure leaves no partial file and never
+		// destroys an existing one, and the input can not be truncated by accident.
+		outFile, err = atomicfile.Create(*out, fs.Arg(0))
 		if err != nil {
 			return fail(stderr, err)
 		}
-		defer f.Close()
-		w = f
+		defer outFile.Abort()
+		w = outFile
 	}
 	bw := bufio.NewWriterSize(w, 128*1024)
-	defer bw.Flush()
 
 	for {
 		pkt, err := r.ReadAudioPacket()
@@ -70,6 +73,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		if _, err := bw.Write(pkt.Data); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	if err := bw.Flush(); err != nil {
+		return fail(stderr, err)
+	}
+	if outFile != nil {
+		if err := outFile.Commit(); err != nil {
 			return fail(stderr, err)
 		}
 	}

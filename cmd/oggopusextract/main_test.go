@@ -242,3 +242,55 @@ func TestOggOpusExtract_FileNotFound(t *testing.T) {
 		t.Fatalf("expected stderr to contain error message, got: %s", stderr.String())
 	}
 }
+
+func TestOggOpusExtract_RefusesToOverwriteInput(t *testing.T) {
+	path, _ := buildTestOgg(t, 5)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", path, path}, &stdout, &stderr); code == 0 {
+		t.Fatal("expected a non-zero exit code when --out is the input file")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("input file was modified")
+	}
+}
+
+func TestOggOpusExtract_FailureLeavesNoPartialOutput(t *testing.T) {
+	path, _ := buildTestOgg(t, 5)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append a page of a different logical stream so reading fails mid-way.
+	var extra bytes.Buffer
+	pw := ogg.NewPacketWriter(&extra, 0xDEADBEEF)
+	if err := pw.WritePacket([]byte{1, 2, 3}, 960, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(t.TempDir(), "mixed.opus")
+	if err := os.WriteFile(badPath, append(raw, extra.Bytes()...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "packets.bin")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--out", outPath, badPath}, &stdout, &stderr); code == 0 {
+		t.Fatal("expected failure on the mixed-serial stream")
+	}
+	if ents, _ := os.ReadDir(outDir); len(ents) != 0 {
+		t.Errorf("partial output left behind: %v", ents)
+	}
+}
