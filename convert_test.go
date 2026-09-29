@@ -626,3 +626,28 @@ func TestEncodeWAVToOggOpus_RejectsMoreThanTwoChannels(t *testing.T) {
 		t.Fatal("expected an error for a 3-channel WAV")
 	}
 }
+
+func TestEncodeOptions_ComplexityExplicitZero(t *testing.T) {
+	src := generateSineWAV(t, 48000, 2, 48000)
+	encode := func(o EncodeOptions) []byte {
+		o.Serial = 1 // same stream serial and fixed tags so only the audio can differ
+		o.Comments = []string{"A=b"}
+		var buf bytes.Buffer
+		if err := EncodeWAVToOggOpus(bytes.NewReader(src), &buf, &o); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	def := encode(EncodeOptions{})                                             // unset: complexity 10
+	zeroUnset := encode(EncodeOptions{Complexity: 0})                          // 0 without the flag: still 10
+	zero := encode(EncodeOptions{Complexity: 0, ComplexityExplicit: true})     // really 0
+	ten := encode(EncodeOptions{Complexity: 10, ComplexityExplicit: true})     // explicit 10
+	tooHigh := encode(EncodeOptions{Complexity: 11, ComplexityExplicit: true}) // out of range: default
+	if !bytes.Equal(def, zeroUnset) || !bytes.Equal(def, ten) || !bytes.Equal(def, tooHigh) {
+		t.Error("unset, explicit 10 and out-of-range complexity should all mean complexity 10")
+	}
+	if bytes.Equal(def, zero) {
+		t.Error("ComplexityExplicit with 0 produced the same stream as complexity 10")
+	}
+}

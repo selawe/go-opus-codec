@@ -34,8 +34,13 @@ type EncodeOptions struct {
 	CBR bool
 
 	// Complexity sets the encoder computational complexity from 0 to 10.
-	// Defaults to 10 if <= 0 or > 10.
+	// Defaults to 10 if <= 0 or > 10, unless ComplexityExplicit is set.
 	Complexity int
+
+	// ComplexityExplicit makes Complexity be used as given, so that 0 (the lowest complexity)
+	// can be requested; it is otherwise indistinguishable from an unset field. Values outside
+	// 0..10 still fall back to the default of 10.
+	ComplexityExplicit bool
 
 	// Application specifies the encoder application mode (ApplicationAudio, ApplicationVoIP,
 	// ApplicationRestrictedLowDelay). Defaults to ApplicationAudio.
@@ -97,7 +102,7 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	}
 	vbr := !cfg.CBR
 	complexity := cfg.Complexity
-	if complexity <= 0 || complexity > 10 {
+	if complexity > 10 || complexity < 0 || (complexity == 0 && !cfg.ComplexityExplicit) {
 		complexity = 10
 	}
 	app := cfg.Application
