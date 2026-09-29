@@ -503,7 +503,13 @@ func main() {
 		progress.Print(framesDone, resampler.BytesRead(), false)
 
 		totalSamplesPerCh48k += uint64(framesActual)
-		granule := uint64(head.PreSkip) + totalSamplesPerCh48k
+		// RFC 7845 Section 4: granule counts all decoded samples (pre-skip included),
+		// so interior pages carry the encoded sample count. Only the final page is
+		// trimmed to PreSkip + input length, and never beyond what was encoded.
+		granule := uint64(framesDone) * uint64(frameSize48k)
+		if done {
+			granule = min(granule, uint64(head.PreSkip)+totalSamplesPerCh48k)
+		}
 
 		if err := pw.WritePacket(packet[:nBytes], granule, false, done); err != nil {
 			fatal(err)
