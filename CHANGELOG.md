@@ -3,6 +3,35 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- **Ogg granule positions were off by the pre-skip on every page but the last** in `EncodeWAVToOggOpus`/`ConvertWAVFileToOggOpus`, `wav2oggopus`, `examples/convert` and `examples/stream_mux`. Interior pages carried `PreSkip + encoded samples` instead of `encoded samples` (RFC 7845 Section 4), so the sequence could decrease before the EOS page and libopus-based decoders such as ffmpeg dropped the last pre-skip (312) samples. Only the EOS page carries `PreSkip + input length` now (`3321d4b`, `b0868bc`, `05b80b0`, `ba87aca`)
+- `opus.Decoder.Decode`/`DecodeF32` passed the caller's packet to the transpiled code as a raw `uintptr` without staging it in heap memory. A stack-resident packet goes stale when the goroutine stack grows and faults in the range decoder under `GODEBUG=efence=1`. The packet is now copied into a decoder-owned buffer, with no measurable slowdown (`efc3242`). The multistream `mapping` table is copied to the heap too, as a precaution (`d54099a`)
+- `ogg.PacketReader` never checked `PageSequence`: after a lost or corrupt page the next continuation page was appended to the stale bytes and returned as one corrupt packet with no error. A gap now drops the damaged packet, skips the orphaned continuation and sets `Discontinuity` on the next packet (`f8f81d4`)
+- `ogg.NewOpusReader` capped every packet, headers included, at 64 KiB, so files with embedded cover art (a large `METADATA_BLOCK_PICTURE` in OpusTags) could not be opened. Headers may now be up to `ogg.MaxOpusHeaderPacketSize` (16 MiB); audio packets keep the 64 KiB cap (`cad8dbe`)
+- `Length()`, `TotalSamples()` and `TotalDuration()` on `player.OpusPlayer` and `ogg.OpusReader` ended playback when called mid-stream on a seekable source. `PacketReader.LastPageGranule` now scans with a private page reader and restores the position (`32effd4`)
+- `player.OpusPlayer.Read` panicked (`slice bounds out of range`) on stereo streams whose final granule is below the pre-skip (`6cd1592`)
+- Seeking in `player.OpusPlayer` started a cold decoder exactly at the target page, so the first audio after `SeekSample`/`SeekTime` was wrong (mean error of about 800-1300 LSB on the bundled test file). It now decodes 80 ms of pre-roll as RFC 7845 Section 4.6 requires (`3cc9007`)
+- `ConvertWAVFileToOggOpus`, `ConvertOggOpusFileToWAV`, `wav2oggopus` and `oggopusextract` could destroy data: an output path equal to the input truncated or overwrote it (`wav2oggopus` even exited 0), a failed run deleted a pre-existing output, and `Flush`/`Close` errors were ignored so a full disk still succeeded. Output now goes through `internal/atomicfile`: the input can not be overwritten, an existing destination is replaced only after success, and failures leave no partial file (`78ca55b`, `fff8bc9`, `3ec4757`, `01413a9`)
+- `oggopus2wav` called `os.Exit` on errors, skipping `pprof.StopCPUProfile` and leaving an empty CPU profile (`1c8712b`)
+- `examples/convert` dropped the last pre-skip samples (no frames were encoded after the input ended) and produced no EOS page for empty input (`d3a2cd6`)
+
+### Added
+- `ogg.ErrTruncatedPage`: a stream cut inside a page is no longer indistinguishable from a clean end. It matches `io.ErrUnexpectedEOF`, and still matches `io.EOF` so loops that only stop on `errors.Is(err, io.EOF)` keep working. A clean end remains a plain `io.EOF` (`8c635eb`)
+- `ogg.Packet.Discontinuity` and `ogg.OpusAudioPacket.Discontinuity`: set on the first packet after a page-sequence gap, so callers can conceal the lost audio (`f8f81d4`, `c6b6e02`)
+- `ogg.PacketWriter.MaxPagePackets` to bound the duration of batched pages (`d2caaeb`)
+- `ogg.MaxOpusHeaderPacketSize` (`cad8dbe`)
+
+### Changed
+- `EncodeWAVToOggOpus`, `wav2oggopus` and `examples/convert` batch audio packets into Ogg pages of about one second (max 8 KiB) instead of one page per packet, and put OpusTags on its own page as RFC 7845 requires. A 64 kbps stereo file is about 14% smaller; the saving is much larger at low bitrates (`d96b42c`, `8dae4c5`, `2a9f2d9`)
+- `player.OpusPlayer.Seek(0, io.SeekCurrent)` answers the position without re-seeking or rebuilding the decoder (`e85fc03`)
+- A damaged packet after a page-sequence gap is now dropped instead of being returned corrupt. Intact streams are unaffected
+- `player`/`ogg` documentation: `Length`, `TotalSamples` and `TotalDuration` are non-destructive on seekable input and consume the stream otherwise
+
+### Docs
+- README: documented that `go test -race` needs `-gcflags=all=-d=checkptr=0` (the transpiled code addresses Go memory through `uintptr`, which `checkptr` aborts on), the race test package list, output safety, granule/page-batching/damaged-input guidance, and refreshed the benchmark table. An A/B run against 0.2.7 showed no codec performance change; the table differences come from re-measuring on the same CPU under WSL2 (`fb81cd3`, `ddc88d8`, `01e465e`)
+
 ## [0.2.7] - 2026-09-24
 
 No library code changes since 0.2.6. This release exists because the CI and release workflows had been failing since 0.2.4, so no GitHub Release was published for 0.2.4–0.2.6.
