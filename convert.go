@@ -185,7 +185,9 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	bw, ok := oggWriter.(*bufio.Writer)
 	if !ok {
 		bw = bufio.NewWriterSize(oggWriter, 64*1024)
-		defer bw.Flush()
+		// The success path flushes explicitly and checks the error; this only covers
+		// early returns, where the encode error is what gets reported.
+		defer func() { _ = bw.Flush() }()
 	}
 
 	pw := ogg.NewPacketWriter(bw, serial)
@@ -399,7 +401,8 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 	if err != nil {
 		return fmt.Errorf("wav writer: %w", err)
 	}
-	defer ww.Close()
+	// The success path closes explicitly and checks the error; this covers early returns.
+	defer func() { _ = ww.Close() }()
 
 	maxFrame := 5760
 	channels := int(r.Head.Channels)
