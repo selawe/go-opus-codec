@@ -42,11 +42,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer in.Close()
 
-	r, err := ogg.NewOpusReader(in)
+	r, err := ogg.NewOpusReaderVerifyCRC(in, !*noCRC)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	r.SetVerifyCRC(!*noCRC)
 
 	var w = stdout
 	var outFile *atomicfile.File

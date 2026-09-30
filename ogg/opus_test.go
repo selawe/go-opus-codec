@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -770,5 +771,25 @@ func TestParseOpusTags_HugeLengthsDoNotOverflow(t *testing.T) {
 	b = append([]byte("OpusTags"), 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0)
 	if _, err := parseOpusTags(b); !errors.Is(err, ErrBadOpusTags) {
 		t.Fatalf("count: err = %v, want ErrBadOpusTags", err)
+	}
+}
+
+func TestNewOpusReaderVerifyCRC_AppliesToHeaderPages(t *testing.T) {
+	data, err := os.ReadFile("../test/music_64kbps.opus")
+	if err != nil {
+		t.Skip(err)
+	}
+	bad := append([]byte(nil), data...)
+	bad[22] ^= 0xFF // checksum of the first (OpusHead) page
+
+	if _, err := NewOpusReader(bytes.NewReader(bad)); err == nil {
+		t.Fatal("a bad header-page CRC was accepted with verification on")
+	}
+	r, err := NewOpusReaderVerifyCRC(bytes.NewReader(bad), false)
+	if err != nil {
+		t.Fatalf("verification off must ignore the header CRC: %v", err)
+	}
+	if r.Head.Channels == 0 {
+		t.Fatal("header not parsed")
 	}
 }

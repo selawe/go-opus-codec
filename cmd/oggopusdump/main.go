@@ -38,11 +38,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer f.Close()
 
-	r, err := ogg.NewOpusReader(f)
+	r, err := ogg.NewOpusReaderVerifyCRC(f, !*noCRC)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	r.SetVerifyCRC(!*noCRC)
 
 	fmt.Fprintf(stdout, "OpusHead: version=%d channels=%d preSkip=%d inputRate=%d mapping=%d\n",
 		r.Head.Version, r.Head.Channels, r.Head.PreSkip, r.Head.InputSampleRate, r.Head.ChannelMappingFamily)

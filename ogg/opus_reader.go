@@ -118,7 +118,15 @@ const MaxOpusHeaderPacketSize = 16 * 1024 * 1024
 
 // NewOpusReader creates a new OpusReader reading from r, parsing the mandatory OpusHead and OpusTags headers.
 func NewOpusReader(r io.Reader) (*OpusReader, error) {
+	return NewOpusReaderVerifyCRC(r, true)
+}
+
+// NewOpusReaderVerifyCRC is NewOpusReader with control over checksum verification from the
+// very first page. Calling SetVerifyCRC afterwards is too late for the header pages, which
+// NewOpusReader has already parsed with verification on.
+func NewOpusReaderVerifyCRC(r io.Reader, verifyCRC bool) (*OpusReader, error) {
 	pr := NewPacketReader(r)
+	pr.SetVerifyCRC(verifyCRC)
 	pr.SetMaxPacketSize(MaxOpusHeaderPacketSize)
 	or := &OpusReader{pr: pr}
 	if err := or.readHeaders(); err != nil {
