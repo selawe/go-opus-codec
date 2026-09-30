@@ -660,3 +660,35 @@ func TestEncodeWAVRejectsUnresamplableRate(t *testing.T) {
 		t.Fatal("expected error for unresamplable sample rate")
 	}
 }
+
+// Resampling must preserve duration: one second at 44.1 kHz comes back as one second at 48 kHz.
+func TestEncodeDecode44100KeepsDuration(t *testing.T) {
+	const seconds = 2
+	wavData := generateSineWAV(t, 44100, 1, 44100*seconds)
+
+	var encoded bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wavData), &encoded, nil); err != nil {
+		t.Fatal(err)
+	}
+	ws := &memWriteSeeker{}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(encoded.Bytes()), ws); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := wav.NewReader(bytes.NewReader(ws.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	buf := make([]int16, 4800)
+	for {
+		n, err := r.ReadInt16PCM(buf)
+		total += n
+		if err != nil {
+			break
+		}
+	}
+	if want := 48000 * seconds; total < want-48 || total > want+48 { // a frame of slack
+		t.Fatalf("decoded %d samples, want about %d", total, want)
+	}
+}
