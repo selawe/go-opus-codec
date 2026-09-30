@@ -3,6 +3,45 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Hardening release from a full review of the hand-written packages. No new public types; a few behaviors tighten, listed first.
+
+Behavior changes to be aware of when upgrading:
+- `wav2oggopus`: `-bitrate` outside 500-512000 (including `0`, which used to mean the 64000 default) and `-complexity` above 10 are now errors instead of being clamped. A negative `-complexity` still keeps the default.
+- `oggopus2wav` stops at `--max-bytes` of decoded PCM (default 1 GiB; `0` restores the old 4 GiB WAV limit only).
+- WAV headers with a sample rate above 768 kHz are rejected, and `wav.Reader.ReadInt16PCM` now returns whole frames only (`io.ErrShortBuffer` for a destination shorter than one frame). `wav.NewWriter` rejects channel/rate combinations that overflow the header and `WriteInt16PCM` rejects partial frames.
+- `-h`/`--help` exits 0 in all four commands.
+- `ogg`: OpusHead version 0 is accepted (RFC 7845 5.1), and `streams + coupled` may exceed the channel count for decoders, as libopus allows; mapping entries beyond the decoded channels are rejected.
+- Destinations written through `atomicfile` (all CLIs and the `Convert*File` helpers) are now always written to a temp file and renamed; a symlink destination is resolved and its target replaced, and a read-only destination is refused.
+
+### Security
+- Resampler memory: a WAV header with a huge or coprime sample rate (for example 4294967295 Hz) made `resample.New` allocate tens of GB. The table is now bounded (`resample.MaxTableEntries`), `resample.Check` validates a rate pair, and `EncodeWAVToOggOpus` returns an error instead (`d2154cf`)
+- `atomicfile` no longer creates new outputs in place (a crash left a truncated file) or truncates the target of a symlink in place (`521492a`)
+- `ogg.PageReader` resync: a false `OggS` header near the end of the input no longer hides a real page, garbage after the last page is a clean EOF, and the CRC work per `ReadPage` is bounded (about 2000x CPU amplification before) (`53c54af`)
+- `ogg` header parsing compares length fields as `uint64`, so they cannot wrap negative on 32-bit platforms (`2947d5f`)
+- `opus.PacketPad` and friends no longer abort the process on packets of about 120 KB or more (pseudo-stack overflow); they return `ErrPacketTooLarge`, and any remaining panic from the transpiled code becomes an error with the TLS dropped from the pool (`1c59162`)
+- `opus.SoftClip` kept its scratch memory alive only by accident; the GC could free it mid-call (`25bafde`)
+
+### Fixed
+- `player`: a non-EOF read error is sticky instead of turning into `io.EOF` on the next read; `SetVolume`/`SetGain` ignore NaN and +Inf; a failed `Seek` leaves playback where it was; seek positions and sample/`Duration` conversions no longer overflow (`269a2da`, `20c1381`)
+- `opus`: `SetBitrate`/`SetComplexity`/`SetGain` reject values that wrapped to `int32`; `SetLastFrameSize` is clamped to 120 ms and reset by `Decoder.Reset`; `DecodePacket*` on a nil `Decoder` returns an error (`9c80784`, `b3c545a`)
+- `wav`: streamed files (data size `0xFFFFFFFF`, or 0 with a zero RIFF size) are read to EOF instead of yielding silence; `Writer.Close` repeats its first error and patches sizes relative to the start offset (`c60aad9`)
+- `resample`: a partial trailing frame is carried to the next `Process` call instead of misaligning the channels; NaN maps to silence in int16 output (`d2154cf`)
+- `oggopusdump`/`oggopusextract --no-crc` now also applies to the OpusHead/OpusTags pages (`NewOpusReaderVerifyCRC`) (`7e9d2ae`)
+- `examples/play` exits non-zero on failure, stops when the audio device reports an error and no longer seeks to byte 100; `examples/net` closes its player (`87415d3`)
+
+### CI & Tooling
+- Every third-party action is pinned to a commit SHA; workflows default to `contents: read`, and only the release job can write. The release job waits for a separate verification job, takes the tag through `env`, and requires the tagged commit to be on the default branch (`15ae908`)
+- `go vet` in CI no longer discards vet's exit status; the race job also covers `./resample` and `./internal/...`; govulncheck runs on the stable leg; crashing fuzz inputs are uploaded as artifacts
+- `scripts/download_testvectors.sh` fails instead of claiming success when neither `sha1sum` nor `shasum` exists (`a02f468`)
+- `make clean` no longer wipes the global Go build cache; `make conformance` added (`941823e`)
+- errcheck no longer excludes `(*bufio.Writer).Flush` and `wav.Writer.Close` (`6fe4caa`)
+
+### Tests
+- New fuzz targets: `FuzzOpusReaderNoCRC`, `FuzzOpusHeaders`, `FuzzSeekAndLength`, `FuzzResample`, scheduled nightly. The existing Ogg targets run with CRC verification on, so mutated input rarely got past the first page (`6e0e1fe`, `47a0f01`)
+- Regression tests for every fix above, plus a 44.1 kHz round trip that checks the decoded duration (`1ae6da4`)
+
 ## [0.4.0] - 2026-09-29
 
 Minor release (pre-1.0 semver): adds public API (the `resample` package, `Encoder.PreSkip`, `EncodeOptions.ComplexityExplicit`) and changes CLI behavior. Encoding no longer requires 48 kHz input.

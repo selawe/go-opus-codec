@@ -481,6 +481,7 @@ The repository provides several production-ready command line tools in `cmd/`:
   ```sh
   go run ./cmd/oggopus2wav --out out.wav input.opus
   ```
+  Decoding stops with an error once the PCM exceeds `--max-bytes` (default 1 GiB), so a small hostile file cannot fill the disk.
 - **Encode WAV to Ogg Opus** (any sample rate, mono or stereo 16-bit PCM; non-libopus rates such as 44.1 kHz are resampled to 48 kHz):
   ```sh
   go run ./cmd/wav2oggopus --bitrate 64000 --out out.opus input.wav
@@ -494,7 +495,7 @@ The repository provides several production-ready command line tools in `cmd/`:
   go run ./cmd/oggopusextract --out packets.bin input.opus
   ```
 
-**Output safety.** `oggopus2wav`, `wav2oggopus` and `oggopusextract` (and `ConvertWAVFileToOggOpus` / `ConvertOggOpusFileToWAV`) write through a temporary file that only replaces the destination once the conversion succeeded. A failed run therefore never leaves a partial file behind and never destroys an existing output, and writing onto the input file is refused with an error. Special files such as `/dev/stdout` are written in place. Encoded files batch packets into Ogg pages of about one second, keep OpusTags on their own page, and carry RFC 7845 granule positions, so they play back with the exact input length in libopus-based players (verified with ffmpeg).
+**Output safety.** `oggopus2wav`, `wav2oggopus` and `oggopusextract` (and `ConvertWAVFileToOggOpus` / `ConvertOggOpusFileToWAV`) write through a temporary file that only replaces the destination once the conversion succeeded. A failed run (or a crash or kill part-way) therefore never leaves a partial file behind and never destroys an existing output, and writing onto the input file, or onto a read-only file, is refused with an error. A symlink destination keeps being a symlink and its target is the file that is replaced. Special files such as `/dev/stdout` are written in place. Encoded files batch packets into Ogg pages of about one second, keep OpusTags on their own page, and carry RFC 7845 granule positions, so they play back with the exact input length in libopus-based players (verified with ffmpeg).
 
 ---
 
