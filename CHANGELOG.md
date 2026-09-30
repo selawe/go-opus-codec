@@ -5,7 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Hardening release from a full review of the hand-written packages. No new public types; a few behaviors tighten, listed first.
+## [0.5.0] - 2026-09-30
+
+Hardening release (pre-1.0 minor, because a few behaviors tighten) from a full review of the hand-written packages. New public API is limited to `resample.Check`, `resample.MaxTableEntries`, `wav.MaxSampleRate`, `opus.ErrPacketTooLarge` and `ogg.NewOpusReaderVerifyCRC`.
 
 Behavior changes to be aware of when upgrading:
 - `wav2oggopus`: `-bitrate` outside 500-512000 (including `0`, which used to mean the 64000 default) and `-complexity` above 10 are now errors instead of being clamped. A negative `-complexity` still keeps the default.
