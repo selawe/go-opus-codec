@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -972,5 +973,73 @@ func TestPacketReader_SeekDoesNotReportDiscontinuity(t *testing.T) {
 		if p.Discontinuity {
 			t.Fatalf("packet %v flagged as discontinuity after a seek", p.Data)
 		}
+	}
+}
+
+func onePage(t *testing.T, payload string, eos bool) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 0x1234)
+	if err := pw.WritePacket([]byte(payload), 960, true, eos); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// Junk after the last page (an ID3/APE tag, zero padding) is the end of the stream,
+// not a resynchronisation failure.
+func TestPageReader_TrailingGarbageIsEOF(t *testing.T) {
+	data := append(onePage(t, "last", true), []byte("ID3-tag-or-zero-padding\x00\x00\x00\x00\x00")...)
+	pr := NewPageReader(bytes.NewReader(data))
+	if _, err := pr.ReadPage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pr.ReadPage(); err != io.EOF {
+		t.Fatalf("err = %v, want io.EOF", err)
+	}
+}
+
+// Input that is junk from the start must still fail loudly, not look like an empty stream.
+func TestPageReader_PureGarbageStillFails(t *testing.T) {
+	pr := NewPageReader(bytes.NewReader(bytes.Repeat([]byte("not ogg at all "), 10)))
+	if _, err := pr.ReadPage(); !errors.Is(err, ErrResyncFailed) {
+		t.Fatalf("err = %v, want ErrResyncFailed", err)
+	}
+}
+
+// A false "OggS" header claiming a huge body must not hide the real page that follows it.
+func TestPageReader_TruncatedCandidateDoesNotHideRealPage(t *testing.T) {
+	fake := append([]byte("OggS\x00\x00"), make([]byte, 20)...) // header type .. serial .. crc
+	fake = append(fake, 255)                                    // 255 segments
+	fake = append(fake, bytes.Repeat([]byte{255}, 255)...)      // claiming ~65 KB of body
+	data := append(fake, onePage(t, "real", false)...)
+
+	pr := NewPageReader(bytes.NewReader(data))
+	p, err := pr.ReadPage()
+	if err != nil {
+		t.Fatalf("ReadPage: %v", err)
+	}
+	if string(p.SegmentData) != "real" {
+		t.Fatalf("got %q, want the real page", p.SegmentData)
+	}
+}
+
+// Crafted back-to-back candidates must hit the work bound rather than checksum ~64 KB each.
+func TestPageReader_ResyncCRCWorkIsBounded(t *testing.T) {
+	cand := append([]byte("OggS\x00\x00"), make([]byte, 20)...)
+	cand = append(cand, 255)
+	cand = append(cand, bytes.Repeat([]byte{255}, 255)...)
+	// Candidates 283 bytes apart, each claiming 65 KB that the following candidates "fill".
+	blob := bytes.Repeat(cand, 4000)
+	blob = append(blob, make([]byte, 70000)...)
+
+	pr := NewPageReader(bytes.NewReader(blob))
+	pr.MaxResync = 1 << 30 // isolate the CRC bound from the byte bound
+	_, err := pr.ReadPage()
+	if !errors.Is(err, ErrResyncFailed) || !strings.Contains(err.Error(), "too many false page candidates") {
+		t.Fatalf("err = %v, want ErrResyncFailed from the work bound", err)
 	}
 }

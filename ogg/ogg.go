@@ -79,7 +79,13 @@ type PageReader struct {
 	Resync    bool // If true, recover from stream desync by scanning for "OggS" (RFC 3533 §4)
 	MaxResync int  // Maximum bytes to scan during resynchronization (default: 128KB)
 	crcTable  [256]uint32
+	gotPage   bool // a page has been returned, so trailing garbage is an end of stream
 }
+
+// maxCRCWork bounds the bytes checksummed by one ReadPage call while resynchronizing.
+// Each false "OggS" candidate can cost a CRC over up to 65307 bytes, so without a bound
+// a few hundred KiB of crafted candidates would burn hundreds of MiB of CRC work.
+const maxCRCWork = 8 << 20
 
 // crcTable8 contains the precomputed tables for Slice-by-8 CRC32 computation.
 // Polynomial: 0x04C11DB7 (Ogg/Vorbis MSB-first, non-reflected).
@@ -122,17 +128,37 @@ func NewPageReader(r io.Reader) *PageReader {
 // If Resync is enabled (the default), ReadPage recovers from stream desynchronization
 // or corrupted bytes by scanning forward for the "OggS" capture pattern per RFC 3533 §4.
 func (pr *PageReader) ReadPage() (*Page, error) {
-	var bytesSearched int
+	var bytesSearched, crcWork int
 	var lastErr error
+	var sawTruncated bool
 	maxResync := pr.MaxResync
 	if maxResync <= 0 {
 		maxResync = 128 * 1024
+	}
+
+	// skipCandidate gives up on a false "OggS" candidate: drop one byte and keep scanning.
+	skipCandidate := func(cause error) error {
+		if _, derr := pr.r.Discard(1); derr != nil {
+			return derr
+		}
+		bytesSearched++
+		lastErr = cause
+		if bytesSearched > maxResync {
+			return fmt.Errorf("%w: %w", ErrResyncFailed, cause)
+		}
+		return nil
 	}
 
 	for {
 		p4, err := pr.r.Peek(4)
 		if err != nil {
 			if errors.Is(err, io.EOF) && bytesSearched > 0 {
+				if sawTruncated {
+					return nil, ErrTruncatedPage // a real page was cut off at the end of the input
+				}
+				if pr.gotPage {
+					return nil, io.EOF // garbage after the last page (for example a tag)
+				}
 				if lastErr != nil {
 					return nil, fmt.Errorf("%w: %w", ErrResyncFailed, lastErr)
 				}
@@ -180,7 +206,14 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		hdr, err := pr.r.Peek(27)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, ErrTruncatedPage
+				if !pr.Resync {
+					return nil, ErrTruncatedPage
+				}
+				sawTruncated = true
+				if serr := skipCandidate(ErrTruncatedPage); serr != nil {
+					return nil, serr
+				}
+				continue
 			}
 			return nil, err
 		}
@@ -215,7 +248,14 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		hdrAndSegs, err := pr.r.Peek(27 + pageSegments)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, ErrTruncatedPage
+				if !pr.Resync {
+					return nil, ErrTruncatedPage
+				}
+				sawTruncated = true
+				if serr := skipCandidate(ErrTruncatedPage); serr != nil {
+					return nil, serr
+				}
+				continue
 			}
 			return nil, err
 		}
@@ -229,7 +269,14 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		fullPage, err := pr.r.Peek(totalPageSize)
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				return nil, ErrTruncatedPage
+				if !pr.Resync {
+					return nil, ErrTruncatedPage
+				}
+				sawTruncated = true
+				if serr := skipCandidate(ErrTruncatedPage); serr != nil {
+					return nil, serr
+				}
+				continue
 			}
 			if errors.Is(err, bufio.ErrBufferFull) {
 				buf := make([]byte, totalPageSize)
@@ -250,13 +297,12 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 					}
 					return nil, crcErr
 				}
-				if _, derr := pr.r.Discard(1); derr != nil {
-					return nil, derr
+				crcWork += totalPageSize
+				if crcWork > maxCRCWork {
+					return nil, fmt.Errorf("%w: too many false page candidates: %w", ErrResyncFailed, crcErr)
 				}
-				bytesSearched++
-				lastErr = crcErr
-				if bytesSearched > maxResync {
-					return nil, fmt.Errorf("%w: %w", ErrResyncFailed, crcErr)
+				if serr := skipCandidate(crcErr); serr != nil {
+					return nil, serr
 				}
 				continue
 			}
@@ -272,6 +318,7 @@ func (pr *PageReader) ReadPage() (*Page, error) {
 		body := make([]byte, bodyLen)
 		copy(body, fullPage[27+pageSegments:totalPageSize])
 
+		pr.gotPage = true
 		return &Page{
 			Version:          version,
 			HeaderType:       headerType,
