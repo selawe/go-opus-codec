@@ -391,3 +391,156 @@ func TestWAVReader_SampleRateTooHigh(t *testing.T) {
 		}
 	}
 }
+
+func wavHeader(riffSize, dataSize uint32, channels uint16) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	_ = binary.Write(&buf, binary.LittleEndian, riffSize)
+	buf.WriteString("WAVEfmt ")
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(16))
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))
+	_ = binary.Write(&buf, binary.LittleEndian, channels)
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000*2*uint32(channels)))
+	_ = binary.Write(&buf, binary.LittleEndian, channels*2)
+	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))
+	buf.WriteString("data")
+	_ = binary.Write(&buf, binary.LittleEndian, dataSize)
+	return buf.Bytes()
+}
+
+func readAll(t *testing.T, r *Reader, chunk int) []int16 {
+	t.Helper()
+	var out []int16
+	dst := make([]int16, chunk)
+	for {
+		n, err := r.ReadInt16PCM(dst)
+		out = append(out, dst[:n]...)
+		if err == io.EOF {
+			return out
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestWAVReader_StreamingSizes(t *testing.T) {
+	pcm := []byte{1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0}
+	for name, hdr := range map[string][]byte{
+		"data 0xFFFFFFFF":         wavHeader(0xFFFFFFFF, 0xFFFFFFFF, 1),
+		"riff 0, data 0":          wavHeader(0, 0, 1),
+		"riff 0xFFFFFFFF, data 0": wavHeader(0xFFFFFFFF, 0, 1),
+	} {
+		r, err := NewReader(bytes.NewReader(append(append([]byte(nil), hdr...), pcm...)))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := readAll(t, r, 4); len(got) != 6 || got[5] != 6 {
+			t.Errorf("%s: got %v, want 6 samples", name, got)
+		}
+	}
+	// A real empty file (valid RIFF size, data 0) stays empty.
+	r, err := NewReader(bytes.NewReader(append(wavHeader(36, 0, 1), pcm...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAll(t, r, 4); len(got) != 0 {
+		t.Errorf("empty data chunk returned %v", got)
+	}
+}
+
+func TestWAVReader_WholeFramesOnly(t *testing.T) {
+	pcm := []byte{1, 0, 2, 0, 3, 0, 4, 0, 5, 0} // 2.5 stereo frames
+	r, err := NewReader(bytes.NewReader(append(wavHeader(36+10, 10, 2), pcm...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ReadInt16PCM(make([]int16, 1)); err != io.ErrShortBuffer {
+		t.Fatalf("err = %v, want io.ErrShortBuffer", err)
+	}
+	n, err := r.ReadInt16PCM(make([]int16, 3)) // odd dst: one frame only
+	if err != nil || n != 2 {
+		t.Fatalf("n=%d err=%v, want 2 samples", n, err)
+	}
+	got := readAll(t, r, 8)
+	if len(got) != 2 || got[0] != 3 || got[1] != 4 { // the trailing half frame is dropped
+		t.Fatalf("rest = %v", got)
+	}
+}
+
+func TestWriterValidatesArgumentsAndKeepsCloseError(t *testing.T) {
+	for _, tc := range [][2]int{{0, 2}, {48000, 0}, {-1, 1}, {48000, 40000}, {1 << 31, 2}} {
+		if _, err := NewWriter(&memWS{}, tc[0], tc[1]); err == nil {
+			t.Errorf("NewWriter(%d, %d) accepted", tc[0], tc[1])
+		}
+	}
+	ws := &memWS{}
+	w, err := NewWriter(ws, 48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteInt16PCM([]int16{1, 2, 3}); err == nil {
+		t.Error("partial frame accepted")
+	}
+	ws.seekErr = errors.New("seek failed")
+	if err := w.Close(); err == nil {
+		t.Fatal("first Close should fail")
+	}
+	if err := w.Close(); err == nil {
+		t.Fatal("second Close must repeat the error")
+	}
+}
+
+type memWS struct {
+	b       []byte
+	pos     int
+	seekErr error
+}
+
+func (m *memWS) Write(p []byte) (int, error) {
+	if end := m.pos + len(p); end > len(m.b) {
+		m.b = append(m.b, make([]byte, end-len(m.b))...)
+	}
+	copy(m.b[m.pos:], p)
+	m.pos += len(p)
+	return len(p), nil
+}
+
+func (m *memWS) Seek(off int64, whence int) (int64, error) {
+	if m.seekErr != nil && whence == io.SeekStart {
+		return 0, m.seekErr
+	}
+	switch whence {
+	case io.SeekStart:
+		m.pos = int(off)
+	case io.SeekCurrent:
+		m.pos += int(off)
+	case io.SeekEnd:
+		m.pos = len(m.b) + int(off)
+	}
+	return int64(m.pos), nil
+}
+
+// The patched sizes must land relative to where the header started.
+func TestWriterPatchesRelativeToStartOffset(t *testing.T) {
+	ws := &memWS{b: []byte("PREFIX!!"), pos: 8}
+	w, err := NewWriter(ws, 48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.WriteInt16PCM([]int16{1, 2, 3, 4})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewReader(bytes.NewReader(ws.b[8:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAll(t, r, 16); len(got) != 4 {
+		t.Fatalf("got %v", got)
+	}
+	if string(ws.b[:8]) != "PREFIX!!" {
+		t.Fatal("prefix clobbered")
+	}
+}

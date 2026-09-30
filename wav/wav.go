@@ -10,7 +10,9 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 )
 
 // ErrDataTooLarge is returned by Writer.WriteInt16PCM when the PCM payload would
@@ -33,12 +35,27 @@ type Writer struct {
 	buf []byte
 
 	dataBytes uint32
+	start     int64 // offset of the RIFF header in w, which Close patches relative to
 	closed    bool
+	closeErr  error
 }
 
 // NewWriter creates a new WAV writer that outputs to an io.WriteSeeker with the given sample rate and channel count.
 func NewWriter(w io.WriteSeeker, sampleRate int, channels int) (*Writer, error) {
+	if channels < 1 || channels > math.MaxUint16/2 {
+		return nil, fmt.Errorf("wav: invalid channel count %d", channels)
+	}
+	if sampleRate < 1 || uint64(sampleRate)*uint64(channels)*2 > math.MaxUint32 {
+		return nil, fmt.Errorf("wav: invalid sample rate %d for %d channels", sampleRate, channels)
+	}
+	// A writer that cannot report its position is treated as starting at 0; Close then
+	// surfaces the same seek failure when it patches the header.
+	start, err := w.Seek(0, io.SeekCurrent)
+	if err != nil {
+		start = 0
+	}
 	wr := &Writer{
+		start:      start,
 		w:          w,
 		bw:         bufio.NewWriterSize(w, 1<<20),
 		sampleRate: uint32(sampleRate),
@@ -64,6 +81,9 @@ func (wr *Writer) WriteInt16PCM(pcm []int16) error {
 	if len(pcm) == 0 {
 		return nil
 	}
+	if len(pcm)%int(wr.channels) != 0 {
+		return fmt.Errorf("wav: %d samples is not a whole number of %d-channel frames", len(pcm), wr.channels)
+	}
 
 	n := len(pcm) * 2
 	if uint64(wr.dataBytes)+uint64(n) > maxDataBytes {
@@ -87,9 +107,14 @@ func (wr *Writer) WriteInt16PCM(pcm []int16) error {
 // It does not close the underlying io.WriteSeeker.
 func (wr *Writer) Close() error {
 	if wr.closed {
-		return nil
+		return wr.closeErr // a failed first Close keeps failing instead of reporting success
 	}
 	wr.closed = true
+	wr.closeErr = wr.finish()
+	return wr.closeErr
+}
+
+func (wr *Writer) finish() error {
 	if wr.bw != nil {
 		if err := wr.bw.Flush(); err != nil {
 			return err
@@ -101,13 +126,13 @@ func (wr *Writer) Close() error {
 	// We wrote: 12 + (8+16) + 8 + data
 	riffSize := 4 + (8 + 16) + (8 + wr.dataBytes)
 
-	if _, err := wr.w.Seek(4, io.SeekStart); err != nil {
+	if _, err := wr.w.Seek(wr.start+4, io.SeekStart); err != nil {
 		return err
 	}
 	if err := binary.Write(wr.w, binary.LittleEndian, riffSize); err != nil {
 		return err
 	}
-	if _, err := wr.w.Seek(40, io.SeekStart); err != nil {
+	if _, err := wr.w.Seek(wr.start+40, io.SeekStart); err != nil {
 		return err
 	}
 	if err := binary.Write(wr.w, binary.LittleEndian, wr.dataBytes); err != nil {

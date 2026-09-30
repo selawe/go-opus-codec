@@ -31,6 +31,9 @@ type Reader struct {
 
 	buf           []byte
 	dataRemaining uint32
+	// unknownLen marks a streamed file whose writer could not go back and fill in the
+	// data size (0xFFFFFFFF, or 0 with a zero RIFF size): read until the input ends.
+	unknownLen bool
 }
 
 // NewReader creates a new WAV reader parsing the RIFF header from r.
@@ -48,24 +51,29 @@ func (r *Reader) SampleRate() int { return r.sampleRate }
 // Channels returns the number of channels parsed from the WAV header.
 func (r *Reader) Channels() int { return r.channels }
 
-// ReadInt16PCM reads up to len(dst) samples (not frames) into dst.
-// Returns number of samples read.
+// ReadInt16PCM reads whole frames into dst, at most len(dst) samples. It returns the
+// number of samples read, always a multiple of Channels(). A dst shorter than one frame
+// yields io.ErrShortBuffer, and a trailing partial frame in the file is dropped.
 func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
 	if len(dst) == 0 {
 		return 0, nil
 	}
-	if r.dataRemaining == 0 {
-		return 0, io.EOF
+	n := len(dst) - len(dst)%r.channels
+	if n == 0 {
+		return 0, io.ErrShortBuffer
 	}
-
-	maxSamples := int(r.dataRemaining / 2)
-	if maxSamples <= 0 {
-		r.dataRemaining = 0
-		return 0, io.EOF
-	}
-	n := len(dst)
-	if n > maxSamples {
-		n = maxSamples
+	if !r.unknownLen {
+		if r.dataRemaining == 0 {
+			return 0, io.EOF
+		}
+		maxSamples := int(r.dataRemaining/2) / r.channels * r.channels
+		if maxSamples <= 0 {
+			r.dataRemaining = 0
+			return 0, io.EOF
+		}
+		if n > maxSamples {
+			n = maxSamples
+		}
 	}
 
 	nBytes := n * 2
@@ -74,24 +82,23 @@ func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
 	}
 	buf := r.buf[:nBytes]
 	nRead, err := io.ReadFull(r.br, buf)
-	if nRead > 0 {
-		samplesRead := nRead / 2
-		for i := 0; i < samplesRead; i++ {
-			dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
-		}
+	samplesRead := nRead / 2 / r.channels * r.channels // whole frames only
+	for i := 0; i < samplesRead; i++ {
+		dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
+	}
+	if !r.unknownLen {
 		r.dataRemaining -= uint32(samplesRead * 2)
-		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-			r.dataRemaining = 0
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		r.dataRemaining = 0
+		r.unknownLen = false
+		if samplesRead > 0 {
 			return samplesRead, nil
 		}
-		return samplesRead, err
+		return 0, io.EOF
 	}
 	if err != nil {
-		if errors.Is(err, io.ErrUnexpectedEOF) {
-			r.dataRemaining = 0
-			return 0, io.EOF
-		}
-		return 0, err
+		return samplesRead, err
 	}
 	return n, nil
 }
@@ -175,6 +182,8 @@ func (r *Reader) readHeader() error {
 				return fmt.Errorf("%w: data before fmt", ErrUnsupportedWAV)
 			}
 			r.dataRemaining = sz
+			riffSize := binary.LittleEndian.Uint32(riff[4:8])
+			r.unknownLen = sz == 0xFFFFFFFF || (sz == 0 && (riffSize == 0 || riffSize == 0xFFFFFFFF))
 			return nil
 
 		default:
