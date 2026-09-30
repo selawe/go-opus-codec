@@ -638,10 +638,38 @@ func (player *OpusPlayer[T]) Length() int64 {
 
 func (player *OpusPlayer[T]) lengthLocked() int64 {
 	total, err := player.reader.TotalSamples()
-	if err != nil {
+	if err != nil || total < 0 {
 		return 0
 	}
-	return total * int64(player.Channels()) * int64(player.bytesPerSample)
+	perSample := int64(player.Channels()) * int64(player.bytesPerSample)
+	if perSample > 0 && total > math.MaxInt64/perSample {
+		return 0 // a hostile granule position: report no length rather than a wrapped one
+	}
+	return total * perSample
+}
+
+// samplesToDuration converts a 48 kHz sample count to a Duration without the overflow
+// of multiplying by time.Second first (which wraps beyond roughly 53 hours).
+func samplesToDuration(samples int64) time.Duration {
+	if samples < 0 {
+		return 0
+	}
+	const hz = int64(ogg.OpusSampleRateHz)
+	secs, rem := samples/hz, samples%hz
+	if secs > int64(math.MaxInt64/time.Second)-1 {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(secs)*time.Second + time.Duration(rem*int64(time.Second)/hz)
+}
+
+// durationToSamples is the inverse of samplesToDuration, overflow-safe and non-negative.
+func durationToSamples(d time.Duration) uint64 {
+	if d <= 0 {
+		return 0
+	}
+	const hz = uint64(ogg.OpusSampleRateHz)
+	secs, rem := uint64(d/time.Second), uint64(d%time.Second)
+	return secs*hz + rem*hz/uint64(time.Second)
 }
 
 // seekPreRollSamples is the 80 ms (at 48 kHz) of pre-roll RFC 7845 Section 4.6 requires after a seek.
@@ -663,8 +691,12 @@ func (player *OpusPlayer[T]) SeekSample(position uint64) error {
 }
 
 func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
+	preskipSamples := uint64(player.reader.Head.PreSkip)
+	if position > math.MaxInt64-preskipSamples {
+		return fmt.Errorf("opus: seek position %d out of range", position)
+	}
 	// granule positions must take preskip into account
-	position += uint64(player.reader.Head.PreSkip)
+	position += preskipSamples
 
 	// RFC 7845 Section 4.6: start decoding at least 80 ms before the target so the
 	// decoder state converges; the extra samples are decoded and discarded below.
@@ -675,9 +707,17 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 		seekTarget = 0
 	}
 
+	// Build the replacement decoder before touching any state: if it fails, playback
+	// carries on exactly where it was.
+	decoder, err := opus.NewDecoderFromHead(player.reader.Head)
+	if err != nil {
+		return err
+	}
+
 	// force reader to go back to the page that contains the desired position
 	granule, err := player.reader.SeekToPage(seekTarget)
 	if err != nil {
+		_ = decoder.Close()
 		return err
 	}
 
@@ -689,14 +729,8 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 	// reset decoder state
 	// in theory, the decoder state should start fresh from a new audio page
 	// after the end of a previous valid granule page
-	decoder, err := opus.NewDecoderFromHead(player.reader.Head)
-	if err != nil {
-		return err
-	}
 	if player.decoder != nil {
-		if cerr := player.decoder.Close(); cerr != nil {
-			return cerr
-		}
+		_ = player.decoder.Close() // only releases memory; the new decoder is already in hand
 	}
 	player.decoder = decoder
 
@@ -704,7 +738,10 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 	// if preskip is larger than granule, we need to skip less
 	// e.g., preskip = 2500, granule = 2000, that means that sample 2500 is the first 'real' sample
 	// so position=0 should skip 500 samples
-	skipSamples := position - granule
+	var skipSamples uint64
+	if position > granule {
+		skipSamples = position - granule
+	}
 
 	preskip := int64(player.reader.Head.PreSkip)
 	// position already takes preskip into account
@@ -748,8 +785,7 @@ func (player *OpusPlayer[T]) SeekTime(when time.Duration) error {
 		return fmt.Errorf("opus: negative seek duration: %v", when)
 	}
 
-	samples := uint64(when * time.Duration(ogg.OpusSampleRateHz) / time.Second)
-	return player.seekSampleLocked(samples)
+	return player.seekSampleLocked(durationToSamples(when))
 }
 
 // Current position in terms of how many samples have been rendered. This is independent of the number of channels the
@@ -765,7 +801,7 @@ func (player *OpusPlayer[T]) CurrentSample() int64 {
 func (player *OpusPlayer[T]) CurrentTime() time.Duration {
 	player.mu.Lock()
 	defer player.mu.Unlock()
-	return time.Duration(player.totalSamples) * time.Second / time.Duration(ogg.OpusSampleRateHz)
+	return samplesToDuration(player.totalSamples)
 }
 
 // Return the total number of samples in the stream per channel. The read position is preserved when
@@ -793,7 +829,7 @@ func (player *OpusPlayer[T]) CurrentStreamTimestamp() time.Duration {
 }
 
 func (player *OpusPlayer[T]) updateTimestamp(granule uint64) {
-	player.lastTimestamp = time.Duration(granule) * time.Second / time.Duration(ogg.OpusSampleRateHz)
+	player.lastTimestamp = samplesToDuration(int64(min(granule, math.MaxInt64)))
 }
 
 // SetVolume sets the linear playback volume factor.

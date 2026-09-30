@@ -1155,3 +1155,54 @@ func TestPlayer_SetVolumeIgnoresNonFinite(t *testing.T) {
 		t.Fatalf("volume = %v, want 0.5 unchanged", v)
 	}
 }
+
+func TestSampleDurationConversionsDoNotOverflow(t *testing.T) {
+	if got := samplesToDuration(48000); got != time.Second {
+		t.Fatalf("48000 samples = %v, want 1s", got)
+	}
+	if got := samplesToDuration(1); got != time.Second/48000 {
+		t.Fatalf("1 sample = %v", got)
+	}
+	// 100 hours of audio used to wrap negative with samples*time.Second.
+	const hundredHours = int64(100 * 3600 * 48000)
+	if got := samplesToDuration(hundredHours); got != 100*time.Hour {
+		t.Fatalf("100h = %v", got)
+	}
+	if got := samplesToDuration(math.MaxInt64); got <= 0 {
+		t.Fatalf("huge sample count gave %v, want a saturated positive duration", got)
+	}
+	if got := durationToSamples(100 * time.Hour); got != uint64(hundredHours) {
+		t.Fatalf("100h = %d samples", got)
+	}
+	if got := durationToSamples(-time.Second); got != 0 {
+		t.Fatalf("negative = %d", got)
+	}
+}
+
+// An absurd seek position is refused without wrapping, and playback keeps working.
+func TestPlayer_SeekOutOfRangeLeavesPlaybackIntact(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	buf := make([]byte, 4800)
+	if _, err := io.ReadFull(p, buf); err != nil {
+		t.Fatal(err)
+	}
+	before := p.CurrentSample()
+
+	if err := p.SeekSample(math.MaxUint64 - 10); err == nil {
+		t.Fatal("expected an out-of-range error")
+	}
+	if got := p.CurrentSample(); got != before {
+		t.Fatalf("position moved from %d to %d after a refused seek", before, got)
+	}
+	if _, err := io.ReadFull(p, buf); err != nil {
+		t.Fatalf("playback broken after refused seek: %v", err)
+	}
+	if err := p.SeekTime(time.Duration(math.MaxInt64)); err != nil {
+		t.Logf("SeekTime(max) -> %v (acceptable)", err)
+	}
+}
