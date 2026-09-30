@@ -164,6 +164,8 @@ func SoftClip(pcm []float32, channels int) error {
 	memPtr := libc.PtrFloat32(mem)
 
 	opuscc.Opus_opus_pcm_soft_clip(tls, libc.PtrFloat32(buf), nbSamples, int32(channels), memPtr)
+	runtime.KeepAlive(mem)
+	runtime.KeepAlive(buf)
 	copy(pcm, buf)
 	return nil
 }
