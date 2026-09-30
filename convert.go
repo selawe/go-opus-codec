@@ -149,6 +149,9 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	var resampler *resample.Resampler
 	if !isOpusRate(srcRate) {
 		encRate = ogg.OpusSampleRateHz
+		if err := resample.Check(wr.Channels(), srcRate, encRate); err != nil {
+			return fmt.Errorf("unsupported sample rate %d: %w", srcRate, err)
+		}
 		resampler = resample.New(wr.Channels(), srcRate, encRate)
 	}
 	scale := uint64(ogg.OpusSampleRateHz / encRate)

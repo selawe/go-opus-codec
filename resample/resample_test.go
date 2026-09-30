@@ -202,3 +202,49 @@ func TestOptimisedFilterMatchesReference(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckRejectsHugeTables(t *testing.T) {
+	if err := Check(2, 44100, 48000); err != nil {
+		t.Fatalf("44.1k->48k rejected: %v", err)
+	}
+	for _, rate := range []int{999983, 4294967295} { // large primes / max uint32
+		if err := Check(1, rate, 48000); err == nil {
+			t.Errorf("rate %d should be rejected", rate)
+		}
+	}
+	if err := Check(0, 44100, 48000); err == nil {
+		t.Error("zero channels should be rejected")
+	}
+}
+
+func TestProcessHoldsPartialFrames(t *testing.T) {
+	in := make([]float32, 2*4410)
+	for i := range in {
+		in[i] = float32(i%100) / 200
+	}
+	whole := New(2, 44100, 48000)
+	want := append(whole.Process(in), whole.Flush()...)
+
+	split := New(2, 44100, 48000)
+	var got []float32
+	for i := 0; i < len(in); i += 7 { // odd chunk size splits frames
+		end := min(i+7, len(in))
+		got = append(got, split.Process(in[i:end])...)
+	}
+	got = append(got, split.Flush()...)
+	if len(got) != len(want) {
+		t.Fatalf("len %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sample %d differs: %v vs %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestToInt16NaN(t *testing.T) {
+	nan := float32(math.NaN())
+	if got := toInt16([]float32{nan, 2, -2}); got[0] != 0 || got[1] != 32767 || got[2] != -32768 {
+		t.Fatalf("got %v", got)
+	}
+}

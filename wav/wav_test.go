@@ -369,3 +369,25 @@ func TestWAVReader_TruncatedData(t *testing.T) {
 		t.Fatalf("expected 10 samples from partial read before EOF, got %d", n)
 	}
 }
+
+func TestWAVReader_SampleRateTooHigh(t *testing.T) {
+	for _, rate := range []uint32{MaxSampleRate + 1, 4294967295} {
+		var buf bytes.Buffer
+		buf.WriteString("RIFF")
+		_ = binary.Write(&buf, binary.LittleEndian, uint32(36))
+		buf.WriteString("WAVEfmt ")
+		_ = binary.Write(&buf, binary.LittleEndian, uint32(16))
+		_ = binary.Write(&buf, binary.LittleEndian, uint16(1))
+		_ = binary.Write(&buf, binary.LittleEndian, uint16(1))
+		_ = binary.Write(&buf, binary.LittleEndian, rate)
+		_ = binary.Write(&buf, binary.LittleEndian, uint32(0))
+		_ = binary.Write(&buf, binary.LittleEndian, uint16(2))
+		_ = binary.Write(&buf, binary.LittleEndian, uint16(16))
+		buf.WriteString("data")
+		_ = binary.Write(&buf, binary.LittleEndian, uint32(0))
+
+		if _, err := NewReader(bytes.NewReader(buf.Bytes())); !errors.Is(err, ErrUnsupportedWAV) {
+			t.Errorf("rate %d: err = %v, want ErrUnsupportedWAV", rate, err)
+		}
+	}
+}

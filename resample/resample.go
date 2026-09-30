@@ -11,7 +11,15 @@
 // stream.
 package resample
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
+
+// MaxTableEntries bounds the polyphase table (phases * taps) so a pathological
+// rate pair, such as two large coprime rates from an untrusted header, cannot
+// exhaust memory.
+const MaxTableEntries = 1 << 22
 
 // halfTaps is the filter half-width in input samples at the cutoff;
 // 32 taps keeps the passband flat and aliasing far below 16-bit noise.
@@ -28,6 +36,7 @@ type Resampler struct {
 	taps     int
 	table    []float32 // [phase][tap]
 
+	partial  []float32 // incomplete trailing frame carried to the next Process
 	buf      []float32 // pending input, interleaved; buf[0] is input frame base
 	base     int64
 	inFrames int64 // input frames seen so far
@@ -38,15 +47,12 @@ type Resampler struct {
 // from Hz to to Hz. It panics if channels, from or to is not positive; callers that
 // take those values from untrusted input must validate them first.
 func New(channels, from, to int) *Resampler {
-	if channels <= 0 || from <= 0 || to <= 0 {
-		panic("resample: channels and rates must be positive")
+	if err := Check(channels, from, to); err != nil {
+		panic(err.Error())
 	}
 	g := gcd(from, to)
 	up, down := to/g, from/g
-	// Cut off at the lower Nyquist, a little early for the window's
-	// transition band.
-	cutoff := 0.97 * math.Min(1, float64(to)/float64(from))
-	half := int(math.Ceil(halfTaps / cutoff))
+	cutoff, half := filterShape(from, to)
 	taps := 2 * half
 
 	// table[p][j] weighs input frame base+j-half+1 for output phase p,
@@ -80,9 +86,40 @@ func New(channels, from, to int) *Resampler {
 	}
 }
 
+// Check reports whether New would accept channels, from and to without
+// panicking or allocating an unreasonable filter table. Callers that take
+// the rates from untrusted input should call it first.
+func Check(channels, from, to int) error {
+	if channels <= 0 || from <= 0 || to <= 0 {
+		return fmt.Errorf("resample: channels and rates must be positive (channels=%d from=%d to=%d)", channels, from, to)
+	}
+	g := gcd(from, to)
+	_, half := filterShape(from, to)
+	if entries := float64(to/g) * float64(2*half); entries > MaxTableEntries {
+		return fmt.Errorf("resample: rate pair %d -> %d needs a %.0f entry filter table (limit %d)", from, to, entries, MaxTableEntries)
+	}
+	return nil
+}
+
+// filterShape returns the cutoff: at the lower Nyquist, a little early for
+// the window's transition band; and the filter half-width in input samples.
+func filterShape(from, to int) (cutoff float64, half int) {
+	cutoff = 0.97 * math.Min(1, float64(to)/float64(from))
+	return cutoff, int(math.Ceil(halfTaps / cutoff))
+}
+
 // Process consumes interleaved input and returns every output frame whose
-// filter window it now fully covers.
+// filter window it now fully covers. A trailing partial frame (len(in) not a
+// multiple of the channel count) is held back and completed by the next call.
 func (r *Resampler) Process(in []float32) []float32 {
+	if len(r.partial) > 0 {
+		in = append(r.partial, in...)
+		r.partial = nil
+	}
+	if rem := len(in) % r.channels; rem != 0 {
+		r.partial = append([]float32(nil), in[len(in)-rem:]...)
+		in = in[:len(in)-rem]
+	}
 	r.buf = append(r.buf, in...)
 	r.inFrames += int64(len(in) / r.channels)
 	return r.produce(false)
@@ -191,6 +228,9 @@ func toInt16(in []float32) []int16 {
 	out := make([]int16, len(in))
 	for i, v := range in {
 		s := math.Round(float64(v) * 32768)
+		if s != s { // NaN has no defined int16 conversion; emit silence
+			s = 0
+		}
 		out[i] = int16(max(-32768, min(32767, s)))
 	}
 	return out

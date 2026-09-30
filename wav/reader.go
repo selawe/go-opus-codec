@@ -13,6 +13,10 @@ var (
 	ErrUnsupportedWAV = errors.New("wav: unsupported WAV format")
 )
 
+// MaxSampleRate is the highest sample rate NewReader accepts. Headers are
+// untrusted, and absurd rates would otherwise drive downstream resampler sizing.
+const MaxSampleRate = 768000
+
 // Reader reads 16-bit PCM little-endian WAV data.
 //
 // It supports a minimal subset sufficient for decoding audio for Opus encoding.
@@ -158,6 +162,9 @@ func (r *Reader) readHeader() error {
 			}
 			if sampleRate == 0 {
 				return fmt.Errorf("%w: sample rate=0", ErrUnsupportedWAV)
+			}
+			if sampleRate > MaxSampleRate {
+				return fmt.Errorf("%w: sample rate=%d exceeds %d", ErrUnsupportedWAV, sampleRate, MaxSampleRate)
 			}
 			r.sampleRate = int(sampleRate)
 			r.channels = int(channels)

@@ -651,3 +651,12 @@ func TestEncodeOptions_ComplexityExplicitZero(t *testing.T) {
 		t.Error("ComplexityExplicit with 0 produced the same stream as complexity 10")
 	}
 }
+
+// A 700001 Hz header (under the WAV cap, coprime with 48000) would need a multi-GB resampler table.
+func TestEncodeWAVRejectsUnresamplableRate(t *testing.T) {
+	wavData := generateSineWAV(t, 700001, 1, 1000)
+	err := EncodeWAVToOggOpus(bytes.NewReader(wavData), &bytes.Buffer{}, nil)
+	if err == nil {
+		t.Fatal("expected error for unresamplable sample rate")
+	}
+}
