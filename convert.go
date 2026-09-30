@@ -519,6 +519,18 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 		if err != nil {
 			return fmt.Errorf("ogg read audio packet: %w", err)
 		}
+		if pkt.NewStream {
+			if int(r.Head.Channels) != channels {
+				return fmt.Errorf("chained stream channel count mismatch: initial %d, new %d", channels, r.Head.Channels)
+			}
+			dec.Close()
+			dec, err = opus.NewDecoderFromHead(r.Head)
+			if err != nil {
+				return fmt.Errorf("opus decoder for chained stream: %w", err)
+			}
+			preSkipRemaining = int(r.Head.PreSkip)
+			totalSamplesDecoded = 0
+		}
 
 		n, err := dec.Decode(pkt.Data, pcm, maxFrame, false)
 		if err != nil {

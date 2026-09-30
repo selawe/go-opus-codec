@@ -86,6 +86,12 @@ type OpusAudioPacket struct {
 	// sequence numbers). Damaged packets are dropped, never returned, so the audio before this
 	// packet is missing; conceal it (for example with a nil-packet decode) before decoding.
 	Discontinuity bool
+
+	// NewStream is true if this packet is the first audio packet of a new chained logical bitstream.
+	NewStream bool
+
+	// StreamIndex is the 0-based index of the logical bitstream in a chained Ogg file.
+	StreamIndex uint32
 }
 
 // OpusReader reads an Ogg Opus file/stream and yields Opus audio packets.
@@ -98,9 +104,16 @@ type OpusReader struct {
 	headRead bool
 	tagsRead bool
 
+	streamIndex uint32
+
 	cachedTotalSamples int64
 	cachedTotalErr     error
 	cachedTotalOnce    sync.Once
+}
+
+// StreamIndex returns the 0-based index of the current logical bitstream in a chained stream.
+func (r *OpusReader) StreamIndex() uint32 {
+	return r.streamIndex
 }
 
 // OpusSampleRateHz is the Opus decoding sample rate (RFC 7845).
@@ -181,32 +194,61 @@ func (r *OpusReader) readHeaders() error {
 }
 
 // ReadAudioPacket returns the next Opus audio packet (excluding OpusHead/Tags).
+// In a chained Ogg Opus bitstream, transitioning to a new logical bitstream will
+// automatically update r.Head and r.Tags, and return the first audio packet of the
+// new stream with NewStream set to true and StreamIndex incremented.
 func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 	if !r.headRead || !r.tagsRead {
 		return nil, ErrHeaderSequence
 	}
-	pkt, err := r.pr.ReadPacket()
-	if err != nil {
-		return nil, err
+	newStream := false
+	for {
+		pkt, err := r.pr.ReadPacket()
+		if err != nil {
+			return nil, err
+		}
+		if pkt.BOS {
+			head, err := parseOpusHead(pkt.Data)
+			if err != nil {
+				return nil, err
+			}
+			oldLimit := r.pr.MaxPacketSize
+			r.pr.SetMaxPacketSize(MaxOpusHeaderPacketSize)
+			tagPkt, err := r.pr.ReadPacket()
+			r.pr.SetMaxPacketSize(oldLimit)
+			if err != nil {
+				return nil, err
+			}
+			if tagPkt.BOS {
+				return nil, fmt.Errorf("%w: second packet in chained stream has BOS", ErrUnexpectedBOS)
+			}
+			tags, err := parseOpusTags(tagPkt.Data)
+			if err != nil {
+				return nil, err
+			}
+			r.Head = head
+			r.Tags = tags
+			r.streamIndex++
+			newStream = true
+			continue
+		}
+		if len(pkt.Data) >= 8 && bytes.Equal(pkt.Data[:8], opusHeadMagic) {
+			return nil, ErrBadOpusHead
+		}
+		if len(pkt.Data) >= 8 && bytes.Equal(pkt.Data[:8], opusTagsMagic) {
+			return nil, ErrBadOpusTags
+		}
+		return &OpusAudioPacket{
+			Data:          pkt.Data,
+			GranulePos:    pkt.GranulePosition,
+			GranuleValid:  pkt.GranuleValid,
+			EOS:           pkt.EOS,
+			PageSequence:  pkt.PageSequenceEnd,
+			Discontinuity: pkt.Discontinuity,
+			NewStream:     newStream,
+			StreamIndex:   r.streamIndex,
+		}, nil
 	}
-	if pkt.BOS {
-		return nil, fmt.Errorf("%w: BOS after headers", ErrUnexpectedBOS)
-	}
-	if len(pkt.Data) >= 8 && bytes.Equal(pkt.Data[:8], opusHeadMagic) {
-		return nil, ErrBadOpusHead
-	}
-	if len(pkt.Data) >= 8 && bytes.Equal(pkt.Data[:8], opusTagsMagic) {
-		return nil, ErrBadOpusTags
-	}
-	return &OpusAudioPacket{
-		Data:         pkt.Data,
-		GranulePos:   pkt.GranulePosition,
-		GranuleValid: pkt.GranuleValid,
-		EOS:          pkt.EOS,
-		PageSequence: pkt.PageSequenceEnd,
-
-		Discontinuity: pkt.Discontinuity,
-	}, nil
 }
 
 // SeekToPage seeks the stream to the page containing or immediately preceding the requested granule position.

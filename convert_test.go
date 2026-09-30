@@ -860,3 +860,67 @@ func TestEncodeRF64ToOggOpus(t *testing.T) {
 		t.Fatalf("DecodeOggOpusToWAV failed: %v", err)
 	}
 }
+
+func TestDecodeOggOpusToWAV_ChainedStreams(t *testing.T) {
+	// Generate two separate WAV sources (both 48kHz stereo, different lengths)
+	wav1 := generateSineWAV(t, 48000, 2, 960)
+	wav2 := generateSineWAV(t, 48000, 2, 1920)
+
+	var ogg1, ogg2 bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wav1), &ogg1, nil); err != nil {
+		t.Fatalf("encode ogg1: %v", err)
+	}
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wav2), &ogg2, nil); err != nil {
+		t.Fatalf("encode ogg2: %v", err)
+	}
+
+	chained := append(ogg1.Bytes(), ogg2.Bytes()...)
+
+	ws := &memWriteSeeker{}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(chained), ws); err != nil {
+		t.Fatalf("DecodeOggOpusToWAV chained failed: %v", err)
+	}
+
+	r, err := wav.NewReader(bytes.NewReader(ws.Bytes()))
+	if err != nil {
+		t.Fatalf("wav.NewReader on decoded chained output: %v", err)
+	}
+	if r.SampleRate() != 48000 {
+		t.Fatalf("expected sample rate 48000, got %d", r.SampleRate())
+	}
+	if r.Channels() != 2 {
+		t.Fatalf("expected channels 2, got %d", r.Channels())
+	}
+
+	pcm := make([]int16, 48000)
+	totalSamples := 0
+	for {
+		n, err := r.ReadInt16PCM(pcm)
+		totalSamples += n
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadInt16PCM: %v", err)
+		}
+	}
+
+	// 960 + 1920 frames * 2 channels = 5760 samples
+	expectedSamples := (960 + 1920) * 2
+	if totalSamples != expectedSamples {
+		t.Errorf("decoded sample count = %d, want %d", totalSamples, expectedSamples)
+	}
+
+	// Channel mismatch test: 2 channels chained with 1 channel
+	wavMono := generateSineWAV(t, 48000, 1, 960)
+	var oggMono bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wavMono), &oggMono, nil); err != nil {
+		t.Fatalf("encode oggMono: %v", err)
+	}
+	chainedMismatch := append(ogg1.Bytes(), oggMono.Bytes()...)
+	wsMismatch := &memWriteSeeker{}
+	err = DecodeOggOpusToWAV(bytes.NewReader(chainedMismatch), wsMismatch)
+	if err == nil {
+		t.Fatalf("expected error on chained channel mismatch, got nil")
+	}
+}

@@ -63,6 +63,14 @@ type PacketReader struct {
 	lastSeq uint32
 	haveSeq bool
 	gap     bool
+
+	streamEnded bool
+	streamCount uint32
+}
+
+// StreamIndex returns the 0-based index of the logical bitstream currently being read.
+func (r *PacketReader) StreamIndex() uint32 {
+	return r.streamCount
 }
 
 // NewPacketReader creates a new PacketReader that demuxes packets from the Ogg stream in r.
@@ -88,6 +96,7 @@ func (r *PacketReader) reset() {
 	r.pendingBOS = false
 	r.haveSeq = false
 	r.gap = false
+	r.streamEnded = false
 }
 
 // keep reading bytes until we find the start of an ogg page
@@ -399,6 +408,9 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 		pkt := r.queue[0]
 		r.queue[0] = nil
 		r.queue = r.queue[1:]
+		if pkt.EOS {
+			r.streamEnded = true
+		}
 		return pkt, nil
 	}
 
@@ -408,7 +420,21 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 			return nil, err
 		}
 
-		if r.serial == nil {
+		if r.streamEnded {
+			if !page.IsBOS() {
+				return nil, fmt.Errorf("%w: chained bitstream must begin with BOS page (got serial %d)", ErrSerialMismatch, page.BitstreamSerial)
+			}
+			s := page.BitstreamSerial
+			r.serial = &s
+			r.lastSeq = 0
+			r.haveSeq = false
+			r.pending = nil
+			r.havePending = false
+			r.pendingBOS = false
+			r.gap = false
+			r.streamEnded = false
+			r.streamCount++
+		} else if r.serial == nil {
 			s := page.BitstreamSerial
 			r.serial = &s
 		} else if page.BitstreamSerial != *r.serial {
@@ -506,6 +532,9 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 		pkt := r.queue[0]
 		r.queue[0] = nil
 		r.queue = r.queue[1:]
+		if pkt.EOS {
+			r.streamEnded = true
+		}
 		return pkt, nil
 	}
 }
