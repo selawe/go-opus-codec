@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -40,6 +41,7 @@ func playURL(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
+	defer opusPlayer.Close()
 
 	var options oto.NewContextOptions
 	options.SampleRate = opusgo.OpusSampleRateHz
@@ -105,7 +107,7 @@ func main() {
 
 	if err := playURL(ctx, url); err != nil {
 		// Treat Ctrl+C as a normal exit.
-		if err == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			log.Printf("Stopped")
 			return
 		}

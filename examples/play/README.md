@@ -21,3 +21,11 @@ sudo apt install libasound2-dev pkg-config
 cd examples/play
 go run . path/to/audio.opus
 ```
+
+Pass `-int16` before the path to play 16-bit integer samples instead of the default float32 output:
+
+```bash
+go run . -int16 path/to/audio.opus
+```
+
+The program exits with a non-zero status if the file cannot be opened or playback fails part-way (for example a corrupt stream).
