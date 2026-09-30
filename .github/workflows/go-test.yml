@@ -10,6 +10,9 @@ on:
       - master
       - main
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test (${{ matrix.os }}, Go ${{ matrix.go-version }})
@@ -28,10 +31,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -39,10 +42,18 @@ jobs:
       - name: Run go vet
         shell: bash
         run: |
-          output=$(go vet -unsafeptr=false ./... 2>&1 | grep -vE 'opuscc|opusccenc' || true)
+          # The transpiled packages are excluded from the findings, but vet's own
+          # exit status must not be swallowed: a crash with no output is a failure.
+          status=0
+          raw=$(go vet -unsafeptr=false ./... 2>&1) || status=$?
+          output=$(printf '%s\n' "$raw" | grep -vE 'opuscc|opusccenc|^#|^$' || true)
           if [ -n "$output" ]; then
             echo "$output"
             exit 1
+          fi
+          if [ "$status" -ne 0 ] && [ -z "$raw" ]; then
+            echo "go vet failed (exit $status) without output"
+            exit "$status"
           fi
           echo "go vet passed successfully across all packages."
 
@@ -57,7 +68,7 @@ jobs:
 
       - name: Run golangci-lint
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.13.2
         env:
@@ -71,7 +82,7 @@ jobs:
 
       - name: Upload Coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-report
           path: coverage.txt
@@ -84,12 +95,16 @@ jobs:
 
       - name: Run Race Detector (Unix only)
         if: runner.os != 'Windows'
-        run: go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus
+        run: go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus ./resample ./internal/...
 
       - name: Build CLI Tools
         env:
           CGO_ENABLED: 0
         run: go build -v ./cmd/...
+
+      - name: Scan for known vulnerabilities
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   cross-compile:
     name: Cross-Compile (${{ matrix.target.goos }}/${{ matrix.target.goarch }})
@@ -108,10 +123,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
@@ -128,16 +143,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Cache RFC 6716 test vectors
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: testvectors
           key: rfc6716-testvectors-${{ hashFiles('scripts/download_testvectors.sh') }}
@@ -153,10 +168,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
