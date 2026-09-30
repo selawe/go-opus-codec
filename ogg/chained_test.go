@@ -265,3 +265,33 @@ func TestOpusReader_ChainedStreams(t *testing.T) {
 		t.Fatalf("expected io.EOF at end of chained reader, got %v", err)
 	}
 }
+
+// A stream that starts (OpusHead) but ends before its OpusTags is truncated; it must not look
+// like the clean end of the chain.
+func TestOpusReader_ChainedStreamTruncatedAfterHead(t *testing.T) {
+	first, err := buildMockOpusStream(1, 2, 312, "a", [][]byte{{0xFC, 1}, {0xFC, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 2)
+	headPkt, _ := BuildOpusHeadPacket(OpusHead{Version: 1, Channels: 2, PreSkip: 312, InputSampleRate: 48000})
+	if err := pw.WritePacket(headPkt, 0, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := NewOpusReader(bytes.NewReader(append(first, buf.Bytes()...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last error
+	for i := 0; i < 10 && last == nil; i++ {
+		_, last = r.ReadAudioPacket()
+	}
+	if !errors.Is(last, ErrHeaderSequence) {
+		t.Fatalf("err = %v, want ErrHeaderSequence rather than a clean EOF", last)
+	}
+}

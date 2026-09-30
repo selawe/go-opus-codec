@@ -216,6 +216,11 @@ func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 			r.pr.SetMaxPacketSize(MaxOpusHeaderPacketSize)
 			tagPkt, err := r.pr.ReadPacket()
 			r.pr.SetMaxPacketSize(oldLimit)
+			if errors.Is(err, io.EOF) {
+				// A stream that starts with OpusHead must go on with OpusTags; a bare EOF here
+				// would make a truncated file look like a clean end.
+				return nil, fmt.Errorf("%w: chained stream ends after OpusHead", ErrHeaderSequence)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -253,6 +258,10 @@ func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 
 // SeekToPage seeks the stream to the page containing or immediately preceding the requested granule position.
 // Returns the granule position of the page seeked to.
+//
+// Seeking assumes one logical bitstream, whose granule positions only increase. In a chained Ogg
+// file that does not hold (each stream counts from zero), so a seek can land in the wrong stream
+// without reporting an error: read chained files sequentially.
 func (r *OpusReader) SeekToPage(granulePos uint64) (uint64, error) {
 	return r.pr.SeekToPage(granulePos)
 }
@@ -260,6 +269,9 @@ func (r *OpusReader) SeekToPage(granulePos uint64) (uint64, error) {
 // TotalSamples returns the total number of audio samples in the stream, derived from the final page granule position.
 // If the underlying stream is seekable the read position is preserved. Otherwise this reads through to the
 // end of the stream, consuming it, and caches the result.
+//
+// For a chained Ogg file this is not the duration of the whole chain: it only knows the last page's
+// granule position, which belongs to the final logical bitstream.
 func (r *OpusReader) TotalSamples() (int64, error) {
 	// only compute one time
 	r.cachedTotalOnce.Do(func() {

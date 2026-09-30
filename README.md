@@ -456,6 +456,19 @@ out = append(out, r.FlushInt16()...) // ends the stream; output length is exact
 
 ---
 
+### Chained Ogg files
+
+An Ogg Opus file can hold several logical bitstreams one after another (RFC 7845, for example
+recordings joined with `cat a.opus b.opus`). `ogg.PacketReader`, `ogg.OpusReader` and
+`DecodeOggOpusToWAV` follow such chains: `OpusReader.ReadAudioPacket` updates `Head` and `Tags` at each
+boundary and marks the first packet of a new stream with `NewStream` and `StreamIndex`. The decoder
+converts a chain whose streams all have the same channel count, and fails with an error on a
+mismatch or on more than 65536 streams.
+
+Two limits to know about: `player.OpusPlayer` stops at the end of the first stream, and seeking
+(`SeekToPage`, the player's `Seek*`) and `TotalSamples` assume a single stream, so on a chain they can
+land in the wrong stream or report only the last stream's length. Read chained files sequentially.
+
 ## Examples Directory
 
 The repository includes complete, executable examples in the [`examples/`](examples/) directory. Each example contains its own `README.md` with full code explanation and expected output:

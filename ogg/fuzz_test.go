@@ -76,6 +76,12 @@ func FuzzPacketReader(f *testing.F) {
 // FuzzOpusReaderNoCRC drains the demuxer with checksum verification disabled.
 func FuzzOpusReaderNoCRC(f *testing.F) {
 	f.Add([]byte("OggS"))
+	// A two-stream chain, so mutations exercise the stream-boundary handling.
+	if a, err := buildMockOpusStream(1, 2, 312, "a", [][]byte{{0xFC, 1}, {0xFC, 2}}); err == nil {
+		if b, err := buildMockOpusStream(2, 2, 312, "b", [][]byte{{0xFC, 3}}); err == nil {
+			f.Add(append(a, b...))
+		}
+	}
 	if data, err := os.ReadFile("../test/music_64kbps.opus"); err == nil {
 		f.Add(data)
 	}

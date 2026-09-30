@@ -7,6 +7,10 @@
 //   - Multichannel surround audio (mono, stereo, quad, 5.1, and 7.1).
 //   - Stream playback from disk or arbitrary io.Reader streams.
 //   - Concurrent thread-safe access across multiple goroutines.
+//
+// Chained Ogg files (several logical bitstreams one after another) are not followed: playback
+// ends at the first stream's end-of-stream page, and Length and seeking assume a single stream.
+// Use opusgo.DecodeOggOpusToWAV or ogg.OpusReader, which do follow chains, to read them whole.
 package player
 
 import (
