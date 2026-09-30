@@ -5,6 +5,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Encoder controls.** `opus.Encoder` gains `SetBandwidth`, `SetMaxBandwidth`, `SetSignal`, `SetForceChannels`, `SetLSBDepth`, `SetPredictionDisabled`, `SetPhaseInversionDisabled`, `SetVBRConstraint` and a getter for every control (`Bitrate`, `VBR`, `Complexity`, `DTX`, `InbandFEC`, `PacketLossPerc`, `Bandwidth`, `MaxBandwidth`, `Signal`, ...), with the typed values `opus.Signal` (`SignalAuto`, `SignalVoice`, `SignalMusic`) and `BandwidthAuto`. `MaxBandwidth` on a multistream encoder is read from stream 0, because libopus's multistream control omits it. Note that `Bandwidth()` is the bandwidth of the last encoded frame, not the last value passed to `SetBandwidth` (`3931bc7`)
+- **More WAV formats.** `wav.Reader` reads 8-bit unsigned, 24-bit and 32-bit integer PCM and 32-bit float, plain or `WAVE_FORMAT_EXTENSIBLE`, and RF64/BW64 files over 4 GiB (ds64). New `Reader.ReadFloat32PCM`, `BitsPerSample` and `Format`. `EncodeWAVToOggOpus` sends wider-than-16-bit and float input through the float32 encoder without an int16 round trip (`d0e2d3f`)
+- **Chained Ogg files.** `ogg.PacketReader`, `ogg.OpusReader` and `DecodeOggOpusToWAV` follow a chain of logical bitstreams: `OpusReader.ReadAudioPacket` updates `Head` and `Tags` at each boundary and sets `OpusAudioPacket.NewStream` and `StreamIndex` on the first packet of the new stream. The decoder needs the same channel count throughout and follows at most 65536 streams (`ErrTooManyStreams`). Limits: `player` plays only the first stream, and seeking and `TotalSamples` assume one stream (`0c10568`)
+
+### Changed
+- `wav.Reader` refuses wider-than-16-bit files whose `blockAlign` disagrees with channels x bytes per sample, since reading them with the wrong frame size would scramble the audio; 16-bit PCM is accepted with any `blockAlign`, as before. In RF64 the data chunk's own size wins unless it is the `0xFFFFFFFF` marker that defers to ds64 (`9243fa6`)
+- `ReadFloat32PCM` clamps infinities to +/-1 and maps NaN to 0 (`9243fa6`)
+
+### Fixed
+- `DecodeOggOpusToWAV` reuses its decoder across same-layout chained streams (`Reset` + `SetGain`) instead of allocating ~90 KB per stream, which made a file of tiny streams a ~600x allocation amplification (`5c95db6`)
+- A chained stream that ends right after its OpusHead returned a bare `io.EOF`, so a truncated file looked like a clean end; it now reports `ErrHeaderSequence` (`f5f982b`)
+- A multistream encoder getter no longer returns 0 when stream 0's state cannot be fetched (`7fd514c`)
+
+### Internal
+- The int16 and float32 encode loops in `convert.go` were near-identical ~100-line copies; they are now one generic `encodeStream`. The encoded bytes are identical to the previous code for every input format, with and without resampling. `wav.Reader` likewise shares one `fill` between its two read methods (`9a0c2b2`, `9243fa6`)
+
+### Tests
+- `FuzzNewReader` seeds every supported format and checks frame alignment and finite output on both read paths; `FuzzOpusReaderNoCRC` has a chained seed (`70fe91e`, `f5f982b`)
+
 ## [0.5.0] - 2026-09-30
 
 Hardening release (pre-1.0 minor, because a few behaviors tighten) from a full review of the hand-written packages. New public API is limited to `resample.Check`, `resample.MaxTableEntries`, `wav.MaxSampleRate`, `opus.ErrPacketTooLarge` and `ogg.NewOpusReaderVerifyCRC`.
