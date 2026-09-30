@@ -15,10 +15,13 @@ if [ -f "${TARGET_DIR}/testvector01.bit" ]; then
     echo "Test vectors already exist in ${TARGET_DIR}. Skipping download."
 else
     echo "Downloading official test vectors from ${ARCHIVE_URL}..."
-    curl -L --retry 3 -o "$ARCHIVE_FILE" "$ARCHIVE_URL"
+    curl -fsSL --retry 3 --proto '=https' --tlsv1.2 -o "$ARCHIVE_FILE" "$ARCHIVE_URL"
 
     echo "Extracting test vectors..."
-    tar -xzf "$ARCHIVE_FILE" -C "$TARGET_DIR" --strip-components=1 2>/dev/null || tar -xzf "$ARCHIVE_FILE" -C "$TARGET_DIR"
+    # The archive may or may not carry a top-level directory; try stripping it first.
+    if ! tar -xzf "$ARCHIVE_FILE" -C "$TARGET_DIR" --strip-components=1 2>/dev/null; then
+        tar -xzf "$ARCHIVE_FILE" -C "$TARGET_DIR"
+    fi
     rm -f "$ARCHIVE_FILE"
 fi
 
@@ -43,6 +46,9 @@ if command -v sha1sum >/dev/null 2>&1; then
     sha1sum -c rfc6716_checksums.sha1
 elif command -v shasum >/dev/null 2>&1; then
     shasum -a 1 -c rfc6716_checksums.sha1
+else
+    echo "error: neither sha1sum nor shasum is available, cannot verify the test vectors" >&2
+    exit 1
 fi
 
 echo "RFC 6716 test vectors verified successfully in ${TARGET_DIR}."
