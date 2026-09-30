@@ -500,6 +500,9 @@ func (decoder *Decoder) DecodePacketFEC(nextPacket *ogg.OpusAudioPacket, pcm []i
 }
 
 func (decoder *Decoder) decodePacketInternal(packet *ogg.OpusAudioPacket, pcm []int16, decodeFEC bool) ([]int16, int, error) {
+	if decoder == nil {
+		return nil, 0, errors.New("opus: decoder closed")
+	}
 	var data []byte
 	if packet != nil {
 		data = packet.Data
@@ -543,6 +546,9 @@ func (decoder *Decoder) DecodePacketFECF32(nextPacket *ogg.OpusAudioPacket, pcm 
 }
 
 func (decoder *Decoder) decodePacketF32Internal(packet *ogg.OpusAudioPacket, pcm []float32, decodeFEC bool) ([]float32, int, error) {
+	if decoder == nil {
+		return nil, 0, errors.New("opus: decoder closed")
+	}
 	var data []byte
 	if packet != nil {
 		data = packet.Data

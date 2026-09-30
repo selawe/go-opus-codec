@@ -48,3 +48,16 @@ func TestDecoderSetLastFrameSizeIsClampedAndResetRestoresDefault(t *testing.T) {
 		t.Fatalf("LastFrameSize after Reset = %d, want 960", got)
 	}
 }
+
+func TestDecodePacketOnNilDecoderReturnsError(t *testing.T) {
+	var d *Decoder
+	if _, _, err := d.DecodePacket(nil, nil); err == nil {
+		t.Error("DecodePacket on a nil decoder must return an error")
+	}
+	if _, _, err := d.DecodePacketF32(nil, nil); err == nil {
+		t.Error("DecodePacketF32 on a nil decoder must return an error")
+	}
+	if _, _, err := d.DecodePacketFEC(nil, nil); err == nil {
+		t.Error("DecodePacketFEC on a nil decoder must return an error")
+	}
+}
