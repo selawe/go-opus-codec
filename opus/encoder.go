@@ -435,7 +435,10 @@ func (e *Encoder) SetBandwidth(bw Bandwidth) error {
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_BANDWIDTH_REQUEST), int32(bw))
 }
 
-// Bandwidth returns the current audio bandwidth configured on the encoder.
+// Bandwidth returns the audio bandwidth the encoder used for its most recent frame, which is
+// what SetBandwidth and the bitrate resolve to. It is not the value last passed to SetBandwidth
+// (SetBandwidth(BandwidthAuto) or a bitrate too low for the request both read back differently),
+// and it reflects nothing until a frame has been encoded.
 func (e *Encoder) Bandwidth() (Bandwidth, error) {
 	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_BANDWIDTH_REQUEST))
 	if err != nil {
@@ -603,14 +606,15 @@ func (e *Encoder) ctlGetInt32(request int32) (int32, error) {
 			)
 			if ret == opusccenc.OPUS_OK {
 				subEnc := libc.LoadUintptr(stPtr)
-				if subEnc != 0 {
-					ret = opusccenc.Opus_opus_encoder_ctl(
-						e.tls,
-						subEnc,
-						request,
-						libc.VaList(bp, outPtr),
-					)
+				if subEnc == 0 {
+					return 0, fmt.Errorf("%w: no encoder state for stream 0", ErrCtlFailed)
 				}
+				ret = opusccenc.Opus_opus_encoder_ctl(
+					e.tls,
+					subEnc,
+					request,
+					libc.VaList(bp, outPtr),
+				)
 			}
 		} else {
 			ret = opusccenc.Opus_opus_multistream_encoder_ctl(
