@@ -1,4 +1,4 @@
-.PHONY: all test test-cgo0 test-race build build-examples benchmark cross-compile fmt vet lint lint-fix clean help
+.PHONY: all test test-cgo0 test-race conformance build build-examples benchmark cross-compile fmt vet lint lint-fix clean help
 
 all: test-cgo0 build
 
@@ -12,7 +12,12 @@ test-cgo0:
 
 ## test-race: Run race detector on handwritten Go packages
 test-race:
-	go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus
+	go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus ./resample ./internal/...
+
+## conformance: Run the RFC 6716 conformance matrix (downloads and verifies the test vectors first)
+conformance:
+	bash scripts/download_testvectors.sh
+	bash scripts/run_conformance.sh
 
 ## build: Build all command-line binaries in cmd/
 build:
@@ -31,7 +36,7 @@ benchmark:
 
 ## cross-compile: Verify cross-compilation across platforms with CGO_ENABLED=0
 cross-compile:
-	@for target in "linux/amd64" "linux/arm64" "darwin/amd64" "darwin/arm64" "windows/amd64" "windows/arm64"; do \
+	@for target in "linux/amd64" "linux/arm64" "darwin/amd64" "darwin/arm64" "windows/amd64" "windows/arm64" "freebsd/amd64"; do \
 		os=$${target%/*}; \
 		arch=$${target#*/}; \
 		echo "Cross-compiling for $$os/$$arch..."; \
@@ -63,7 +68,7 @@ lint-fix:
 ## clean: Remove build artifacts and temporary files
 clean:
 	rm -f oggopus2wav oggopusdump oggopusextract wav2oggopus *.pprof
-	go clean -cache -testcache
+	go clean -testcache
 
 ## help: Display this help message
 help:
