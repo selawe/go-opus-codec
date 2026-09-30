@@ -997,7 +997,7 @@ func TestPageReader_TrailingGarbageIsEOF(t *testing.T) {
 	if _, err := pr.ReadPage(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pr.ReadPage(); err != io.EOF {
+	if _, err := pr.ReadPage(); !errors.Is(err, io.EOF) {
 		t.Fatalf("err = %v, want io.EOF", err)
 	}
 }

@@ -401,7 +401,7 @@ func wavHeader(riffSize, dataSize uint32, channels uint16) []byte {
 	_ = binary.Write(&buf, binary.LittleEndian, uint16(1))
 	_ = binary.Write(&buf, binary.LittleEndian, channels)
 	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000))
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(48000*2*uint32(channels)))
+	_ = binary.Write(&buf, binary.LittleEndian, 48000*2*uint32(channels))
 	_ = binary.Write(&buf, binary.LittleEndian, channels*2)
 	_ = binary.Write(&buf, binary.LittleEndian, uint16(16))
 	buf.WriteString("data")
@@ -416,7 +416,7 @@ func readAll(t *testing.T, r *Reader, chunk int) []int16 {
 	for {
 		n, err := r.ReadInt16PCM(dst)
 		out = append(out, dst[:n]...)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return out
 		}
 		if err != nil {
@@ -456,7 +456,7 @@ func TestWAVReader_WholeFramesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ReadInt16PCM(make([]int16, 1)); err != io.ErrShortBuffer {
+	if _, err := r.ReadInt16PCM(make([]int16, 1)); !errors.Is(err, io.ErrShortBuffer) {
 		t.Fatalf("err = %v, want io.ErrShortBuffer", err)
 	}
 	n, err := r.ReadInt16PCM(make([]int16, 3)) // odd dst: one frame only
