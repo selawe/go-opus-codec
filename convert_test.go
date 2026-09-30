@@ -2,6 +2,7 @@ package opusgo
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -690,5 +691,172 @@ func TestEncodeDecode44100KeepsDuration(t *testing.T) {
 	}
 	if want := 48000 * seconds; total < want-48 || total > want+48 { // a frame of slack
 		t.Fatalf("decoded %d samples, want about %d", total, want)
+	}
+}
+
+func TestEncode24BitWAVToOggOpus(t *testing.T) {
+	// Generate 1 second of 24-bit stereo 48 kHz sine wave
+	const sampleRate = 48000
+	const channels = 2
+	const numSamplesPerCh = 48000
+	var audioData bytes.Buffer
+	for i := 0; i < numSamplesPerCh; i++ {
+		val := math.Sin(2 * math.Pi * 440.0 * float64(i) / float64(sampleRate))
+		s24 := int32(val * 8000000.0)
+		for c := 0; c < channels; c++ {
+			var b [3]byte
+			b[0] = byte(s24)
+			b[1] = byte(s24 >> 8)
+			b[2] = byte(s24 >> 16)
+			audioData.Write(b[:])
+		}
+	}
+
+	blockAlign := uint16(channels * 3)
+	byteRate := uint32(sampleRate) * uint32(blockAlign)
+	var fmtBuf [16]byte
+	binary.LittleEndian.PutUint16(fmtBuf[0:2], wav.FormatPCM)
+	binary.LittleEndian.PutUint16(fmtBuf[2:4], uint16(channels))
+	binary.LittleEndian.PutUint32(fmtBuf[4:8], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(fmtBuf[8:12], byteRate)
+	binary.LittleEndian.PutUint16(fmtBuf[12:14], blockAlign)
+	binary.LittleEndian.PutUint16(fmtBuf[14:16], 24)
+
+	var wavBuf bytes.Buffer
+	wavBuf.WriteString("RIFF")
+	totalRIFF := uint32(4 + 8 + len(fmtBuf) + 8 + audioData.Len())
+	_ = binary.Write(&wavBuf, binary.LittleEndian, totalRIFF)
+	wavBuf.WriteString("WAVE")
+	wavBuf.WriteString("fmt ")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(len(fmtBuf)))
+	wavBuf.Write(fmtBuf[:])
+	wavBuf.WriteString("data")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(audioData.Len()))
+	wavBuf.Write(audioData.Bytes())
+
+	var encoded bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wavBuf.Bytes()), &encoded, nil); err != nil {
+		t.Fatalf("EncodeWAVToOggOpus with 24-bit WAV failed: %v", err)
+	}
+
+	ws := &memWriteSeeker{}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(encoded.Bytes()), ws); err != nil {
+		t.Fatalf("DecodeOggOpusToWAV failed: %v", err)
+	}
+	r, err := wav.NewReader(bytes.NewReader(ws.Bytes()))
+	if err != nil {
+		t.Fatalf("wav.NewReader on decoded WAV failed: %v", err)
+	}
+	if r.Channels() != channels || r.SampleRate() != 48000 {
+		t.Errorf("decoded WAV channels=%d, rate=%d", r.Channels(), r.SampleRate())
+	}
+}
+
+func TestEncode32BitFloatWAVToOggOpus(t *testing.T) {
+	// Generate 1 second of 32-bit float stereo 48 kHz sine wave
+	const sampleRate = 48000
+	const channels = 2
+	const numSamplesPerCh = 48000
+	var audioData bytes.Buffer
+	for i := 0; i < numSamplesPerCh; i++ {
+		val := float32(math.Sin(2*math.Pi*440.0*float64(i)/float64(sampleRate)) * 0.8)
+		for c := 0; c < channels; c++ {
+			var b [4]byte
+			binary.LittleEndian.PutUint32(b[:], math.Float32bits(val))
+			audioData.Write(b[:])
+		}
+	}
+
+	blockAlign := uint16(channels * 4)
+	byteRate := uint32(sampleRate) * uint32(blockAlign)
+	var fmtBuf [16]byte
+	binary.LittleEndian.PutUint16(fmtBuf[0:2], wav.FormatIEEEFloat)
+	binary.LittleEndian.PutUint16(fmtBuf[2:4], uint16(channels))
+	binary.LittleEndian.PutUint32(fmtBuf[4:8], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(fmtBuf[8:12], byteRate)
+	binary.LittleEndian.PutUint16(fmtBuf[12:14], blockAlign)
+	binary.LittleEndian.PutUint16(fmtBuf[14:16], 32)
+
+	var wavBuf bytes.Buffer
+	wavBuf.WriteString("RIFF")
+	totalRIFF := uint32(4 + 8 + len(fmtBuf) + 8 + audioData.Len())
+	_ = binary.Write(&wavBuf, binary.LittleEndian, totalRIFF)
+	wavBuf.WriteString("WAVE")
+	wavBuf.WriteString("fmt ")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(len(fmtBuf)))
+	wavBuf.Write(fmtBuf[:])
+	wavBuf.WriteString("data")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(audioData.Len()))
+	wavBuf.Write(audioData.Bytes())
+
+	var encoded bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wavBuf.Bytes()), &encoded, nil); err != nil {
+		t.Fatalf("EncodeWAVToOggOpus with float32 WAV failed: %v", err)
+	}
+
+	ws := &memWriteSeeker{}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(encoded.Bytes()), ws); err != nil {
+		t.Fatalf("DecodeOggOpusToWAV failed: %v", err)
+	}
+	r, err := wav.NewReader(bytes.NewReader(ws.Bytes()))
+	if err != nil {
+		t.Fatalf("wav.NewReader on decoded WAV failed: %v", err)
+	}
+	if r.Channels() != channels || r.SampleRate() != 48000 {
+		t.Errorf("decoded WAV channels=%d, rate=%d", r.Channels(), r.SampleRate())
+	}
+}
+
+func TestEncodeRF64ToOggOpus(t *testing.T) {
+	// Build an RF64 file containing 16-bit mono audio
+	const sampleRate = 48000
+	const channels = 1
+	const numSamples = 48000
+	var audioData bytes.Buffer
+	for i := 0; i < numSamples; i++ {
+		val := int16(math.Sin(2*math.Pi*440.0*float64(i)/float64(sampleRate)) * 16000)
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(val))
+		audioData.Write(b[:])
+	}
+
+	blockAlign := uint16(channels * 2)
+	byteRate := uint32(sampleRate) * uint32(blockAlign)
+	var fmtBuf [16]byte
+	binary.LittleEndian.PutUint16(fmtBuf[0:2], wav.FormatPCM)
+	binary.LittleEndian.PutUint16(fmtBuf[2:4], uint16(channels))
+	binary.LittleEndian.PutUint32(fmtBuf[4:8], uint32(sampleRate))
+	binary.LittleEndian.PutUint32(fmtBuf[8:12], byteRate)
+	binary.LittleEndian.PutUint16(fmtBuf[12:14], blockAlign)
+	binary.LittleEndian.PutUint16(fmtBuf[14:16], 16)
+
+	var ds64Buf [28]byte
+	binary.LittleEndian.PutUint64(ds64Buf[0:8], uint64(audioData.Len()+100))
+	binary.LittleEndian.PutUint64(ds64Buf[8:16], uint64(audioData.Len()))
+	binary.LittleEndian.PutUint64(ds64Buf[16:24], uint64(numSamples))
+	binary.LittleEndian.PutUint32(ds64Buf[24:28], 0)
+
+	var wavBuf bytes.Buffer
+	wavBuf.WriteString("RF64")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(0xFFFFFFFF))
+	wavBuf.WriteString("WAVE")
+	wavBuf.WriteString("ds64")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(len(ds64Buf)))
+	wavBuf.Write(ds64Buf[:])
+	wavBuf.WriteString("fmt ")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(len(fmtBuf)))
+	wavBuf.Write(fmtBuf[:])
+	wavBuf.WriteString("data")
+	_ = binary.Write(&wavBuf, binary.LittleEndian, uint32(0xFFFFFFFF))
+	wavBuf.Write(audioData.Bytes())
+
+	var encoded bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(wavBuf.Bytes()), &encoded, nil); err != nil {
+		t.Fatalf("EncodeWAVToOggOpus with RF64 failed: %v", err)
+	}
+
+	ws := &memWriteSeeker{}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(encoded.Bytes()), ws); err != nil {
+		t.Fatalf("DecodeOggOpusToWAV failed: %v", err)
 	}
 }

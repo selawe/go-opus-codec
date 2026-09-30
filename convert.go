@@ -227,100 +227,199 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		return fmt.Errorf("ogg flush tags: %w", err)
 	}
 
+	useFloat := wr.BitsPerSample() > 16 || wr.Format() == wav.FormatIEEEFloat
+	if wr.BitsPerSample() == 24 {
+		_ = enc.SetLSBDepth(24)
+	}
+
 	frameSamples := frameSize * wr.Channels()
-	pcm := make([]int16, frameSamples)
 	packet := make([]byte, 4000)
 
 	var inputSamplesPerCh uint64
 	var encodedSamplesPerCh uint64
 	var eofReached bool
-	pending := make([]int16, 0, 2*frameSamples)
-	readBuf := make([]int16, frameSamples)
 
-	for {
-		for len(pending) < frameSamples && !eofReached {
-			n, rerr := wr.ReadInt16PCM(readBuf)
-			if rerr != nil && !errors.Is(rerr, io.EOF) {
-				return fmt.Errorf("wav read: %w", rerr)
+	if useFloat {
+		pcm := make([]float32, frameSamples)
+		pending := make([]float32, 0, 2*frameSamples)
+		readBuf := make([]float32, frameSamples)
+
+		for {
+			for len(pending) < frameSamples && !eofReached {
+				n, rerr := wr.ReadFloat32PCM(readBuf)
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					return fmt.Errorf("wav read: %w", rerr)
+				}
+				if n > 0 {
+					if n%wr.Channels() != 0 {
+						return fmt.Errorf("wav: sample count %d not a multiple of channels %d", n, wr.Channels())
+					}
+					chunk := readBuf[:n]
+					if resampler != nil {
+						chunk = resampler.Process(chunk)
+					}
+					pending = append(pending, chunk...)
+					inputSamplesPerCh += uint64(len(chunk) / wr.Channels())
+				}
+				if errors.Is(rerr, io.EOF) {
+					if resampler != nil {
+						tail := resampler.Flush()
+						pending = append(pending, tail...)
+						inputSamplesPerCh += uint64(len(tail) / wr.Channels())
+					}
+					eofReached = true
+				}
 			}
-			if n > 0 {
-				if n%wr.Channels() != 0 {
-					return fmt.Errorf("wav: sample count %d not a multiple of channels %d", n, wr.Channels())
+
+			if !eofReached {
+				// We have a full frame of input audio available
+				copy(pcm, pending[:frameSamples])
+				pending = pending[frameSamples:]
+
+				nBytes, err := enc.EncodeF32(pcm, frameSize, packet)
+				if err != nil {
+					return fmt.Errorf("opus encode: %w", err)
 				}
-				chunk := readBuf[:n]
-				if resampler != nil {
-					chunk = resampler.ProcessInt16(chunk)
+				encodedSamplesPerCh += uint64(frameSize)
+				granule := encodedSamplesPerCh * scale
+
+				if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
+					return fmt.Errorf("ogg write: %w", err)
 				}
-				pending = append(pending, chunk...)
-				inputSamplesPerCh += uint64(len(chunk) / wr.Channels())
-			}
-			if errors.Is(rerr, io.EOF) {
-				if resampler != nil {
-					tail := resampler.FlushInt16()
-					pending = append(pending, tail...)
-					inputSamplesPerCh += uint64(len(tail) / wr.Channels())
+			} else {
+				// EOF reached. Per RFC 7845 Section 4, the encoder must encode enough silence
+				// padding so that all original input samples pass through the encoder's lookahead delay.
+				targetSamplesPerCh := ((inputSamplesPerCh + uint64(lookahead) + uint64(frameSize) - 1) / uint64(frameSize)) * uint64(frameSize)
+				if targetSamplesPerCh == 0 {
+					targetSamplesPerCh = uint64(frameSize)
 				}
-				eofReached = true
+				eosGranule := uint64(head.PreSkip) + inputSamplesPerCh*scale
+
+				for encodedSamplesPerCh < targetSamplesPerCh {
+					isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
+
+					toCopy := len(pending)
+					if toCopy > frameSamples {
+						toCopy = frameSamples
+					}
+					copy(pcm[:toCopy], pending[:toCopy])
+					for i := toCopy; i < frameSamples; i++ {
+						pcm[i] = 0
+					}
+					if toCopy > 0 {
+						pending = pending[toCopy:]
+					}
+
+					nBytes, err := enc.EncodeF32(pcm, frameSize, packet)
+					if err != nil {
+						return fmt.Errorf("opus encode: %w", err)
+					}
+					encodedSamplesPerCh += uint64(frameSize)
+
+					// RFC 7845 Section 4: granule counts all decoded samples, pre-skip included,
+					// so interior pages carry no extra pre-skip offset; only EOS is trimmed.
+					granule := encodedSamplesPerCh * scale
+					if isLast {
+						granule = eosGranule
+					}
+
+					if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
+						return fmt.Errorf("ogg write: %w", err)
+					}
+				}
+				break
 			}
 		}
+	} else {
+		pcm := make([]int16, frameSamples)
+		pending := make([]int16, 0, 2*frameSamples)
+		readBuf := make([]int16, frameSamples)
 
-		if !eofReached {
-			// We have a full frame of input audio available
-			copy(pcm, pending[:frameSamples])
-			pending = pending[frameSamples:]
-
-			nBytes, err := enc.Encode(pcm, frameSize, packet)
-			if err != nil {
-				return fmt.Errorf("opus encode: %w", err)
-			}
-			encodedSamplesPerCh += uint64(frameSize)
-			granule := encodedSamplesPerCh * scale
-
-			if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
-				return fmt.Errorf("ogg write: %w", err)
-			}
-		} else {
-			// EOF reached. Per RFC 7845 Section 4, the encoder must encode enough silence
-			// padding so that all original input samples pass through the encoder's lookahead delay.
-			targetSamplesPerCh := ((inputSamplesPerCh + uint64(lookahead) + uint64(frameSize) - 1) / uint64(frameSize)) * uint64(frameSize)
-			if targetSamplesPerCh == 0 {
-				targetSamplesPerCh = uint64(frameSize)
-			}
-			eosGranule := uint64(head.PreSkip) + inputSamplesPerCh*scale
-
-			for encodedSamplesPerCh < targetSamplesPerCh {
-				isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
-
-				toCopy := len(pending)
-				if toCopy > frameSamples {
-					toCopy = frameSamples
+		for {
+			for len(pending) < frameSamples && !eofReached {
+				n, rerr := wr.ReadInt16PCM(readBuf)
+				if rerr != nil && !errors.Is(rerr, io.EOF) {
+					return fmt.Errorf("wav read: %w", rerr)
 				}
-				copy(pcm[:toCopy], pending[:toCopy])
-				for i := toCopy; i < frameSamples; i++ {
-					pcm[i] = 0
+				if n > 0 {
+					if n%wr.Channels() != 0 {
+						return fmt.Errorf("wav: sample count %d not a multiple of channels %d", n, wr.Channels())
+					}
+					chunk := readBuf[:n]
+					if resampler != nil {
+						chunk = resampler.ProcessInt16(chunk)
+					}
+					pending = append(pending, chunk...)
+					inputSamplesPerCh += uint64(len(chunk) / wr.Channels())
 				}
-				if toCopy > 0 {
-					pending = pending[toCopy:]
+				if errors.Is(rerr, io.EOF) {
+					if resampler != nil {
+						tail := resampler.FlushInt16()
+						pending = append(pending, tail...)
+						inputSamplesPerCh += uint64(len(tail) / wr.Channels())
+					}
+					eofReached = true
 				}
+			}
+
+			if !eofReached {
+				// We have a full frame of input audio available
+				copy(pcm, pending[:frameSamples])
+				pending = pending[frameSamples:]
 
 				nBytes, err := enc.Encode(pcm, frameSize, packet)
 				if err != nil {
 					return fmt.Errorf("opus encode: %w", err)
 				}
 				encodedSamplesPerCh += uint64(frameSize)
-
-				// RFC 7845 Section 4: granule counts all decoded samples, pre-skip included,
-				// so interior pages carry no extra pre-skip offset; only EOS is trimmed.
 				granule := encodedSamplesPerCh * scale
-				if isLast {
-					granule = eosGranule
-				}
 
-				if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
+				if err := pw.WritePacket(packet[:nBytes], granule, false, false); err != nil {
 					return fmt.Errorf("ogg write: %w", err)
 				}
+			} else {
+				// EOF reached. Per RFC 7845 Section 4, the encoder must encode enough silence
+				// padding so that all original input samples pass through the encoder's lookahead delay.
+				targetSamplesPerCh := ((inputSamplesPerCh + uint64(lookahead) + uint64(frameSize) - 1) / uint64(frameSize)) * uint64(frameSize)
+				if targetSamplesPerCh == 0 {
+					targetSamplesPerCh = uint64(frameSize)
+				}
+				eosGranule := uint64(head.PreSkip) + inputSamplesPerCh*scale
+
+				for encodedSamplesPerCh < targetSamplesPerCh {
+					isLast := (encodedSamplesPerCh+uint64(frameSize) >= targetSamplesPerCh)
+
+					toCopy := len(pending)
+					if toCopy > frameSamples {
+						toCopy = frameSamples
+					}
+					copy(pcm[:toCopy], pending[:toCopy])
+					for i := toCopy; i < frameSamples; i++ {
+						pcm[i] = 0
+					}
+					if toCopy > 0 {
+						pending = pending[toCopy:]
+					}
+
+					nBytes, err := enc.Encode(pcm, frameSize, packet)
+					if err != nil {
+						return fmt.Errorf("opus encode: %w", err)
+					}
+					encodedSamplesPerCh += uint64(frameSize)
+
+					// RFC 7845 Section 4: granule counts all decoded samples, pre-skip included,
+					// so interior pages carry no extra pre-skip offset; only EOS is trimmed.
+					granule := encodedSamplesPerCh * scale
+					if isLast {
+						granule = eosGranule
+					}
+
+					if err := pw.WritePacket(packet[:nBytes], granule, false, isLast); err != nil {
+						return fmt.Errorf("ogg write: %w", err)
+					}
+				}
+				break
 			}
-			break
 		}
 	}
 
