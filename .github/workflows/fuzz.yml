@@ -30,6 +30,7 @@ jobs:
           - { pkg: ./ogg, target: FuzzOpusHeaders }
           - { pkg: ./ogg, target: FuzzSeekAndLength }
           - { pkg: ./wav, target: FuzzNewReader }
+          - { pkg: ./resample, target: FuzzResample }
 
     steps:
       - name: Checkout code
