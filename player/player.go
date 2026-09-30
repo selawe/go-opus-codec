@@ -56,6 +56,7 @@ type OpusPlayer[SampleT DataType] struct {
 	position         int
 	bytesPerSample   int
 	finished         bool
+	readErr          error // sticky non-EOF error that ended the stream, returned until a Seek
 	// how many samples have been read so far
 	totalSamples        int64
 	totalSamplesDecoded uint64
@@ -252,14 +253,25 @@ func (player *OpusPlayer[SampleT]) readPacketLocked(p []byte) (int, error) {
 	return 0, fmt.Errorf("unsupported data type")
 }
 
+// endErr is what a read returns once the stream is exhausted: io.EOF, or the error that cut it short.
+func (player *OpusPlayer[SampleT]) endErr() error {
+	if player.readErr != nil {
+		return player.readErr
+	}
+	return io.EOF
+}
+
 func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 	if player.finished && player.position >= len(player.bufferFloat32) {
-		return 0, io.EOF
+		return 0, player.endErr()
 	}
 	if player.position >= len(player.bufferFloat32) {
 		packet, err := player.reader.ReadAudioPacket()
 		if err != nil {
 			player.finished = true
+			if !errors.Is(err, io.EOF) {
+				player.readErr = err // a corrupt or truncated stream must not later look like a clean EOF
+			}
 			return 0, err
 		}
 
@@ -405,12 +417,15 @@ func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxL
 
 func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 	if player.finished && player.position >= len(player.bufferInt16) {
-		return 0, io.EOF
+		return 0, player.endErr()
 	}
 	if player.position >= len(player.bufferInt16) {
 		packet, err := player.reader.ReadAudioPacket()
 		if err != nil {
 			player.finished = true
+			if !errors.Is(err, io.EOF) {
+				player.readErr = err // a corrupt or truncated stream must not later look like a clean EOF
+			}
 			return 0, err
 		}
 
@@ -668,6 +683,7 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 
 	player.updateTimestamp(granule)
 	player.finished = false
+	player.readErr = nil
 	player.totalSamplesDecoded = granule
 
 	// reset decoder state
@@ -782,10 +798,14 @@ func (player *OpusPlayer[T]) updateTimestamp(granule uint64) {
 
 // SetVolume sets the linear playback volume factor.
 // 1.0 is normal volume (100%), 0.0 mutes the audio, and values > 1.0 amplify the audio.
-// Negative values are clamped to 0.0.
+// Negative values are clamped to 0.0. NaN and +Inf are ignored, as they have no
+// meaningful sample scaling.
 func (player *OpusPlayer[T]) SetVolume(volume float64) {
 	player.mu.Lock()
 	defer player.mu.Unlock()
+	if math.IsNaN(volume) || math.IsInf(volume, 1) {
+		return
+	}
 	if volume < 0 {
 		volume = 0
 	}
@@ -806,7 +826,7 @@ func (player *OpusPlayer[T]) Volume() float64 {
 func (player *OpusPlayer[T]) SetGain(gainDB float64) {
 	player.mu.Lock()
 	defer player.mu.Unlock()
-	if math.IsNaN(gainDB) {
+	if math.IsNaN(gainDB) || math.IsInf(gainDB, 1) {
 		return
 	}
 	if math.IsInf(gainDB, -1) || gainDB <= -120.0 {

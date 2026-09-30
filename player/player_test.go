@@ -6,6 +6,7 @@ import (
 	_ "fmt"
 	"io"
 	"math"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -1093,5 +1094,64 @@ func TestPlayer_SeekHasPreRoll(t *testing.T) {
 		if mean := sum / (window / 2); mean > 2 {
 			t.Errorf("seek to %d: mean abs error vs continuous playback = %.1f LSB (no pre-roll?)", pos, mean)
 		}
+	}
+}
+
+type failingReader struct {
+	r   io.Reader
+	n   int
+	err error
+}
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if f.n <= 0 {
+		return 0, f.err
+	}
+	if len(p) > f.n {
+		p = p[:f.n]
+	}
+	n, err := f.r.Read(p)
+	f.n -= n
+	return n, err
+}
+
+// A stream cut short by an I/O error must keep reporting that error, not turn into a
+// clean io.EOF on the next read.
+func TestPlayer_ReadErrorIsSticky(t *testing.T) {
+	data, err := os.ReadFile(testFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	p, err := NewPlayerFromReader(&failingReader{r: bytes.NewReader(data), n: 30000, err: boom})
+	if err != nil {
+		t.Fatalf("NewPlayerFromReader: %v", err)
+	}
+	defer p.Close()
+
+	_, err = io.Copy(io.Discard, p)
+	if !errors.Is(err, boom) {
+		t.Fatalf("first error = %v, want %v", err, boom)
+	}
+	buf := make([]byte, 4096)
+	for i := range 3 {
+		if _, err := p.Read(buf); !errors.Is(err, boom) {
+			t.Fatalf("read %d after failure: err = %v, want %v", i, err, boom)
+		}
+	}
+}
+
+func TestPlayer_SetVolumeIgnoresNonFinite(t *testing.T) {
+	p, err := NewPlayerFromFile(testFilePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	p.SetVolume(0.5)
+	p.SetVolume(math.NaN())
+	p.SetVolume(math.Inf(1))
+	p.SetGain(math.Inf(1))
+	if v := p.Volume(); v != 0.5 {
+		t.Fatalf("volume = %v, want 0.5 unchanged", v)
 	}
 }
