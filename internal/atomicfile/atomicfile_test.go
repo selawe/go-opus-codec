@@ -176,3 +176,70 @@ func TestSymlinkDestinationIsWrittenThrough(t *testing.T) {
 		t.Fatalf("unexpected files: %v", got)
 	}
 }
+
+// Nothing may appear at the destination until Commit, so a crash mid-write cannot
+// leave a truncated output behind.
+func TestNewFileIsInvisibleUntilCommit(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "out.bin")
+	f, err := Create(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Abort()
+	write(t, f, "partial")
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination exists before Commit (err=%v)", err)
+	}
+	if err := f.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, dst); got != "partial" {
+		t.Fatalf("content = %q", got)
+	}
+	if got := names(t, dir); len(got) != 1 {
+		t.Fatalf("leftover files: %v", got)
+	}
+}
+
+func TestReadOnlyDestinationIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "ro.bin")
+	if err := os.WriteFile(dst, []byte("keep"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := Create(dst); err == nil {
+		f.Abort()
+		if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+			t.Skip("permission bits not enforced here")
+		}
+		t.Fatal("expected a permission error")
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("err = %v, want ErrPermission", err)
+	}
+	if got := read(t, dst); got != "keep" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+// A failed write through a symlink must leave the link's target intact.
+func TestSymlinkTargetSurvivesAbort(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.bin")
+	link := filepath.Join(dir, "link.bin")
+	if err := os.WriteFile(target, []byte("victim"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	f, err := Create(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, f, "x")
+	f.Abort()
+	if got := read(t, target); got != "victim" {
+		t.Fatalf("target = %q, want untouched", got)
+	}
+}

@@ -3,6 +3,8 @@
 package atomicfile
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -14,23 +16,27 @@ var ErrSameFile = errors.New("output file is the same as an input file")
 
 // File is an output file that is only made visible by Commit.
 //
-// Where the destination is a new path the file is created there directly and removed
-// again by Abort. Where it already exists as a regular file, data goes to a temporary
-// file in the same directory that replaces the destination on Commit, so a failed
-// write leaves the previous contents untouched. Special files (devices, pipes) and symlinks
+// Data always goes to a temporary file in the destination's directory, which replaces
+// the destination on Commit. A crash, a kill or a failed write therefore never leaves a
+// truncated file at the destination, and an existing file keeps its previous contents
+// until the new one is complete. A symlink destination is resolved first, so the link
+// survives and its target is the file that gets replaced. Special files (devices, pipes)
 // such as /dev/stdout are written in place and never removed.
 type File struct {
 	*os.File
 
 	dst    string
-	remove string // path to delete on Abort ("" for in-place special files)
-	rename bool   // Commit must rename the temporary file over dst
+	remove string // temporary file to delete on Abort ("" for in-place special files)
 	done   bool
 }
 
 // Create opens dst for writing. It fails with ErrSameFile if dst refers to any of the
-// inputs, which would otherwise be truncated while still being read.
+// inputs, which would otherwise be replaced while still being read, and with a
+// permission error if dst is an existing file that is not writable.
 func Create(dst string, inputs ...string) (*File, error) {
+	if resolved, rerr := filepath.EvalSymlinks(dst); rerr == nil {
+		dst = resolved
+	}
 	dstInfo, err := os.Stat(dst)
 	switch {
 	case err == nil:
@@ -43,46 +49,54 @@ func Create(dst string, inputs ...string) (*File, error) {
 		return nil, err
 	}
 
-	if err == nil {
-		// Devices, pipes and symlinks (for example /dev/stdout, a link to /proc/self/fd/1)
-		// are written in place: renaming over them would replace the link itself, or the
-		// file the shell already redirected to, and the data would be lost.
-		if linfo, lerr := os.Lstat(dst); !dstInfo.Mode().IsRegular() || (lerr == nil && linfo.Mode()&os.ModeSymlink != 0) {
-			flags := os.O_WRONLY
-			if dstInfo.Mode().IsRegular() { // only a real file is truncated, never a device
-				flags |= os.O_TRUNC
-			}
-			f, oerr := os.OpenFile(dst, flags, 0)
-			if oerr != nil {
-				return nil, oerr
-			}
-			return &File{File: f, dst: dst}, nil
+	if err != nil { // new file: the usual 0666 &^ umask
+		return createTemp(dst, 0o666, false)
+	}
+	if !dstInfo.Mode().IsRegular() {
+		// Devices and pipes (for example /dev/stdout) are written in place: renaming over
+		// them would replace the node itself, or the file the shell already redirected to.
+		f, oerr := os.OpenFile(dst, os.O_WRONLY, 0)
+		if oerr != nil {
+			return nil, oerr
 		}
-		return createReplacement(dst, dstInfo.Mode().Perm())
+		return &File{File: f, dst: dst}, nil
 	}
-
-	// New file: O_EXCL guarantees we never clobber something created since the Stat.
-	f, oerr := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
-	if errors.Is(oerr, os.ErrExist) {
-		return createReplacement(dst, 0o666)
+	if dstInfo.Mode().Perm()&0o200 == 0 {
+		// A rename would silently replace a read-only file.
+		return nil, &os.PathError{Op: "create", Path: dst, Err: os.ErrPermission}
 	}
-	if oerr != nil {
-		return nil, oerr
-	}
-	return &File{File: f, dst: dst, remove: dst}, nil
+	return createTemp(dst, dstInfo.Mode().Perm(), true)
 }
 
-func createReplacement(dst string, perm os.FileMode) (*File, error) {
-	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*.tmp")
-	if err != nil {
-		return nil, err
+func createTemp(dst string, perm os.FileMode, chmod bool) (*File, error) {
+	dir, base := filepath.Dir(dst), filepath.Base(dst)
+	openPerm := perm
+	if chmod {
+		openPerm = 0o600
 	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return nil, err
+	for range 100 {
+		var r [6]byte
+		if _, err := rand.Read(r[:]); err != nil {
+			return nil, err
+		}
+		name := filepath.Join(dir, "."+base+"."+hex.EncodeToString(r[:])+".tmp")
+		tmp, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, openPerm)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if chmod {
+			if err := tmp.Chmod(perm); err != nil {
+				_ = tmp.Close()
+				_ = os.Remove(name)
+				return nil, err
+			}
+		}
+		return &File{File: tmp, dst: dst, remove: name}, nil
 	}
-	return &File{File: tmp, dst: dst, remove: tmp.Name(), rename: true}, nil
+	return nil, &os.PathError{Op: "create", Path: dst, Err: os.ErrExist}
 }
 
 // Commit flushes the file to disk and makes it visible at the destination.
@@ -100,13 +114,24 @@ func (f *File) Commit() error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil && f.rename {
+	if err == nil && f.remove != "" {
 		err = os.Rename(f.remove, f.dst)
+		if err == nil {
+			syncDir(filepath.Dir(f.dst))
+		}
 	}
 	if err != nil && f.remove != "" {
 		_ = os.Remove(f.remove)
 	}
 	return err
+}
+
+// syncDir makes the rename durable. It is best effort: not every platform can fsync a directory.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 }
 
 // Abort discards the output. It is a no-op after Commit or a previous Abort, so it can
