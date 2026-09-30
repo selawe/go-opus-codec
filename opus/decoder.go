@@ -351,7 +351,13 @@ func (d *Decoder) stagePacket(packet []byte) []byte {
 
 // Reset resets the internal decoder state (e.g. after seeking or stream discontinuity).
 func (d *Decoder) Reset() error {
-	return d.ctl(int32(opuscc.OPUS_RESET_STATE))
+	if err := d.ctl(int32(opuscc.OPUS_RESET_STATE)); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.lastFrameSize = d.sampleRate * 20 / 1000 // the PLC length of a fresh decoder
+	d.mu.Unlock()
+	return nil
 }
 
 // ResetState is an alias for Reset.
@@ -374,19 +380,24 @@ func (d *Decoder) LastFrameSize() int {
 }
 
 // SetLastFrameSize sets the expected frame size in samples per channel used for PLC.
+// Sizes beyond the 120 ms Opus maximum are clamped to it.
 func (d *Decoder) SetLastFrameSize(size int) {
 	if d == nil || size <= 0 {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.lastFrameSize = size
+	d.lastFrameSize = min(size, d.sampleRate*120/1000)
 }
 
 // SetGain configures the decoder's output gain in dB as an 8.8 fixed-point integer (Q8).
 // A value of 0 indicates unity gain (0 dB).
 func (d *Decoder) SetGain(gainQ8 int) error {
-	return d.ctlInt32(int32(opuscc.OPUS_SET_GAIN_REQUEST), int32(gainQ8))
+	v, err := int32Arg("gain", gainQ8)
+	if err != nil {
+		return err
+	}
+	return d.ctlInt32(int32(opuscc.OPUS_SET_GAIN_REQUEST), v)
 }
 
 func (d *Decoder) ctl(request int32) error {

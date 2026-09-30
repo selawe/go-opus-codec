@@ -3,6 +3,7 @@ package opus
 import (
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 
@@ -135,6 +136,9 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 	// deferred Free would underflow on the error path.
 	tls.Free(4)
 	if st == 0 || errCode != opusccenc.OPUS_OK {
+		if errCode == opusccenc.OPUS_OK {
+			errCode = opusAllocFail // a nil encoder without an error code is an allocation failure
+		}
 		msg := opusccencErrorString(tls, errCode)
 		opusccenc.FreePseudostackTLS(tls)
 		tls.Close()
@@ -230,7 +234,11 @@ func (e *Encoder) Application() int { return e.application }
 
 // SetBitrate sets the target bitrate in bits per second (e.g. 64000 or 96000).
 func (e *Encoder) SetBitrate(bps int) error {
-	return e.ctlInt32(int32(opusccenc.OPUS_SET_BITRATE_REQUEST), int32(bps))
+	v, err := int32Arg("bitrate", bps)
+	if err != nil {
+		return err
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_BITRATE_REQUEST), v)
 }
 
 // SetVBR enables or disables Variable Bitrate (VBR) mode.
@@ -244,7 +252,11 @@ func (e *Encoder) SetVBR(enabled bool) error {
 
 // SetComplexity sets the encoder computational complexity (0..10, where 10 gives highest audio quality).
 func (e *Encoder) SetComplexity(complexity int) error {
-	return e.ctlInt32(int32(opusccenc.OPUS_SET_COMPLEXITY_REQUEST), int32(complexity))
+	v, err := int32Arg("complexity", complexity)
+	if err != nil {
+		return err
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_COMPLEXITY_REQUEST), v)
 }
 
 // Reset resets the internal encoder state (e.g. between independent audio streams).
@@ -578,3 +590,15 @@ func opusccencErrorString(tls *libc.TLS, code int32) string {
 	}
 	return s
 }
+
+// int32Arg narrows a caller-supplied int to the int32 the codec takes, rejecting values
+// that would otherwise wrap silently (SetBitrate(1<<32 + 64000) becoming 64000).
+func int32Arg(name string, v int) (int32, error) {
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, fmt.Errorf("opus: %s %d out of range", name, v)
+	}
+	return int32(v), nil
+}
+
+// opusAllocFail is libopus's OPUS_ALLOC_FAIL, which the transpiled package does not export.
+const opusAllocFail = -7
