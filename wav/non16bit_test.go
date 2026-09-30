@@ -321,3 +321,107 @@ func TestReadRF64WithDS64(t *testing.T) {
 		t.Errorf("expected 50 samples read from RF64, got %d", n)
 	}
 }
+
+type wavChunk = struct {
+	id   string
+	data []byte
+}
+
+func TestBlockAlign(t *testing.T) {
+	pcm := []byte{1, 0, 2, 0}
+
+	// 16-bit PCM keeps being accepted whatever blockAlign says: some writers leave it 0.
+	f16 := buildFmtChunk(FormatPCM, 1, 48000, 16)
+	binary.LittleEndian.PutUint16(f16[12:14], 0)
+	r, err := NewReader(bytes.NewReader(buildWAVBytes("RIFF", []wavChunk{{"fmt ", f16}, {"data", pcm}})))
+	if err != nil {
+		t.Fatalf("16-bit with blockAlign 0 rejected: %v", err)
+	}
+	if got := readAll(t, r, 4); len(got) != 2 || got[1] != 2 {
+		t.Fatalf("samples = %v", got)
+	}
+
+	// Wider formats are refused on a mismatch: the frame size would be guessed wrong.
+	f24 := buildFmtChunk(FormatPCM, 1, 48000, 24)
+	binary.LittleEndian.PutUint16(f24[12:14], 4) // 24-bit samples in 4-byte slots
+	if _, err := NewReader(bytes.NewReader(buildWAVBytes("RIFF", []wavChunk{{"fmt ", f24}, {"data", pcm}}))); !errors.Is(err, ErrUnsupportedWAV) {
+		t.Fatalf("24-bit with blockAlign 4: err = %v, want ErrUnsupportedWAV", err)
+	}
+
+	// channels*bytes wraps to 0 in uint16 arithmetic (16384 * 4 = 65536); blockAlign 0 must not match.
+	wrap := buildFmtChunk(FormatPCM, 16384, 48000, 32)
+	binary.LittleEndian.PutUint16(wrap[12:14], 0)
+	if _, err := NewReader(bytes.NewReader(buildWAVBytes("RIFF", []wavChunk{{"fmt ", wrap}, {"data", pcm}}))); !errors.Is(err, ErrUnsupportedWAV) {
+		t.Fatalf("wrapped blockAlign: err = %v, want ErrUnsupportedWAV", err)
+	}
+}
+
+func ds64Chunk(dataSize uint64) []byte {
+	b := make([]byte, 28)
+	binary.LittleEndian.PutUint64(b[8:16], dataSize)
+	return b
+}
+
+// With ds64 present the 32-bit data size still wins unless it is the 0xFFFFFFFF marker.
+func TestRF64DataSizeSource(t *testing.T) {
+	audio := []byte{1, 0, 2, 0, 3, 0, 4, 0}
+	fmtData := buildFmtChunk(FormatPCM, 1, 48000, 16)
+
+	// Real 32-bit size (4 bytes = 2 samples) next to a larger ds64 value: the chunk size wins.
+	raw := buildWAVBytes("RF64", []wavChunk{{"ds64", ds64Chunk(1 << 40)}, {"fmt ", fmtData}, {"data", audio[:4]}})
+	r, err := NewReader(bytes.NewReader(append(raw, audio[4:]...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAll(t, r, 8); len(got) != 2 {
+		t.Fatalf("read %d samples, want 2 (size from the data chunk)", len(got))
+	}
+
+	// 0xFFFFFFFF defers to ds64 (here 8 bytes = 4 samples).
+	raw = buildWAVBytes("RF64", []wavChunk{{"ds64", ds64Chunk(8)}, {"fmt ", fmtData}, {"data", audio}})
+	binary.LittleEndian.PutUint32(raw[len(raw)-len(audio)-4:], 0xFFFFFFFF)
+	r, err = NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAll(t, r, 8); len(got) != 4 {
+		t.Fatalf("read %d samples, want 4 (size from ds64)", len(got))
+	}
+}
+
+// A hostile ds64 size must not wrap when narrowed to int and end the read early.
+func TestRF64HugeDataSize(t *testing.T) {
+	audio := []byte{1, 0, 2, 0, 3, 0, 4, 0}
+	raw := buildWAVBytes("RF64", []wavChunk{{"ds64", ds64Chunk(1 << 63)}, {"fmt ", buildFmtChunk(FormatPCM, 1, 48000, 16)}, {"data", audio}})
+	binary.LittleEndian.PutUint32(raw[len(raw)-len(audio)-4:], 0xFFFFFFFF)
+	r, err := NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readAll(t, r, 8); len(got) != 4 {
+		t.Fatalf("read %d samples, want all 4 that exist", len(got))
+	}
+}
+
+func TestReadFloat32ClampsInfinity(t *testing.T) {
+	vals := []float32{float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN()), 0.5, 2.5}
+	var data []byte
+	for _, v := range vals {
+		data = binary.LittleEndian.AppendUint32(data, math.Float32bits(v))
+	}
+	r, err := NewReader(bytes.NewReader(buildWAVBytes("RIFF", []wavChunk{{"fmt ", buildFmtChunk(FormatIEEEFloat, 1, 48000, 32)}, {"data", data}})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]float32, 8)
+	n, _ := r.ReadFloat32PCM(out)
+	want := []float32{1, -1, 0, 0.5, 2.5} // headroom above 1.0 survives; non-finite values do not
+	if n != len(want) {
+		t.Fatalf("n = %d", n)
+	}
+	for i, w := range want {
+		if out[i] != w {
+			t.Errorf("sample %d = %v, want %v", i, out[i], w)
+		}
+	}
+}

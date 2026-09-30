@@ -71,34 +71,24 @@ func (r *Reader) BitsPerSample() int { return r.bitsPerSample }
 // Format returns the audio format code (FormatPCM = 1 or FormatIEEEFloat = 3).
 func (r *Reader) Format() uint16 { return r.format }
 
-// ReadInt16PCM reads whole frames into dst, at most len(dst) samples. It returns the
-// number of samples read, always a multiple of Channels(). A dst shorter than one frame
-// yields io.ErrShortBuffer, and a trailing partial frame in the file is dropped.
-//
-// Samples are converted to signed 16-bit PCM regardless of the source bit depth.
-func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	nFrames := len(dst) / r.channels
-	if nFrames == 0 {
-		return 0, io.ErrShortBuffer
-	}
-
-	bytesPerSample := r.bitsPerSample / 8
-	bytesPerFrame := r.channels * bytesPerSample
+// fill reads up to maxFrames whole frames of raw sample bytes into r.buf and returns them
+// with the frame count, tracking the remaining data length. A clean end of the data yields
+// (nil, 0, io.EOF); a trailing partial frame is dropped.
+func (r *Reader) fill(maxFrames int) ([]byte, int, error) {
+	bytesPerFrame := r.channels * (r.bitsPerSample / 8)
+	nFrames := maxFrames
 
 	if !r.unknownLen {
 		if r.dataRemaining == 0 {
-			return 0, io.EOF
+			return nil, 0, io.EOF
 		}
-		maxFrames := int(r.dataRemaining / uint64(bytesPerFrame))
-		if maxFrames <= 0 {
+		// Compare in uint64: a hostile ds64 size must not wrap when narrowed to int.
+		if avail := r.dataRemaining / uint64(bytesPerFrame); avail < uint64(nFrames) {
+			nFrames = int(avail)
+		}
+		if nFrames <= 0 {
 			r.dataRemaining = 0
-			return 0, io.EOF
-		}
-		if nFrames > maxFrames {
-			nFrames = maxFrames
+			return nil, 0, io.EOF
 		}
 	}
 
@@ -109,46 +99,6 @@ func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
 	buf := r.buf[:nBytes]
 	nRead, err := io.ReadFull(r.br, buf)
 	framesRead := nRead / bytesPerFrame
-	samplesRead := framesRead * r.channels
-
-	switch r.bitsPerSample {
-	case 8:
-		for i := 0; i < samplesRead; i++ {
-			dst[i] = int16(int32(buf[i])-128) << 8
-		}
-	case 16:
-		for i := 0; i < samplesRead; i++ {
-			dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
-		}
-	case 24:
-		for i := 0; i < samplesRead; i++ {
-			s := int32(buf[i*3]) | int32(buf[i*3+1])<<8 | int32(int8(buf[i*3+2]))<<16
-			dst[i] = int16(s >> 8)
-		}
-	case 32:
-		if r.format == FormatIEEEFloat {
-			for i := 0; i < samplesRead; i++ {
-				bits := binary.LittleEndian.Uint32(buf[i*4:])
-				f := math.Float32frombits(bits)
-				if math.IsNaN(float64(f)) {
-					dst[i] = 0
-				} else if f >= 1.0 {
-					dst[i] = 32767
-				} else if f <= -1.0 {
-					dst[i] = -32768
-				} else if f >= 0 {
-					dst[i] = int16(math.Round(float64(f * 32767.0)))
-				} else {
-					dst[i] = int16(math.Round(float64(f * 32768.0)))
-				}
-			}
-		} else {
-			for i := 0; i < samplesRead; i++ {
-				s := int32(binary.LittleEndian.Uint32(buf[i*4:]))
-				dst[i] = int16(s >> 16)
-			}
-		}
-	}
 
 	if !r.unknownLen {
 		r.dataRemaining -= uint64(framesRead * bytesPerFrame)
@@ -156,106 +106,118 @@ func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
 	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 		r.dataRemaining = 0
 		r.unknownLen = false
-		if samplesRead > 0 {
-			return samplesRead, nil
+		if framesRead > 0 {
+			return buf, framesRead, nil
 		}
-		return 0, io.EOF
+		return nil, 0, io.EOF
 	}
-	if err != nil {
-		return samplesRead, err
+	return buf, framesRead, err
+}
+
+// ReadInt16PCM reads whole frames into dst, at most len(dst) samples. It returns the
+// number of samples read, always a multiple of Channels(). A dst shorter than one frame
+// yields io.ErrShortBuffer, and a trailing partial frame in the file is dropped.
+//
+// Samples are converted to signed 16-bit PCM regardless of the source bit depth: wider
+// integers keep their top 16 bits (truncated, not dithered) and floats are scaled and clipped.
+// Use ReadFloat32PCM to keep the full resolution.
+func (r *Reader) ReadInt16PCM(dst []int16) (int, error) {
+	if len(dst) == 0 {
+		return 0, nil
 	}
-	return samplesRead, nil
+	if len(dst) < r.channels {
+		return 0, io.ErrShortBuffer
+	}
+	buf, frames, err := r.fill(len(dst) / r.channels)
+	n := frames * r.channels
+
+	switch {
+	case r.bitsPerSample == 8:
+		for i := 0; i < n; i++ {
+			dst[i] = int16(int32(buf[i])-128) << 8
+		}
+	case r.bitsPerSample == 16:
+		for i := 0; i < n; i++ {
+			dst[i] = int16(binary.LittleEndian.Uint16(buf[i*2:]))
+		}
+	case r.bitsPerSample == 24:
+		for i := 0; i < n; i++ {
+			s := int32(buf[i*3]) | int32(buf[i*3+1])<<8 | int32(int8(buf[i*3+2]))<<16
+			dst[i] = int16(s >> 8)
+		}
+	case r.format == FormatIEEEFloat: // 32-bit
+		for i := 0; i < n; i++ {
+			f := math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+			switch {
+			case f != f: // NaN
+				dst[i] = 0
+			case f >= 1.0:
+				dst[i] = 32767
+			case f <= -1.0:
+				dst[i] = -32768
+			case f >= 0:
+				dst[i] = int16(math.Round(float64(f * 32767.0)))
+			default:
+				dst[i] = int16(math.Round(float64(f * 32768.0)))
+			}
+		}
+	default: // 32-bit integer
+		for i := 0; i < n; i++ {
+			dst[i] = int16(int32(binary.LittleEndian.Uint32(buf[i*4:])) >> 16)
+		}
+	}
+	return n, err
 }
 
 // ReadFloat32PCM reads whole frames into dst, at most len(dst) samples. It returns the
 // number of samples read, always a multiple of Channels(). A dst shorter than one frame
 // yields io.ErrShortBuffer, and a trailing partial frame in the file is dropped.
 //
-// Samples are returned as normalized float32 in [-1.0, 1.0].
+// Samples are returned as float32 scaled to [-1.0, 1.0). Float files keep values beyond
+// that range, but NaN becomes 0 and infinities are clamped to +/-1.
 func (r *Reader) ReadFloat32PCM(dst []float32) (int, error) {
 	if len(dst) == 0 {
 		return 0, nil
 	}
-	nFrames := len(dst) / r.channels
-	if nFrames == 0 {
+	if len(dst) < r.channels {
 		return 0, io.ErrShortBuffer
 	}
+	buf, frames, err := r.fill(len(dst) / r.channels)
+	n := frames * r.channels
 
-	bytesPerSample := r.bitsPerSample / 8
-	bytesPerFrame := r.channels * bytesPerSample
-
-	if !r.unknownLen {
-		if r.dataRemaining == 0 {
-			return 0, io.EOF
-		}
-		maxFrames := int(r.dataRemaining / uint64(bytesPerFrame))
-		if maxFrames <= 0 {
-			r.dataRemaining = 0
-			return 0, io.EOF
-		}
-		if nFrames > maxFrames {
-			nFrames = maxFrames
-		}
-	}
-
-	nBytes := nFrames * bytesPerFrame
-	if cap(r.buf) < nBytes {
-		r.buf = make([]byte, nBytes)
-	}
-	buf := r.buf[:nBytes]
-	nRead, err := io.ReadFull(r.br, buf)
-	framesRead := nRead / bytesPerFrame
-	samplesRead := framesRead * r.channels
-
-	switch r.bitsPerSample {
-	case 8:
-		for i := 0; i < samplesRead; i++ {
+	switch {
+	case r.bitsPerSample == 8:
+		for i := 0; i < n; i++ {
 			dst[i] = float32(int32(buf[i])-128) / 128.0
 		}
-	case 16:
-		for i := 0; i < samplesRead; i++ {
-			s := int16(binary.LittleEndian.Uint16(buf[i*2:]))
-			dst[i] = float32(s) / 32768.0
+	case r.bitsPerSample == 16:
+		for i := 0; i < n; i++ {
+			dst[i] = float32(int16(binary.LittleEndian.Uint16(buf[i*2:]))) / 32768.0
 		}
-	case 24:
-		for i := 0; i < samplesRead; i++ {
+	case r.bitsPerSample == 24:
+		for i := 0; i < n; i++ {
 			s := int32(buf[i*3]) | int32(buf[i*3+1])<<8 | int32(int8(buf[i*3+2]))<<16
 			dst[i] = float32(s) / 8388608.0
 		}
-	case 32:
-		if r.format == FormatIEEEFloat {
-			for i := 0; i < samplesRead; i++ {
-				bits := binary.LittleEndian.Uint32(buf[i*4:])
-				f := math.Float32frombits(bits)
-				if math.IsNaN(float64(f)) {
-					dst[i] = 0
-				} else {
-					dst[i] = f
-				}
+	case r.format == FormatIEEEFloat: // 32-bit
+		for i := 0; i < n; i++ {
+			f := math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+			switch {
+			case f != f: // NaN
+				f = 0
+			case f > math.MaxFloat32:
+				f = 1
+			case f < -math.MaxFloat32:
+				f = -1
 			}
-		} else {
-			for i := 0; i < samplesRead; i++ {
-				s := int32(binary.LittleEndian.Uint32(buf[i*4:]))
-				dst[i] = float32(s) / 2147483648.0
-			}
+			dst[i] = f
+		}
+	default: // 32-bit integer
+		for i := 0; i < n; i++ {
+			dst[i] = float32(int32(binary.LittleEndian.Uint32(buf[i*4:]))) / 2147483648.0
 		}
 	}
-
-	if !r.unknownLen {
-		r.dataRemaining -= uint64(framesRead * bytesPerFrame)
-	}
-	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-		r.dataRemaining = 0
-		r.unknownLen = false
-		if samplesRead > 0 {
-			return samplesRead, nil
-		}
-		return 0, io.EOF
-	}
-	if err != nil {
-		return samplesRead, err
-	}
-	return samplesRead, nil
+	return n, err
 }
 
 func (r *Reader) readHeader() error {
@@ -386,8 +348,12 @@ func (r *Reader) readHeader() error {
 				return fmt.Errorf("%w: audio format=%d", ErrUnsupportedWAV, audioFormat)
 			}
 
-			expectedBlockAlign := channels * (bitsPerSample / 8)
-			if blockAlign != expectedBlockAlign {
+			// Computed in int: the uint16 product wraps for many channels and would let a
+			// crafted header agree with itself. 16-bit PCM is accepted with any blockAlign, as
+			// it was before (some writers leave it 0); wider formats are refused on a mismatch
+			// because reading them with the wrong frame size would scramble the audio.
+			expectedBlockAlign := int(channels) * int(bitsPerSample/8)
+			if int(blockAlign) != expectedBlockAlign && bitsPerSample != 16 {
 				return fmt.Errorf("%w: invalid block align %d (expected %d for %d ch %d-bit)", ErrUnsupportedWAV, blockAlign, expectedBlockAlign, channels, bitsPerSample)
 			}
 
@@ -401,7 +367,8 @@ func (r *Reader) readHeader() error {
 			if !haveFmt {
 				return fmt.Errorf("%w: data before fmt", ErrUnsupportedWAV)
 			}
-			if r.hasDS64 && (sz == 0xFFFFFFFF || isRF64) {
+			// The 32-bit size wins unless it is the 0xFFFFFFFF marker that defers to ds64.
+			if r.hasDS64 && sz == 0xFFFFFFFF {
 				r.dataRemaining = r.ds64DataSize
 			} else {
 				r.dataRemaining = uint64(sz)
