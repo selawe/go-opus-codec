@@ -26,6 +26,9 @@ jobs:
           - { pkg: ./ogg, target: FuzzOpusReader }
           - { pkg: ./ogg, target: FuzzPageReader }
           - { pkg: ./ogg, target: FuzzPacketReader }
+          - { pkg: ./ogg, target: FuzzOpusReaderNoCRC }
+          - { pkg: ./ogg, target: FuzzOpusHeaders }
+          - { pkg: ./ogg, target: FuzzSeekAndLength }
           - { pkg: ./wav, target: FuzzNewReader }
 
     steps:
