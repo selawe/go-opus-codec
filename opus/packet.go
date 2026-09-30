@@ -32,6 +32,9 @@ func (m Mode) String() string {
 type Bandwidth int
 
 const (
+	// BandwidthAuto selects audio bandwidth automatically based on bitrate.
+	BandwidthAuto Bandwidth = -1000
+
 	BandwidthNarrowband    Bandwidth = 1101 // 8 kHz
 	BandwidthMediumband    Bandwidth = 1102 // 12 kHz
 	BandwidthWideband      Bandwidth = 1103 // 16 kHz
@@ -41,6 +44,8 @@ const (
 
 func (b Bandwidth) String() string {
 	switch b {
+	case BandwidthAuto:
+		return "Auto"
 	case BandwidthNarrowband:
 		return "Narrowband (8 kHz)"
 	case BandwidthMediumband:

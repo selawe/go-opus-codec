@@ -37,6 +37,37 @@ const (
 	ApplicationRestrictedCelt = int(opusccenc.OPUS_APPLICATION_RESTRICTED_CELT)
 )
 
+// Auto is the automatic parameter selection value used by some Opus controls
+// (e.g. BandwidthAuto, SignalAuto, and automatic channel count in SetForceChannels).
+const Auto = -1000
+
+// Signal specifies the audio signal type hint for the encoder.
+type Signal int
+
+const (
+	// SignalAuto lets the encoder detect voice vs music automatically.
+	SignalAuto Signal = Auto
+
+	// SignalVoice biases mode decisions towards speech clarity.
+	SignalVoice Signal = Signal(opusccenc.OPUS_SIGNAL_VOICE)
+
+	// SignalMusic biases mode decisions towards music fidelity.
+	SignalMusic Signal = Signal(opusccenc.OPUS_SIGNAL_MUSIC)
+)
+
+func (s Signal) String() string {
+	switch s {
+	case SignalAuto:
+		return "auto"
+	case SignalVoice:
+		return "voice"
+	case SignalMusic:
+		return "music"
+	default:
+		return fmt.Sprintf("Signal(%d)", int(s))
+	}
+}
+
 // Encoder is an Opus encoder backed by ccgo-transpiled libopus.
 //
 // It supports standard mono/stereo encoding as well as multichannel multistream
@@ -321,11 +352,226 @@ func (e *Encoder) ctl(request int32) error {
 	return nil
 }
 
+// Bitrate returns the current configured target bitrate in bits per second.
+func (e *Encoder) Bitrate() (int, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_BITRATE_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+// VBR returns whether Variable Bitrate (VBR) mode is enabled.
+func (e *Encoder) VBR() (bool, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_VBR_REQUEST))
+	if err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// SetVBRConstraint enables or disables Constrained VBR mode.
+// When enabled, bitrate fluctuations are bounded within a target constraint window.
+func (e *Encoder) SetVBRConstraint(constrained bool) error {
+	var v int32
+	if constrained {
+		v = 1
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_VBR_CONSTRAINT_REQUEST), v)
+}
+
+// VBRConstraint returns whether Constrained VBR mode is enabled.
+func (e *Encoder) VBRConstraint() (bool, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_VBR_CONSTRAINT_REQUEST))
+	if err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// Complexity returns the current encoder computational complexity (0..10).
+func (e *Encoder) Complexity() (int, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_COMPLEXITY_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+// DTX returns whether Discontinuous Transmission (DTX) mode is enabled.
+func (e *Encoder) DTX() (bool, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_DTX_REQUEST))
+	if err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// InbandFEC returns whether in-band Forward Error Correction (FEC) is enabled.
+func (e *Encoder) InbandFEC() (bool, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_INBAND_FEC_REQUEST))
+	if err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// PacketLossPerc returns the configured expected percentage of packet loss (0..100).
+func (e *Encoder) PacketLossPerc() (int, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_PACKET_LOSS_PERC_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+// SetBandwidth sets the audio bandwidth of the encoder.
+func (e *Encoder) SetBandwidth(bw Bandwidth) error {
+	switch bw {
+	case BandwidthAuto, BandwidthNarrowband, BandwidthMediumband, BandwidthWideband, BandwidthSuperwideband, BandwidthFullband:
+	default:
+		return fmt.Errorf("opus: invalid bandwidth %d", bw)
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_BANDWIDTH_REQUEST), int32(bw))
+}
+
+// Bandwidth returns the current audio bandwidth configured on the encoder.
+func (e *Encoder) Bandwidth() (Bandwidth, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_BANDWIDTH_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return Bandwidth(v), nil
+}
+
+// SetMaxBandwidth configures the maximum audio bandwidth the encoder may use.
+// Unlike SetBandwidth, BandwidthAuto is not a valid value for SetMaxBandwidth.
+func (e *Encoder) SetMaxBandwidth(bw Bandwidth) error {
+	switch bw {
+	case BandwidthNarrowband, BandwidthMediumband, BandwidthWideband, BandwidthSuperwideband, BandwidthFullband:
+	default:
+		return fmt.Errorf("opus: invalid max bandwidth %d (must be between BandwidthNarrowband and BandwidthFullband)", bw)
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_MAX_BANDWIDTH_REQUEST), int32(bw))
+}
+
+// MaxBandwidth returns the maximum audio bandwidth configured on the encoder.
+func (e *Encoder) MaxBandwidth() (Bandwidth, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_MAX_BANDWIDTH_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return Bandwidth(v), nil
+}
+
+// SetSignal configures the audio signal type hint.
+func (e *Encoder) SetSignal(signal Signal) error {
+	switch signal {
+	case SignalAuto, SignalVoice, SignalMusic:
+	default:
+		return fmt.Errorf("opus: invalid signal %d", signal)
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_SIGNAL_REQUEST), int32(signal))
+}
+
+// Signal returns the audio signal type hint configured on the encoder.
+func (e *Encoder) Signal() (Signal, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_SIGNAL_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return Signal(v), nil
+}
+
+// SetForceChannels forces mono or stereo encoding, or enables automatic channel decision.
+// Allowed values are Auto (-1000), 1 (mono), or 2 (stereo, only on stereo encoders).
+func (e *Encoder) SetForceChannels(channels int) error {
+	if channels != Auto && channels != 1 && channels != 2 {
+		return fmt.Errorf("opus: invalid forced channels %d (must be Auto, 1, or 2)", channels)
+	}
+	if channels > e.channels {
+		return fmt.Errorf("opus: cannot force %d channels on a %d-channel encoder", channels, e.channels)
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_FORCE_CHANNELS_REQUEST), int32(channels))
+}
+
+// ForceChannels returns the forced channels setting.
+func (e *Encoder) ForceChannels() (int, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_FORCE_CHANNELS_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+// SetLSBDepth sets the resolution hint of the input audio in bits (8..24).
+// This guides quantization noise shaping in the encoder.
+func (e *Encoder) SetLSBDepth(depth int) error {
+	if depth < 8 || depth > 24 {
+		return fmt.Errorf("opus: invalid LSB depth %d (must be 8..24)", depth)
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_LSB_DEPTH_REQUEST), int32(depth))
+}
+
+// LSBDepth returns the input resolution hint in bits.
+func (e *Encoder) LSBDepth() (int, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_LSB_DEPTH_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+// SetPredictionDisabled disables almost all inter-frame prediction when true,
+// making frames more independent at the cost of bitrate efficiency.
+func (e *Encoder) SetPredictionDisabled(disabled bool) error {
+	var v int32
+	if disabled {
+		v = 1
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_PREDICTION_DISABLED_REQUEST), v)
+}
+
+// PredictionDisabled returns whether inter-frame prediction is disabled.
+func (e *Encoder) PredictionDisabled() (bool, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_PREDICTION_DISABLED_REQUEST))
+	if err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
+// SetPhaseInversionDisabled disables phase inversion (stereo decorrelation) when true.
+func (e *Encoder) SetPhaseInversionDisabled(disabled bool) error {
+	var v int32
+	if disabled {
+		v = 1
+	}
+	return e.ctlInt32(int32(opusccenc.OPUS_SET_PHASE_INVERSION_DISABLED_REQUEST), v)
+}
+
+// PhaseInversionDisabled returns whether phase inversion is disabled.
+func (e *Encoder) PhaseInversionDisabled() (bool, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_PHASE_INVERSION_DISABLED_REQUEST))
+	if err != nil {
+		return false, err
+	}
+	return v != 0, nil
+}
+
 // Lookahead returns the encoder lookahead in samples at the encoder's sample rate.
 //
 // When writing an Ogg OpusHead header, RFC 7845 Section 5.1 requires PreSkip to be
 // represented in 48 kHz samples: lookahead * 48000 / sampleRate.
 func (e *Encoder) Lookahead() (int, error) {
+	v, err := e.ctlGetInt32(int32(opusccenc.OPUS_GET_LOOKAHEAD_REQUEST))
+	if err != nil {
+		return 0, err
+	}
+	return int(v), nil
+}
+
+func (e *Encoder) ctlGetInt32(request int32) (int32, error) {
 	if e == nil {
 		return 0, errors.New("opus: encoder closed")
 	}
@@ -336,32 +582,56 @@ func (e *Encoder) Lookahead() (int, error) {
 		return 0, errors.New("opus: encoder closed")
 	}
 
-	bp := e.tls.Alloc(32)
-	defer e.tls.Free(32)
-	// Store the output int32 in the second half to avoid overlap with VaList storage.
-	outPtr := bp + 16
+	bp := e.tls.Alloc(64)
+	defer e.tls.Free(64)
+	// Store the output int32 in the scratch buffer past VaList storage.
+	outPtr := bp + 32
 	libc.StoreInt32(outPtr, 0)
 
 	var ret int32
 	if e.multistream {
-		ret = opusccenc.Opus_opus_multistream_encoder_ctl(
-			e.tls,
-			e.st,
-			int32(opusccenc.OPUS_GET_LOOKAHEAD_REQUEST),
-			libc.VaList(bp, outPtr),
-		)
+		if request == int32(opusccenc.OPUS_GET_MAX_BANDWIDTH_REQUEST) {
+			// libopus's opus_multistream_encoder_ctl omits OPUS_GET_MAX_BANDWIDTH_REQUEST from its switch,
+			// so retrieve stream 0's encoder state and query it directly.
+			stPtr := bp + 48
+			libc.StoreUintptr(stPtr, 0)
+			ret = opusccenc.Opus_opus_multistream_encoder_ctl(
+				e.tls,
+				e.st,
+				int32(opusccenc.OPUS_MULTISTREAM_GET_ENCODER_STATE_REQUEST),
+				libc.VaList(bp, int32(0), stPtr),
+			)
+			if ret == opusccenc.OPUS_OK {
+				subEnc := libc.LoadUintptr(stPtr)
+				if subEnc != 0 {
+					ret = opusccenc.Opus_opus_encoder_ctl(
+						e.tls,
+						subEnc,
+						request,
+						libc.VaList(bp, outPtr),
+					)
+				}
+			}
+		} else {
+			ret = opusccenc.Opus_opus_multistream_encoder_ctl(
+				e.tls,
+				e.st,
+				request,
+				libc.VaList(bp, outPtr),
+			)
+		}
 	} else {
 		ret = opusccenc.Opus_opus_encoder_ctl(
 			e.tls,
 			e.st,
-			int32(opusccenc.OPUS_GET_LOOKAHEAD_REQUEST),
+			request,
 			libc.VaList(bp, outPtr),
 		)
 	}
 	if ret != opusccenc.OPUS_OK {
 		return 0, fmt.Errorf("%w: %s (%d)", ErrCtlFailed, opusccencErrorString(e.tls, ret), ret)
 	}
-	return int(libc.LoadInt32(outPtr)), nil
+	return libc.LoadInt32(outPtr), nil
 }
 
 // PreSkip returns the encoder delay in 48 kHz samples, ready to store in OpusHead.PreSkip

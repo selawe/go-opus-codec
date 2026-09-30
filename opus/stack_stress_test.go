@@ -122,6 +122,14 @@ func TestStackGrowthStress(t *testing.T) {
 				panic(err)
 			}
 			res.Write(stackPacket[:n])
+
+			// Exercise getters across stack movements
+			br, _ := e.Bitrate()
+			bw, _ := e.Bandwidth()
+			sig, _ := e.Signal()
+			comp, _ := e.Complexity()
+			la, _ := e.Lookahead()
+			fmt.Fprintf(&res, "g:%d,%d,%d,%d,%d;", br, int(bw), int(sig), comp, la)
 		}
 		return res.Bytes()
 	}
