@@ -235,3 +235,45 @@ func TestOggOpus2Wav_ErrorStillWritesCPUProfile(t *testing.T) {
 		t.Error("output file exists after failure")
 	}
 }
+
+func TestOggOpus2Wav_HelpExitsZero(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run([]string{"-h"}, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestOggOpus2Wav_UsageErrorDoesNotCreateCPUProfile(t *testing.T) {
+	prof := filepath.Join(t.TempDir(), "cpu.prof")
+	var stderr bytes.Buffer
+	if code := run([]string{"--cpuprofile", prof}, &stderr); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if _, err := os.Stat(prof); err == nil {
+		t.Error("CPU profile created although arguments were invalid")
+	}
+}
+
+func TestOggOpus2Wav_MaxBytes(t *testing.T) {
+	src := filepath.Join("..", "..", "test", "music_64kbps.opus")
+	if _, err := os.Stat(src); err != nil {
+		t.Skipf("sample missing: %v", err)
+	}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "o.wav")
+
+	var stderr bytes.Buffer
+	if code := run([]string{"--max-bytes", "1000", "--out", out, src}, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr: %s)", code, stderr.String())
+	}
+	if _, err := os.Stat(out); err == nil {
+		t.Error("output exists although the limit was exceeded")
+	}
+
+	if code := run([]string{"--max-bytes", "-1", "--out", out, src}, &stderr); code != 2 {
+		t.Fatalf("negative --max-bytes: exit code = %d, want 2", code)
+	}
+	if code := run([]string{"--max-bytes", "0", "--out", out, src}, &stderr); code != 0 {
+		t.Fatalf("--max-bytes 0: exit code = %d, want 0 (stderr: %s)", code, stderr.String())
+	}
+}

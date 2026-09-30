@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,8 +23,22 @@ func run(args []string, stderr io.Writer) int {
 	var (
 		out        = fs.String("out", "out.wav", "output wav file")
 		cpuProfile = fs.String("cpuprofile", "", "write CPU profile to file (disabled by default)")
+		maxBytes   = fs.Int64("max-bytes", 1<<30, "abort when the decoded PCM exceeds this many bytes (0 = only the 4 GiB WAV limit)")
 	)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: oggopus2wav --out out.wav input.ogg")
+		return 2
+	}
+
+	if *maxBytes < 0 {
+		fmt.Fprintln(stderr, "error: --max-bytes must not be negative")
 		return 2
 	}
 
@@ -41,12 +56,7 @@ func run(args []string, stderr io.Writer) int {
 		defer pprof.StopCPUProfile()
 	}
 
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: oggopus2wav --out out.wav input.ogg")
-		return 2
-	}
-
-	if err := opusgo.ConvertOggOpusFileToWAV(fs.Arg(0), *out); err != nil {
+	if err := opusgo.ConvertOggOpusFileToWAV(fs.Arg(0), *out, opusgo.WithMaxOutputBytes(*maxBytes)); err != nil {
 		return fail(stderr, err)
 	}
 	return 0

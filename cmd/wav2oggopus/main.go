@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -32,7 +33,34 @@ func run(args []string, stdout, stderr io.Writer) int {
 		vendor      = fs.String("vendor", "opusgo", "OpusTags vendor string")
 	)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
+	}
+
+	if fs.NArg() != 1 {
+		fmt.Fprintf(stderr, "usage: wav2oggopus [flags] input.wav\n")
+		fs.PrintDefaults()
+		return 2
+	}
+	inPath := fs.Arg(0)
+
+	if *bitrate < 500 || *bitrate > 512000 {
+		fmt.Fprintf(stderr, "error: unsupported bitrate %d (use 500-512000)\n", *bitrate)
+		return 2
+	}
+	if *complexity > 10 {
+		fmt.Fprintf(stderr, "error: unsupported complexity %d (use 0-10)\n", *complexity)
+		return 2
+	}
+
+	app, err := parseApplication(*application)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := checkFrameMS(*frameMS); err != nil {
+		return fail(stderr, err)
 	}
 
 	if *cpuProfile != "" {
@@ -47,21 +75,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		defer pprof.StopCPUProfile()
-	}
-
-	if fs.NArg() != 1 {
-		fmt.Fprintf(stderr, "usage: wav2oggopus [flags] input.wav\n")
-		fs.PrintDefaults()
-		return 2
-	}
-	inPath := fs.Arg(0)
-
-	app, err := parseApplication(*application)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	if err := checkFrameMS(*frameMS); err != nil {
-		return fail(stderr, err)
 	}
 
 	inF, err := os.Open(inPath)

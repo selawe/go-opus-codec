@@ -26,6 +26,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		out   = fs.String("out", "", "output file (default stdout)")
 	)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 1 {

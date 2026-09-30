@@ -428,3 +428,26 @@ func TestWav2OggOpus_ReplacesExistingOutputAndLeavesNoTempFiles(t *testing.T) {
 		t.Errorf("temp files left behind: %v", ents)
 	}
 }
+
+func TestWav2OggOpus_RejectsOutOfRangeFlags(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"--bitrate", "0"},
+		{"--bitrate", "-5"},
+		{"--bitrate", "9999999"},
+		{"--complexity", "11"},
+	} {
+		var stdout, stderr bytes.Buffer
+		full := append(append([]string{"--out", filepath.Join(dir, "o.opus")}, args...), filepath.Join(dir, "in.wav"))
+		if code := run(full, &stdout, &stderr); code != 2 {
+			t.Errorf("%v: exit code = %d, want 2", args, code)
+		}
+	}
+}
+
+func TestWav2OggOpus_HelpExitsZero(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-h"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}

@@ -18,10 +18,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("oggopusdump", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		noCRC = fs.Bool("no-crc", false, "skip Ogg CRC verification")
-		max   = fs.Int("max", 0, "stop after N audio packets (0 = all)")
+		noCRC   = fs.Bool("no-crc", false, "skip Ogg CRC verification")
+		maxPkts = fs.Int("max", 0, "stop after N audio packets (0 = all)")
 	)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 1 {
@@ -61,7 +64,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		} else {
 			fmt.Fprintf(stdout, "pkt=%d bytes=%d granule=? (%d) page=%d eos=%v\n", count, len(pkt.Data), pkt.GranulePos, pkt.PageSequence, pkt.EOS)
 		}
-		if *max > 0 && count >= *max {
+		if *maxPkts > 0 && count >= *maxPkts {
 			break
 		}
 	}
