@@ -268,9 +268,9 @@ func TestMultistreamDecoder_ValidationErrors(t *testing.T) {
 		t.Error("expected error for coupled > streams")
 	}
 
-	// streams + coupled > channels
-	if _, err := NewMultistreamDecoder(48000, 2, 2, 1, mapping); err == nil {
-		t.Error("expected error for streams + coupled > channels")
+	// streams + coupled > 255 decoded channels
+	if _, err := NewMultistreamDecoder(48000, 2, 200, 100, mapping); err == nil {
+		t.Error("expected error for streams + coupled > 255")
 	}
 
 	// Mapping length mismatch: shorter (out-of-bounds prevention)
@@ -302,5 +302,37 @@ func TestMultistreamDecoder_ValidationErrors(t *testing.T) {
 func TestNewMultistreamEncoderInvalidSampleRate(t *testing.T) {
 	if _, err := NewMultistreamEncoder(44100, 2, 1, 1, []uint8{0, 1}, ApplicationAudio); err == nil {
 		t.Fatal("expected error for unsupported sample rate")
+	}
+}
+
+// A decoder may decode more stream channels than it outputs: 2 streams + 1 coupled
+// carry 3 channels, of which this decoder keeps only the coupled pair.
+func TestMultistreamDecoder_FewerOutputsThanDecodedChannels(t *testing.T) {
+	enc, err := NewMultistreamEncoder(48000, 3, 2, 1, []uint8{0, 1, 2}, ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	pkt := make([]byte, 4000)
+	n, err := enc.Encode(make([]int16, 960*3), 960, pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dec, err := NewMultistreamDecoder(48000, 2, 2, 1, []uint8{0, 1})
+	if err != nil {
+		t.Fatalf("NewMultistreamDecoder: %v", err)
+	}
+	defer dec.Close()
+	pcm := make([]int16, 960*2)
+	got, err := dec.Decode(pkt[:n], pcm, 960, false)
+	if err != nil || got != 960 {
+		t.Fatalf("Decode = %d, %v; want 960 frames", got, err)
+	}
+
+	// A mapping entry past the decoded channels is still refused (by libopus).
+	if d, err := NewMultistreamDecoder(48000, 2, 2, 1, []uint8{0, 3}); err == nil {
+		d.Close()
+		t.Error("expected error for mapping entry beyond decoded channels")
 	}
 }

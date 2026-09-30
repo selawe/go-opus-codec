@@ -126,7 +126,7 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 // (such as 5.1 or 7.1 surround sound) using custom stream and coupled stream mapping tables.
 // channels is the total number of channels (1 to 255).
 // streams is the total number of Opus streams to decode (1 to 255).
-// coupledStreams is the number of coupled (stereo) streams (0 <= coupledStreams <= streams, and streams + coupledStreams <= channels).
+// coupledStreams is the number of coupled (stereo) streams (0 <= coupledStreams <= streams, and streams + coupledStreams <= 255).
 // mapping is an array of size channels mapping each output channel to a stream index.
 func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, mapping []uint8) (*Decoder, error) {
 	if channels < 1 || channels > 255 {
@@ -138,8 +138,10 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 	if coupledStreams < 0 || coupledStreams > streams {
 		return nil, fmt.Errorf("opus: invalid coupled stream count %d (must be 0..%d)", coupledStreams, streams)
 	}
-	if streams+coupledStreams > channels {
-		return nil, fmt.Errorf("opus: streams + coupledStreams (%d) exceeds channels (%d)", streams+coupledStreams, channels)
+	// Unlike an encoder, a decoder may decode more stream channels than it outputs: mapping
+	// entries pick which ones to keep (255 = silence), exactly as libopus validates layouts.
+	if streams+coupledStreams > 255 {
+		return nil, fmt.Errorf("opus: streams + coupledStreams (%d) exceeds 255", streams+coupledStreams)
 	}
 	if len(mapping) != channels {
 		return nil, fmt.Errorf("%w: channel mapping length %d does not match channels %d", ErrUnsupportedMapping, len(mapping), channels)
