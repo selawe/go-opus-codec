@@ -384,6 +384,15 @@ func encodeStream[T int16 | float32](c pcmCodec[T], l encodeLayout, pw *ogg.Pack
 	}
 }
 
+// maxChainedStreams bounds how many logical bitstreams DecodeOggOpusToWAV follows in one
+// chained Ogg file. Each stream costs a header parse and a decoder reset, and the output
+// limit does not help against thousands of streams that each decode to almost nothing.
+var maxChainedStreams uint32 = 1 << 16 // a variable only so tests can lower it
+
+// ErrTooManyStreams is returned by DecodeOggOpusToWAV for a chained Ogg file with more
+// logical bitstreams than it will follow.
+var ErrTooManyStreams = errors.New("opusgo: too many chained streams")
+
 // ErrOutputLimitExceeded is returned by DecodeOggOpusToWAV when the decoded
 // PCM data exceeds the maximum output size configured via WithMaxOutputBytes.
 var ErrOutputLimitExceeded = errors.New("opusgo: decode output limit exceeded")
@@ -448,6 +457,7 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 	preSkipRemaining := int(r.Head.PreSkip)
 	totalSamplesDecoded := uint64(0)
 	var totalBytesWritten int64
+	prevHead := r.Head
 
 	for {
 		pkt, err := r.ReadAudioPacket()
@@ -461,11 +471,26 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 			if int(r.Head.Channels) != channels {
 				return fmt.Errorf("chained stream channel count mismatch: initial %d, new %d", channels, r.Head.Channels)
 			}
-			dec.Close()
-			dec, err = opus.NewDecoderFromHead(r.Head)
-			if err != nil {
-				return fmt.Errorf("opus decoder for chained stream: %w", err)
+			if pkt.StreamIndex >= maxChainedStreams {
+				return fmt.Errorf("%w: more than %d", ErrTooManyStreams, maxChainedStreams)
 			}
+			if r.Head.ChannelMappingFamily == 0 && prevHead.ChannelMappingFamily == 0 {
+				// Same layout: rewind the existing decoder instead of allocating ~90 KB again
+				// for every stream, which a file of many tiny streams would turn into churn.
+				if err := dec.Reset(); err != nil {
+					return fmt.Errorf("opus decoder reset for chained stream: %w", err)
+				}
+				if err := dec.SetGain(int(r.Head.OutputGainQ8)); err != nil {
+					return fmt.Errorf("opus decoder gain for chained stream: %w", err)
+				}
+			} else {
+				_ = dec.Close()
+				dec, err = opus.NewDecoderFromHead(r.Head)
+				if err != nil {
+					return fmt.Errorf("opus decoder for chained stream: %w", err)
+				}
+			}
+			prevHead = r.Head
 			preSkipRemaining = int(r.Head.PreSkip)
 			totalSamplesDecoded = 0
 		}

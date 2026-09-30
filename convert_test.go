@@ -58,6 +58,11 @@ func (m *memWriteSeeker) Bytes() []byte {
 
 func generateSineWAV(t *testing.T, sampleRate int, channels int, totalSamplesPerCh int) []byte {
 	t.Helper()
+	return generateSineWAVFreq(t, sampleRate, channels, totalSamplesPerCh, 440)
+}
+
+func generateSineWAVFreq(t *testing.T, sampleRate int, channels int, totalSamplesPerCh int, freqHz int) []byte {
+	t.Helper()
 	ws := &memWriteSeeker{}
 	ww, err := wav.NewWriter(ws, sampleRate, channels)
 	if err != nil {
@@ -66,7 +71,7 @@ func generateSineWAV(t *testing.T, sampleRate int, channels int, totalSamplesPer
 
 	totalSamples := totalSamplesPerCh * channels
 	pcm := make([]int16, totalSamples)
-	freq := 440.0
+	freq := float64(freqHz)
 	for i := 0; i < totalSamplesPerCh; i++ {
 		val := int16(math.Sin(2*math.Pi*freq*float64(i)/float64(sampleRate)) * 16000)
 		for ch := 0; ch < channels; ch++ {
@@ -922,5 +927,55 @@ func TestDecodeOggOpusToWAV_ChainedStreams(t *testing.T) {
 	err = DecodeOggOpusToWAV(bytes.NewReader(chainedMismatch), wsMismatch)
 	if err == nil {
 		t.Fatalf("expected error on chained channel mismatch, got nil")
+	}
+}
+
+func decodeToPCM(t *testing.T, ogg []byte) []byte {
+	t.Helper()
+	ws := &memWriteSeeker{}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(ogg), ws); err != nil {
+		t.Fatal(err)
+	}
+	return ws.Bytes()[44:] // canonical 44-byte header written by wav.Writer
+}
+
+// Reusing the decoder across streams (Reset + SetGain) must be indistinguishable from a fresh
+// decoder per stream: the chain decodes to exactly the concatenation of its parts.
+func TestDecodeOggOpusToWAV_ChainEqualsConcatenatedParts(t *testing.T) {
+	var parts [][]byte
+	var chain []byte
+	for i, freq := range []int{300, 1200, 5000} {
+		var o bytes.Buffer
+		if err := EncodeWAVToOggOpus(bytes.NewReader(generateSineWAVFreq(t, 48000, 2, 4800+i*960, freq)), &o, &EncodeOptions{Serial: uint32(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+		parts = append(parts, o.Bytes())
+		chain = append(chain, o.Bytes()...)
+	}
+	var want []byte
+	for _, p := range parts {
+		want = append(want, decodeToPCM(t, p)...)
+	}
+	if got := decodeToPCM(t, chain); !bytes.Equal(got, want) {
+		t.Fatalf("chained decode differs from the concatenated parts (%d vs %d bytes)", len(got), len(want))
+	}
+}
+
+func TestDecodeOggOpusToWAV_TooManyChainedStreams(t *testing.T) {
+	old := maxChainedStreams
+	maxChainedStreams = 8
+	t.Cleanup(func() { maxChainedStreams = old })
+
+	var one bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(generateSineWAV(t, 48000, 1, 960)), &one, &EncodeOptions{Serial: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly the limit is fine, one more is refused.
+	if err := DecodeOggOpusToWAV(bytes.NewReader(bytes.Repeat(one.Bytes(), 8)), &memWriteSeeker{}); err != nil {
+		t.Fatalf("8 streams: %v", err)
+	}
+	err := DecodeOggOpusToWAV(bytes.NewReader(bytes.Repeat(one.Bytes(), 9)), &memWriteSeeker{})
+	if !errors.Is(err, ErrTooManyStreams) {
+		t.Fatalf("9 streams: err = %v, want ErrTooManyStreams", err)
 	}
 }
