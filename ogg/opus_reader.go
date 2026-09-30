@@ -259,8 +259,9 @@ func parseOpusHead(b []byte) (OpusHead, error) {
 		return OpusHead{}, fmt.Errorf("%w: channels=0", ErrBadOpusHead)
 	}
 
-	// RFC 7845 Section 5.1: version number must have major version 0 (values 1..15, with 1 being standard).
-	if h.Version == 0 || (h.Version>>4) > 0 {
+	// RFC 7845 Section 5.1: the version is 1, and decoders SHOULD accept 0-15, i.e. any
+	// stream whose major version (the upper four bits) is 0.
+	if (h.Version >> 4) > 0 {
 		return OpusHead{}, fmt.Errorf("%w: unsupported version %d (major version must be 0)", ErrBadOpusHead, h.Version)
 	}
 
@@ -281,8 +282,9 @@ func parseOpusHead(b []byte) (OpusHead, error) {
 		if h.CoupledStreamCount > h.StreamCount {
 			return OpusHead{}, fmt.Errorf("%w: coupled stream count %d > stream count %d", ErrBadOpusHead, h.CoupledStreamCount, h.StreamCount)
 		}
-		if int(h.StreamCount)+int(h.CoupledStreamCount) > int(h.Channels) {
-			return OpusHead{}, fmt.Errorf("%w: streams (%d+%d) > channels (%d)", ErrBadOpusHead, h.StreamCount, h.CoupledStreamCount, h.Channels)
+		decoded := int(h.StreamCount) + int(h.CoupledStreamCount)
+		if decoded > 255 {
+			return OpusHead{}, fmt.Errorf("%w: streams (%d+%d) exceed 255 decoded channels", ErrBadOpusHead, h.StreamCount, h.CoupledStreamCount)
 		}
 		need := 21 + int(h.Channels)
 		if len(b) < need {
@@ -290,6 +292,11 @@ func parseOpusHead(b []byte) (OpusHead, error) {
 		}
 		h.ChannelMapping = make([]uint8, h.Channels)
 		copy(h.ChannelMapping, b[21:need])
+		for i, m := range h.ChannelMapping { // each output picks a decoded channel, or 255 for silence
+			if int(m) >= decoded && m != 255 {
+				return OpusHead{}, fmt.Errorf("%w: channel %d maps to %d but only %d channels are decoded", ErrBadOpusHead, i, m, decoded)
+			}
+		}
 	default:
 		return OpusHead{}, fmt.Errorf("%w: unsupported channel mapping family %d", ErrBadOpusHead, h.ChannelMappingFamily)
 	}
@@ -304,35 +311,37 @@ func parseOpusTags(b []byte) (OpusTags, error) {
 		return OpusTags{}, ErrHeaderSequence
 	}
 	off := 8
-	vendorLen := int(binary.LittleEndian.Uint32(b[off : off+4]))
+	vendorLen := binary.LittleEndian.Uint32(b[off : off+4])
 	off += 4
-	if vendorLen < 0 || off+vendorLen > len(b) {
+	// Compared as uint64 so a 32-bit int cannot wrap negative and slip past the bound.
+	if uint64(vendorLen) > uint64(len(b)-off) {
 		return OpusTags{}, fmt.Errorf("%w: bad vendor length", ErrBadOpusTags)
 	}
-	vendor := string(b[off : off+vendorLen])
-	off += vendorLen
+	vendor := string(b[off : off+int(vendorLen)])
+	off += int(vendorLen)
 	if off+4 > len(b) {
 		return OpusTags{}, fmt.Errorf("%w: missing comment count", ErrBadOpusTags)
 	}
-	count := int(binary.LittleEndian.Uint32(b[off : off+4]))
+	rawCount := binary.LittleEndian.Uint32(b[off : off+4])
 	off += 4
 	maxPossibleComments := (len(b) - off) / 4
-	if count > maxPossibleComments {
-		return OpusTags{}, fmt.Errorf("%w: comment count %d exceeds payload capacity", ErrBadOpusTags, count)
+	if uint64(rawCount) > uint64(maxPossibleComments) {
+		return OpusTags{}, fmt.Errorf("%w: comment count %d exceeds payload capacity", ErrBadOpusTags, rawCount)
 	}
+	count := int(rawCount)
 
 	comments := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		if off+4 > len(b) {
 			return OpusTags{}, fmt.Errorf("%w: truncated comment length", ErrBadOpusTags)
 		}
-		cl := int(binary.LittleEndian.Uint32(b[off : off+4]))
+		cl := binary.LittleEndian.Uint32(b[off : off+4])
 		off += 4
-		if cl < 0 || off+cl > len(b) {
+		if uint64(cl) > uint64(len(b)-off) {
 			return OpusTags{}, fmt.Errorf("%w: truncated comment", ErrBadOpusTags)
 		}
-		comments = append(comments, string(b[off:off+cl]))
-		off += cl
+		comments = append(comments, string(b[off:off+int(cl)]))
+		off += int(cl)
 	}
 	return OpusTags{Vendor: vendor, Comments: comments}, nil
 }

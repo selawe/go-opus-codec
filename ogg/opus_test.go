@@ -310,12 +310,14 @@ func TestRFC7845_ParseOpusHeadVersionAndFamily(t *testing.T) {
 		t.Fatalf("BuildOpusHeadPacket: %v", err)
 	}
 
-	// Corrupt version to 0
+	// Version 0 is accepted: RFC 7845 section 5.1 says decoders SHOULD take any 0-15.
 	badVerPkt := make([]byte, len(pkt))
 	copy(badVerPkt, pkt)
-	badVerPkt[8] = 0
-	if _, err := parseOpusHead(badVerPkt); !errors.Is(err, ErrBadOpusHead) {
-		t.Fatalf("expected ErrBadOpusHead for version 0, got %v", err)
+	for _, v := range []byte{0, 15} {
+		badVerPkt[8] = v
+		if _, err := parseOpusHead(badVerPkt); err != nil {
+			t.Fatalf("version %d rejected: %v", v, err)
+		}
 	}
 
 	// Corrupt version to major version 2 (0x20)
@@ -728,5 +730,45 @@ func TestOpusReader_ReportsDiscontinuity(t *testing.T) {
 	}
 	if n != 4 || len(flagged) != 1 || flagged[0] != 2 {
 		t.Errorf("got %d packets, flagged %v; want 4 packets with only index 2 flagged", n, flagged)
+	}
+}
+
+func TestParseOpusHead_ChannelMappingTable(t *testing.T) {
+	head := OpusHead{Version: 1, Channels: 2, InputSampleRate: 48000, ChannelMappingFamily: 1, StreamCount: 2, CoupledStreamCount: 1}
+
+	// 3 decoded channels (2 streams + 1 coupled) feeding only 2 outputs is valid.
+	head.ChannelMapping = []uint8{0, 255}
+	pkt, err := BuildOpusHeadPacket(OpusHead{Version: 1, Channels: 3, InputSampleRate: 48000, ChannelMappingFamily: 1, StreamCount: 2, CoupledStreamCount: 1, ChannelMapping: []uint8{0, 1, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hand-build a 2-output head over the 3 decoded channels, bypassing the encoder-side builder.
+	raw := append([]byte(nil), pkt[:21]...)
+	raw[9] = 2
+	raw = append(raw, head.ChannelMapping...)
+	if _, err := parseOpusHead(raw); err != nil {
+		t.Fatalf("decoder-side layout with unused stream channel rejected: %v", err)
+	}
+
+	// A mapping entry beyond the decoded channels (and not 255) must be rejected.
+	raw[len(raw)-1] = 3
+	if _, err := parseOpusHead(raw); !errors.Is(err, ErrBadOpusHead) {
+		t.Fatalf("out-of-range mapping entry: err = %v, want ErrBadOpusHead", err)
+	}
+}
+
+func TestParseOpusTags_HugeLengthsDoNotOverflow(t *testing.T) {
+	b := append([]byte("OpusTags"), 0xFF, 0xFF, 0xFF, 0xFF) // vendor length 4 GiB - 1
+	b = append(b, make([]byte, 8)...)
+	if _, err := parseOpusTags(b); !errors.Is(err, ErrBadOpusTags) {
+		t.Fatalf("vendor: err = %v, want ErrBadOpusTags", err)
+	}
+	b = append([]byte("OpusTags"), 0, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0)
+	if _, err := parseOpusTags(b); !errors.Is(err, ErrBadOpusTags) {
+		t.Fatalf("comment: err = %v, want ErrBadOpusTags", err)
+	}
+	b = append([]byte("OpusTags"), 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0)
+	if _, err := parseOpusTags(b); !errors.Is(err, ErrBadOpusTags) {
+		t.Fatalf("count: err = %v, want ErrBadOpusTags", err)
 	}
 }
