@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A chained stream that ends right after its OpusHead returned a bare `io.EOF`, so a truncated file looked like a clean end; it now reports `ErrHeaderSequence` (`f5f982b`)
 - A multistream encoder getter no longer returns 0 when stream 0's state cannot be fetched (`7fd514c`)
 
+### CI & Tooling
+- The nightly fuzz workflow passed `-fuzz=<name>` unanchored. It is a regexp, so `FuzzDecode` also matched `FuzzDecodeF32` and `FuzzOpusReader` matched `FuzzOpusReaderNoCRC`, and `go test` refused to fuzz either ("matches more than one fuzz test"). `FuzzDecode` had therefore never run in CI; `FuzzOpusReader` stopped running when the `NoCRC` variant was added. The pattern is now anchored (`^name$`)
+
 ### Internal
 - The int16 and float32 encode loops in `convert.go` were near-identical ~100-line copies; they are now one generic `encodeStream`. The encoded bytes are identical to the previous code for every input format, with and without resampling. `wav.Reader` likewise shares one `fill` between its two read methods (`9a0c2b2`, `9243fa6`)
 

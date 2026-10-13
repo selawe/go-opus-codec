@@ -43,7 +43,9 @@ jobs:
           cache: true
 
       - name: Run Fuzz Target
-        run: go test -v -run=^$ -fuzz=${{ matrix.target.target }} -fuzztime=30s ${{ matrix.target.pkg }}
+        # Anchored: -fuzz is a regexp, and an unanchored FuzzDecode also matches FuzzDecodeF32 (likewise
+        # FuzzOpusReader and FuzzOpusReaderNoCRC), which makes go test refuse to fuzz at all.
+        run: go test -v -run='^$' -fuzz='^${{ matrix.target.target }}$' -fuzztime=30s ${{ matrix.target.pkg }}
 
       # A failing input is written under testdata/fuzz; without this it disappears with the runner.
       - name: Upload crashing inputs
