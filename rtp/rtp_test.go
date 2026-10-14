@@ -20,7 +20,10 @@ func TestRTP_MarshalUnmarshal(t *testing.T) {
 		Payload:        []byte{0x78, 0x01, 0x02, 0x03},
 	}
 
-	raw := orig.Marshal()
+	raw, err := orig.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
 	if len(raw) != HeaderLength+8+4 {
 		t.Fatalf("expected wire size %d, got %d", HeaderLength+8+4, len(raw))
 	}
@@ -127,7 +130,10 @@ func TestRTP_OpusEncodePacketizeDepacketizeDecode(t *testing.T) {
 		t.Fatalf("Packetize: %v", err)
 	}
 
-	wireBytes := rtpPkt.Marshal()
+	wireBytes, err := rtpPkt.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
 
 	var wirePkt Packet
 	if err := wirePkt.Unmarshal(wireBytes); err != nil {
@@ -146,6 +152,41 @@ func TestRTP_OpusEncodePacketizeDepacketizeDecode(t *testing.T) {
 	}
 	if nSamples != 960 {
 		t.Errorf("expected 960 decoded samples, got %d", nSamples)
+	}
+}
+
+func TestRTP_MarshalValidationErrors(t *testing.T) {
+	// 1. Extension error
+	pktExt := &Packet{Extension: true, Payload: []byte{1, 2, 3}}
+	if _, err := pktExt.Marshal(); !errors.Is(err, ErrExtensionNotSupported) {
+		t.Errorf("expected ErrExtensionNotSupported, got %v", err)
+	}
+
+	// 2. Padding error
+	pktPad := &Packet{Padding: true, Payload: []byte{1, 2, 3}}
+	if _, err := pktPad.Marshal(); !errors.Is(err, ErrPaddingNotSupported) {
+		t.Errorf("expected ErrPaddingNotSupported, got %v", err)
+	}
+
+	// 3. More than 15 CSRCs
+	pktCSRC := &Packet{
+		CSRC:    make([]uint32, 16),
+		Payload: []byte{1, 2, 3},
+	}
+	if _, err := pktCSRC.Marshal(); !errors.Is(err, ErrTooManyCSRCs) {
+		t.Errorf("expected ErrTooManyCSRCs, got %v", err)
+	}
+
+	// 4. PayloadType > 127
+	pktPT := &Packet{PayloadType: 128, Payload: []byte{1, 2, 3}}
+	if _, err := pktPT.Marshal(); !errors.Is(err, ErrInvalidPayloadType) {
+		t.Errorf("expected ErrInvalidPayloadType, got %v", err)
+	}
+
+	// 5. Nil packet
+	var nilPkt *Packet
+	if _, err := nilPkt.Marshal(); err == nil {
+		t.Errorf("expected error on nil packet Marshal")
 	}
 }
 

@@ -16,9 +16,13 @@ import (
 )
 
 var (
-	ErrPacketTooShort     = errors.New("rtp: packet is too short for header")
-	ErrUnsupportedVersion = errors.New("rtp: unsupported RTP version (must be 2)")
-	ErrEmptyOpusPayload   = errors.New("rtp: empty opus payload")
+	ErrPacketTooShort        = errors.New("rtp: packet is too short for header")
+	ErrUnsupportedVersion    = errors.New("rtp: unsupported RTP version (must be 2)")
+	ErrEmptyOpusPayload      = errors.New("rtp: empty opus payload")
+	ErrExtensionNotSupported = errors.New("rtp: extension header not supported in marshal")
+	ErrPaddingNotSupported   = errors.New("rtp: padding not supported in marshal")
+	ErrTooManyCSRCs          = errors.New("rtp: CSRC count cannot exceed 15")
+	ErrInvalidPayloadType    = errors.New("rtp: payload type must be <= 127")
 )
 
 // HeaderLength is the minimum RTP header length in bytes per RFC 3550.
@@ -42,22 +46,34 @@ type Packet struct {
 }
 
 // Marshal serializes the Packet into RFC 3550 binary wire format.
-func (p *Packet) Marshal() []byte {
+// It returns an error if Extension or Padding is set without support, if len(CSRC) > 15,
+// or if PayloadType exceeds 127.
+func (p *Packet) Marshal() ([]byte, error) {
+	if p == nil {
+		return nil, errors.New("rtp: packet is nil")
+	}
+	if p.Version != 0 && p.Version != 2 {
+		return nil, fmt.Errorf("%w: %d", ErrUnsupportedVersion, p.Version)
+	}
+	if p.Extension {
+		return nil, ErrExtensionNotSupported
+	}
+	if p.Padding {
+		return nil, ErrPaddingNotSupported
+	}
+	if len(p.CSRC) > 15 {
+		return nil, ErrTooManyCSRCs
+	}
+	if p.PayloadType > 127 {
+		return nil, ErrInvalidPayloadType
+	}
+
 	csrcLen := len(p.CSRC) * 4
 	totalLen := HeaderLength + csrcLen + len(p.Payload)
 	buf := make([]byte, totalLen)
 
 	v := uint8(2)
-	if p.Version != 0 {
-		v = p.Version
-	}
 	b0 := (v << 6) & 0xC0
-	if p.Padding {
-		b0 |= 0x20
-	}
-	if p.Extension {
-		b0 |= 0x10
-	}
 	b0 |= uint8(len(p.CSRC)) & 0x0F
 	buf[0] = b0
 
@@ -78,7 +94,7 @@ func (p *Packet) Marshal() []byte {
 	}
 
 	copy(buf[off:], p.Payload)
-	return buf
+	return buf, nil
 }
 
 // Unmarshal parses an RTP packet from binary wire format.
