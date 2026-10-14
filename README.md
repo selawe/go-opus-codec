@@ -582,4 +582,4 @@ go test -tags nolibopusfile -bench=. -benchmem
 ## License
 
 This project is released under the [3-Clause BSD License](LICENSE).
-Transpiled libopus code is copyright Xiph.Org Foundation, Skype Limited, Octasic Inc., and other contributors.
+Transpiled libopus code is copyright Xiph.Org Foundation, Skype Limited, Octasic Inc., and other contributors; its licence text, and the notices for other adapted code, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and must accompany redistributions.
