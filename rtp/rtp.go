@@ -33,6 +33,9 @@ var (
 	// accepted last. It carries no payload: drop it, or the same audio is decoded twice.
 	ErrDuplicatePacket = errors.New("rtp: duplicate packet")
 
+	// ErrPayloadTooLarge is returned by Packetizer when an Opus packet exceeds the packetizer's MaxPayloadSize.
+	ErrPayloadTooLarge = errors.New("rtp: opus payload larger than the packetizer's MaxPayloadSize")
+
 	// ErrLatePacket is returned by Depacketizer.Depacketize for a packet older than one already accepted. It carries
 	// no payload: drop it, since decoding it now would play audio out of order. Put a jitter buffer in front of the
 	// Depacketizer if reordered packets should be put back in sequence rather than dropped.
@@ -177,8 +180,17 @@ func (p *Packet) Unmarshal(data []byte) error {
 	return nil
 }
 
+// DefaultMaxPayloadSize is the largest Opus payload a Packetizer accepts unless MaxPayloadSize says otherwise: 1200
+// bytes, the conventional safe size for WebRTC, which leaves room for the RTP header (and SRTP and extension
+// overhead) inside a 1280-byte path MTU. One Opus frame is at most 1275 bytes, but a normal packet is a few hundred.
+const DefaultMaxPayloadSize = 1200
+
 // Packetizer wraps Opus audio frames into RFC 7587 compliant RTP packets. It is not safe for concurrent use.
 type Packetizer struct {
+	// MaxPayloadSize bounds the Opus packets Packetize accepts (ErrPayloadTooLarge above it). Zero means
+	// DefaultMaxPayloadSize; a negative value turns the check off.
+	MaxPayloadSize int
+
 	ssrc        uint32
 	payloadType uint8
 	seq         uint16
@@ -207,6 +219,16 @@ func (p *Packetizer) Packetize(opusPacket []byte) (*Packet, error) {
 func (p *Packetizer) PacketizeMarker(opusPacket []byte, marker bool) (*Packet, error) {
 	if len(opusPacket) == 0 {
 		return nil, ErrEmptyOpusPayload
+	}
+	if p.payloadType > 127 {
+		return nil, ErrInvalidPayloadType
+	}
+	limit := p.MaxPayloadSize
+	if limit == 0 {
+		limit = DefaultMaxPayloadSize
+	}
+	if limit > 0 && len(opusPacket) > limit {
+		return nil, fmt.Errorf("%w: %d bytes, limit %d", ErrPayloadTooLarge, len(opusPacket), limit)
 	}
 
 	// Calculate sample count at 48 kHz (RFC 7587 mandates 48 kHz timestamp clock)

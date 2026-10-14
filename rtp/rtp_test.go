@@ -413,3 +413,48 @@ func TestRTP_MarkerAndDTXTimestampSkip(t *testing.T) {
 		t.Errorf("timestamp after a skip over the wrap: %#x, want 0x100", pk.Timestamp)
 	}
 }
+
+// A packetizer that hands out a 100 KB "RTP packet" or a payload type that cannot be sent just moves the failure to the
+// network stack. Both are refused up front, and a refused packet must not consume a sequence number or time.
+func TestRTP_PacketizerLimitsAndPayloadType(t *testing.T) {
+	frame := []byte{0xFC, 0x01}
+	big := append([]byte{0xFC}, make([]byte, 100_000)...) // a valid TOC, far beyond any MTU
+
+	p := NewPacketizer(1, 111, 7, 5000)
+	if _, err := p.Packetize(big); !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatalf("100 KB payload: err = %v, want ErrPayloadTooLarge", err)
+	}
+	ok, err := p.Packetize(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok.SequenceNumber != 7 || ok.Timestamp != 5000 {
+		t.Errorf("the refused packet used up the sequence or time: seq=%d ts=%d", ok.SequenceNumber, ok.Timestamp)
+	}
+
+	// The limit sits at DefaultMaxPayloadSize and can be changed (or lifted with a negative value).
+	atLimit := append([]byte{0xFC}, make([]byte, DefaultMaxPayloadSize-1)...)
+	if _, err := p.Packetize(atLimit); err != nil {
+		t.Errorf("a payload of exactly %d bytes: %v", DefaultMaxPayloadSize, err)
+	}
+	if _, err := p.Packetize(append(atLimit, 0)); !errors.Is(err, ErrPayloadTooLarge) {
+		t.Errorf("one byte over the limit: err = %v", err)
+	}
+	p.MaxPayloadSize = 1500
+	if _, err := p.Packetize(append(atLimit, make([]byte, 100)...)); err != nil {
+		t.Errorf("raised limit: %v", err)
+	}
+	p.MaxPayloadSize = -1
+	if _, err := p.Packetize(big); err != nil {
+		t.Errorf("limit disabled: %v", err)
+	}
+
+	// Payload types are 7 bits.
+	bad := NewPacketizer(1, 200, 0, 0)
+	if _, err := bad.Packetize(frame); !errors.Is(err, ErrInvalidPayloadType) {
+		t.Errorf("payload type 200: err = %v, want ErrInvalidPayloadType", err)
+	}
+	if _, err := NewPacketizer(1, 127, 0, 0).Packetize(frame); err != nil {
+		t.Errorf("payload type 127 is valid: %v", err)
+	}
+}
