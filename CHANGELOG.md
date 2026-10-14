@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Encoder controls.** `opus.Encoder` gains `SetBandwidth`, `SetMaxBandwidth`, `SetSignal`, `SetForceChannels`, `SetLSBDepth`, `SetPredictionDisabled`, `SetPhaseInversionDisabled`, `SetVBRConstraint` and a getter for every control (`Bitrate`, `VBR`, `Complexity`, `DTX`, `InbandFEC`, `PacketLossPerc`, `Bandwidth`, `MaxBandwidth`, `Signal`, ...), with the typed values `opus.Signal` (`SignalAuto`, `SignalVoice`, `SignalMusic`) and `BandwidthAuto`. `MaxBandwidth` on a multistream encoder is read from stream 0, because libopus's multistream control omits it. Note that `Bandwidth()` is the bandwidth of the last encoded frame, not the last value passed to `SetBandwidth` (`3931bc7`)
 - **More WAV formats.** `wav.Reader` reads 8-bit unsigned, 24-bit and 32-bit integer PCM and 32-bit float, plain or `WAVE_FORMAT_EXTENSIBLE`, and RF64/BW64 files over 4 GiB (ds64). New `Reader.ReadFloat32PCM`, `BitsPerSample` and `Format`. `EncodeWAVToOggOpus` sends wider-than-16-bit and float input through the float32 encoder without an int16 round trip (`d0e2d3f`)
 - **Chained Ogg files.** `ogg.PacketReader`, `ogg.OpusReader` and `DecodeOggOpusToWAV` follow a chain of logical bitstreams: `OpusReader.ReadAudioPacket` updates `Head` and `Tags` at each boundary and sets `OpusAudioPacket.NewStream` and `StreamIndex` on the first packet of the new stream. The decoder needs the same channel count throughout and follows at most 65536 streams (`ErrTooManyStreams`). Limits: `player` plays only the first stream, and seeking and `TotalSamples` assume one stream (`0c10568`)
+- `ogg.PacketWriter.WriteOpusHeaders` writes OpusHead (BOS, alone) and OpusTags (ending its page) with the RFC 7845 section 3 layout even when batching, and `PacketWriter.Close` flags a still-buffered page as end-of-stream and flushes it. `Close` returns `ErrMissingEOS` for a stream that was never terminated; writes after an EOS packet or after `Close` fail (`ErrWriteAfterEOS`, `ErrWriterClosed`); and the first write error is sticky (`f430432`)
+- `wav.Writer` writes `WAVE_FORMAT_EXTENSIBLE` (40-byte fmt chunk, channel mask 0) for more than two channels instead of a plain PCM header that many players reject; mono and stereo keep the 44-byte header (`1e1a29a`)
+- `opusgo.DefaultMaxOutputBytes` (1 GiB, what the CLI uses) for `WithMaxOutputBytes`, plus a security note on the decode functions (`4a80c87`)
+- Runnable `Example*` functions for pkg.go.dev in the root, `opus`, `ogg` and `wav` packages (`3084837`); `SECURITY.md` and `.github/dependabot.yml` (`3e77f38`); end-to-end conversion benchmarks (`72ac2d1`)
+- `THIRD_PARTY_NOTICES.md` with the libopus 1.6.1 licence, verbatim from the upstream `COPYING`, as the BSD terms require for the transpiled `opuscc`/`opusccenc` code (`656f5fa`)
 
 ### Changed
 - `wav.Reader` refuses wider-than-16-bit files whose `blockAlign` disagrees with channels x bytes per sample, since reading them with the wrong frame size would scramble the audio; 16-bit PCM is accepted with any `blockAlign`, as before. In RF64 the data chunk's own size wins unless it is the `0xFFFFFFFF` marker that defers to ds64 (`9243fa6`)
@@ -18,12 +23,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `DecodeOggOpusToWAV` reuses its decoder across same-layout chained streams (`Reset` + `SetGain`) instead of allocating ~90 KB per stream, which made a file of tiny streams a ~600x allocation amplification (`5c95db6`)
 - A chained stream that ends right after its OpusHead returned a bare `io.EOF`, so a truncated file looked like a clean end; it now reports `ErrHeaderSequence` (`f5f982b`)
 - A multistream encoder getter no longer returns 0 when stream 0's state cannot be fetched (`7fd514c`)
+- **`ogg.PacketReader.SeekToPage` was wrong for streams whose packets span pages**: against a linear-scan reference it returned "could not find page" for targets that exist and a wrong last-granule (150 of 150 targets). It also read ~1.5x the file for exact-granule targets and left the reader at a probe offset after a failure. It is rewritten as a bisect over byte offsets with a validated page probe: ~19% of an 860 KB file read (mostly read-ahead) and 2.4% of a 27 MB file, state restored on failure, `SeekToPage(0)` after a chain works and `OpusReader.SeekToPage(0)` restores the first stream's `Head`, `Tags` and `StreamIndex` (`4176bd5`)
+- `SetForceChannels(2)` on a multistream encoder with a mono stream changed the stereo sub-encoders and then failed, leaving `ForceChannels()` reading 2; it is refused up front (`63be98b`)
+- Create errors printed `%!w(<nil>)` when libopus returned a nil state without a code; `SampleRate`, `Channels`, `IsMultistream` and `Application` panicked on a nil receiver (`b884c26`)
+
+### Security
+- **`EncodeF32` silenced the encoder for extreme floats.** Samples around 2000 or beyond made the transpiled encoder overflow and emit digital silence with no error, so a float WAV with 1e4 amplitude "converted successfully" to all zeros. Input is now clamped to +/-16 and NaN becomes 0 in the staging copy; in-range samples are unchanged (`1de4d12`)
+- `NewDecoder`/`NewEncoder` passed `int32(...)` of their arguments to libopus while storing the originals, so `NewDecoder(1<<32+48000, 1<<32+2)` succeeded with absurd stored values; they now reject values outside int32. `PacketPad` capped its target length only at `MaxInt32`, so one call could allocate 1 GiB; it is now capped like the input (`143d8d0`)
+- A panic inside the transpiled codec during `Decode`, `DecodeF32`, `Encode` or `EncodeF32` is recovered into an error and disables the object instead of unwinding the caller and leaving corrupt scratch state (`d5c4e3d`)
+- `oggopus2wav`, `wav2oggopus` and `oggopusextract` discard their temp file on Ctrl-C or SIGTERM and exit 130/143, instead of leaving `.out.<hex>.tmp` behind (`11a1b40`)
+- `OpusReader.TotalDuration` overflowed beyond ~53 hours (a forged granule gave -48 h) and a final granule of 2^63 or more became a negative length; both are handled (`353d011`)
+
+### Performance
+- Encoding 10 s of stereo: 48 kHz 3.6 MB/545 allocs per op -> 1.6 MB/47 allocs; 44.1 kHz 15.0 MB/1891 allocs -> 3.9 MB/514 allocs. `encodeStream` no longer reallocates its pending buffer every couple of frames, and `Resampler.ProcessInt16`/`FlushInt16` reuse scratch buffers. The encoded files are byte-identical to before (`5430d02`, `dd9af79`)
+
+### Documentation
+- `player` documents that one mutex is held across reads on the source, so `Close` waits for a blocked `Read` (close or cancel the source to unblock) (`7fc74a0`)
 
 ### CI & Tooling
 - The nightly fuzz workflow passed `-fuzz=<name>` unanchored. It is a regexp, so `FuzzDecode` also matched `FuzzDecodeF32` and `FuzzOpusReader` matched `FuzzOpusReaderNoCRC`, and `go test` refused to fuzz either ("matches more than one fuzz test"). `FuzzDecode` had therefore never run in CI; `FuzzOpusReader` stopped running when the `NoCRC` variant was added. The pattern is now anchored (`^name$`)
 
 ### Internal
 - The int16 and float32 encode loops in `convert.go` were near-identical ~100-line copies; they are now one generic `encodeStream`. The encoded bytes are identical to the previous code for every input format, with and without resampling. `wav.Reader` likewise shares one `fill` between its two read methods (`9a0c2b2`, `9243fa6`)
+- Unused per-instance `crcTable` copies (1 KiB each) removed from `PageReader` and `PacketWriter` (`7118c9f`)
 
 ### Tests
 - `FuzzNewReader` seeds every supported format and checks frame alignment and finite output on both read paths; `FuzzOpusReaderNoCRC` has a chained seed (`70fe91e`, `f5f982b`)
