@@ -355,3 +355,61 @@ func TestRTP_UnmarshalPaddingValidation(t *testing.T) {
 		}
 	}
 }
+
+// RFC 7587 section 4.1 (with RFC 3551): the marker bit is set on the first packet after a period of silence (DTX),
+// and the timestamp keeps counting through the silence, so the receiver sees the gap in time without a gap in sequence.
+func TestRTP_MarkerAndDTXTimestampSkip(t *testing.T) {
+	frame := []byte{0xFC, 0x01} // CELT fullband, 20 ms, one frame
+	p := NewPacketizer(0x1234, 111, 100, 1000)
+
+	first, err := p.Packetize(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Marker {
+		t.Error("Packetize must not set the marker bit")
+	}
+
+	// 300 ms of DTX silence passes without packets: the timestamp moves on, the sequence does not.
+	p.SkipTimestamp(300 * 48)
+	after, err := p.PacketizeMarker(frame, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Marker {
+		t.Error("PacketizeMarker(…, true) must set the marker bit")
+	}
+	if after.SequenceNumber != first.SequenceNumber+1 {
+		t.Errorf("sequence %d after %d: silence must not leave a hole in the sequence numbers", after.SequenceNumber, first.SequenceNumber)
+	}
+	if want := first.Timestamp + 960 + 300*48; after.Timestamp != want {
+		t.Errorf("timestamp %d, want %d (the frame's 960 samples plus the 300 ms skipped)", after.Timestamp, want)
+	}
+
+	// The bit survives the wire.
+	wire, err := after.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Packet
+	if err := got.Unmarshal(wire); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Marker || got.Timestamp != after.Timestamp {
+		t.Errorf("round trip lost the marker or the timestamp: %+v", got)
+	}
+
+	// The next packet is an ordinary one again.
+	next, _ := p.Packetize(frame)
+	if next.Marker || next.Timestamp != after.Timestamp+960 {
+		t.Errorf("packet after the marked one: marker=%v timestamp=%d", next.Marker, next.Timestamp)
+	}
+
+	// 32-bit timestamp wraparound in a skip.
+	w := NewPacketizer(1, 111, 0, 0xFFFFFF00)
+	w.SkipTimestamp(0x200)
+	pk, _ := w.Packetize(frame)
+	if pk.Timestamp != 0x100 {
+		t.Errorf("timestamp after a skip over the wrap: %#x, want 0x100", pk.Timestamp)
+	}
+}

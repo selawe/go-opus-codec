@@ -177,7 +177,7 @@ func (p *Packet) Unmarshal(data []byte) error {
 	return nil
 }
 
-// Packetizer wraps Opus audio frames into RFC 7587 compliant RTP packets.
+// Packetizer wraps Opus audio frames into RFC 7587 compliant RTP packets. It is not safe for concurrent use.
 type Packetizer struct {
 	ssrc        uint32
 	payloadType uint8
@@ -195,9 +195,16 @@ func NewPacketizer(ssrc uint32, payloadType uint8, initialSeq uint16, initialTim
 	}
 }
 
-// Packetize wraps an Opus encoded packet into an RTP Packet.
+// Packetize wraps an Opus encoded packet into an RTP Packet with the marker bit clear.
 // It inspects the Opus packet TOC to compute the exact 48 kHz timestamp delta per RFC 7587 §4.1.
+// The returned Packet's Payload is opusPacket itself, not a copy.
 func (p *Packetizer) Packetize(opusPacket []byte) (*Packet, error) {
+	return p.PacketizeMarker(opusPacket, false)
+}
+
+// PacketizeMarker is Packetize with control of the marker bit. RFC 7587 (with RFC 3551) has the sender set it on the
+// first packet after a period of silence, that is when it resumes after DTX (discontinuous transmission) or a mute.
+func (p *Packetizer) PacketizeMarker(opusPacket []byte, marker bool) (*Packet, error) {
 	if len(opusPacket) == 0 {
 		return nil, ErrEmptyOpusPayload
 	}
@@ -210,6 +217,7 @@ func (p *Packetizer) Packetize(opusPacket []byte) (*Packet, error) {
 
 	pkt := &Packet{
 		Version:        2,
+		Marker:         marker,
 		PayloadType:    p.payloadType,
 		SequenceNumber: p.seq,
 		Timestamp:      p.timestamp,
@@ -220,6 +228,13 @@ func (p *Packetizer) Packetize(opusPacket []byte) (*Packet, error) {
 	p.seq++
 	p.timestamp += uint32(samples)
 	return pkt, nil
+}
+
+// SkipTimestamp advances the RTP timestamp by samples (at the 48 kHz clock) without sending a packet. Call it for the
+// time that passed while nothing was sent (DTX silence, a muted microphone): the timestamp keeps following real time
+// while the sequence numbers stay contiguous, and the next packet should be sent with PacketizeMarker(…, true).
+func (p *Packetizer) SkipTimestamp(samples uint32) {
+	p.timestamp += samples
 }
 
 // DefaultMaxMissingPackets is the upper bound on missing packets reported by Depacketizer
