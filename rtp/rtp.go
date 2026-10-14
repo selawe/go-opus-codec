@@ -8,6 +8,7 @@
 package rtp
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -114,7 +115,8 @@ func (p *Packet) Marshal() ([]byte, error) {
 	return buf, nil
 }
 
-// Unmarshal parses an RTP packet from binary wire format.
+// Unmarshal parses an RTP packet from binary wire format. Packet.Payload refers to data itself, not a copy
+// (the CSRC list is copied): do not reuse or modify the buffer while the payload is in use, or copy it first.
 func (p *Packet) Unmarshal(data []byte) error {
 	if len(data) < HeaderLength {
 		return ErrPacketTooShort
@@ -207,6 +209,25 @@ func NewPacketizer(ssrc uint32, payloadType uint8, initialSeq uint16, initialTim
 	}
 }
 
+// NewRandomPacketizer creates a Packetizer whose SSRC, first sequence number and first timestamp are drawn from
+// crypto/rand, as RFC 3550 section 5.1 recommends (and as an SRTP-protected stream needs, so that they cannot be
+// guessed). It fails only if the system's random source does, or if payloadType is above 127.
+func NewRandomPacketizer(payloadType uint8) (*Packetizer, error) {
+	if payloadType > 127 {
+		return nil, ErrInvalidPayloadType
+	}
+	var b [10]byte // SSRC (4), first sequence number (2), first timestamp (4)
+	if _, err := rand.Read(b[:]); err != nil {
+		return nil, fmt.Errorf("rtp: random initial values: %w", err)
+	}
+	return NewPacketizer(
+		binary.BigEndian.Uint32(b[0:4]),
+		payloadType,
+		binary.BigEndian.Uint16(b[4:6]),
+		binary.BigEndian.Uint32(b[6:10]),
+	), nil
+}
+
 // Packetize wraps an Opus encoded packet into an RTP Packet with the marker bit clear.
 // It inspects the Opus packet TOC to compute the exact 48 kHz timestamp delta per RFC 7587 §4.1.
 // The returned Packet's Payload is opusPacket itself, not a copy.
@@ -263,7 +284,8 @@ func (p *Packetizer) SkipTimestamp(samples uint32) {
 // (100 packets, about 2 seconds of audio at 20ms per frame), preventing excessive PLC iterations.
 const DefaultMaxMissingPackets = 100
 
-// Depacketizer unpacks Opus audio frames from incoming RTP packets and detects sequence gaps.
+// Depacketizer unpacks Opus audio frames from incoming RTP packets and detects sequence gaps. It tracks one stream's
+// sequence numbers and is not safe for concurrent use; the payload it returns is the packet's own slice, not a copy.
 type Depacketizer struct {
 	lastSeq    uint16
 	haveSeq    bool

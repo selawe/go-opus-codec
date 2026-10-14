@@ -458,3 +458,40 @@ func TestRTP_PacketizerLimitsAndPayloadType(t *testing.T) {
 		t.Errorf("payload type 127 is valid: %v", err)
 	}
 }
+
+// RFC 3550 section 5.1: the SSRC, the first sequence number and the first timestamp should be random (unpredictable when the
+// stream is protected with SRTP). NewRandomPacketizer draws them from crypto/rand.
+func TestRTP_RandomPacketizer(t *testing.T) {
+	frame := []byte{0xFC, 0x01}
+	seen := map[[3]uint32]bool{}
+	for i := 0; i < 64; i++ {
+		p, err := NewRandomPacketizer(111)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pk, err := p.Packetize(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pk.PayloadType != 111 {
+			t.Fatalf("payload type %d", pk.PayloadType)
+		}
+		key := [3]uint32{pk.SSRC, uint32(pk.SequenceNumber), pk.Timestamp}
+		if seen[key] {
+			t.Fatalf("two packetizers started with the same SSRC, sequence and timestamp %v", key)
+		}
+		seen[key] = true
+	}
+
+	// The packetizer it returns works like any other: contiguous sequence numbers, timestamps advancing by the frame.
+	p, _ := NewRandomPacketizer(96)
+	a, _ := p.Packetize(frame)
+	b, _ := p.Packetize(frame)
+	if b.SequenceNumber != a.SequenceNumber+1 || b.Timestamp != a.Timestamp+960 || b.SSRC != a.SSRC {
+		t.Errorf("a=%+v b=%+v", a, b)
+	}
+
+	if _, err := NewRandomPacketizer(200); !errors.Is(err, ErrInvalidPayloadType) {
+		t.Errorf("payload type 200: err = %v, want ErrInvalidPayloadType", err)
+	}
+}
