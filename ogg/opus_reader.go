@@ -75,6 +75,52 @@ func (t OpusTags) GetAll(key string) []string {
 	return matches
 }
 
+// Set sets the first occurrence of key (case-insensitive) to value, removing any duplicates.
+// If the key does not exist, a new comment is appended.
+func (t *OpusTags) Set(key, value string) {
+	prefix := strings.ToUpper(key) + "="
+	newEntry := key + "=" + value
+	found := false
+	var updated []string
+	for _, c := range t.Comments {
+		if len(c) >= len(prefix) && strings.EqualFold(c[:len(prefix)], prefix) {
+			if !found {
+				updated = append(updated, newEntry)
+				found = true
+			}
+			// drop duplicates
+		} else {
+			updated = append(updated, c)
+		}
+	}
+	if !found {
+		updated = append(updated, newEntry)
+	}
+	t.Comments = updated
+}
+
+// Add appends a new comment key=value to Comments.
+func (t *OpusTags) Add(key, value string) {
+	t.Comments = append(t.Comments, key+"="+value)
+}
+
+// Delete removes all comments matching key (case-insensitive).
+func (t *OpusTags) Delete(key string) {
+	prefix := strings.ToUpper(key) + "="
+	var kept []string
+	for _, c := range t.Comments {
+		if !(len(c) >= len(prefix) && strings.EqualFold(c[:len(prefix)], prefix)) {
+			kept = append(kept, c)
+		}
+	}
+	t.Comments = kept
+}
+
+// ParseOpusTags parses an OpusTags comment header packet (RFC 7845 §5.2).
+func ParseOpusTags(b []byte) (OpusTags, error) {
+	return parseOpusTags(b)
+}
+
 // OpusAudioPacket represents an extracted Opus audio payload with container metadata.
 type OpusAudioPacket struct {
 	Data         []byte // Encoded Opus packet bytes
