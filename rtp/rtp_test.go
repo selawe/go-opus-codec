@@ -94,6 +94,59 @@ func TestRTP_DepacketizerLossDetection(t *testing.T) {
 	if err != nil || missing != 2 {
 		t.Errorf("expected missing=2, got %d", missing)
 	}
+
+	// Late / out-of-order packet (seq 12 arrives late after seq 14)
+	pktLate := &Packet{SequenceNumber: 12, Payload: []byte{0x60, 0x02}}
+	_, missing, err = d.Depacketize(pktLate)
+	if err != nil || missing != 0 {
+		t.Errorf("expected missing=0 for late packet, got %d", missing)
+	}
+
+	// Next normal packet after seq 14 is seq 15 (should NOT consider seq 12 as lastSeq)
+	pkt15 := &Packet{SequenceNumber: 15, Payload: []byte{0x60, 0x05}}
+	_, missing, err = d.Depacketize(pkt15)
+	if err != nil || missing != 0 {
+		t.Errorf("expected missing=0 for seq 15 after seq 14, got %d", missing)
+	}
+}
+
+func TestRTP_DepacketizerWraparoundAndBounds(t *testing.T) {
+	d := NewDepacketizer()
+
+	// Start at 65535
+	pktMax := &Packet{SequenceNumber: 65535, Payload: []byte{0x60, 0x01}}
+	_, missing, _ := d.Depacketize(pktMax)
+	if missing != 0 {
+		t.Errorf("expected missing=0, got %d", missing)
+	}
+
+	// Wraparound to seq 0 (contiguous!)
+	pktZero := &Packet{SequenceNumber: 0, Payload: []byte{0x60, 0x02}}
+	_, missing, _ = d.Depacketize(pktZero)
+	if missing != 0 {
+		t.Errorf("expected missing=0 on 65535->0 wraparound, got %d", missing)
+	}
+
+	// Large gap (exceeding MaxMissing = 100) triggers resync
+	pktJump := &Packet{SequenceNumber: 1000, Payload: []byte{0x60, 0x03}}
+	_, missing, _ = d.Depacketize(pktJump)
+	if missing != 0 {
+		t.Errorf("expected missing=0 on large gap resync, got %d", missing)
+	}
+
+	// Empty packet sequence recording
+	pktEmpty := &Packet{SequenceNumber: 1001, Payload: nil}
+	_, _, err := d.Depacketize(pktEmpty)
+	if !errors.Is(err, ErrEmptyOpusPayload) {
+		t.Errorf("expected ErrEmptyOpusPayload, got %v", err)
+	}
+
+	// Packet 1002 following empty packet 1001 should be contiguous (missing = 0)
+	pkt1002 := &Packet{SequenceNumber: 1002, Payload: []byte{0x60, 0x04}}
+	_, missing, err = d.Depacketize(pkt1002)
+	if err != nil || missing != 0 {
+		t.Errorf("expected missing=0 after empty packet, got %d (err: %v)", missing, err)
+	}
 }
 
 func TestRTP_OpusEncodePacketizeDepacketizeDecode(t *testing.T) {

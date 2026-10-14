@@ -204,35 +204,74 @@ func (p *Packetizer) Packetize(opusPacket []byte) (*Packet, error) {
 	return pkt, nil
 }
 
+// DefaultMaxMissingPackets is the upper bound on missing packets reported by Depacketizer
+// (100 packets, about 2 seconds of audio at 20ms per frame), preventing excessive PLC iterations.
+const DefaultMaxMissingPackets = 100
+
 // Depacketizer unpacks Opus audio frames from incoming RTP packets and detects sequence gaps.
 type Depacketizer struct {
-	lastSeq uint16
-	haveSeq bool
+	lastSeq    uint16
+	haveSeq    bool
+	MaxMissing int // Maximum missing packets to report before treating as a stream resync. Defaults to DefaultMaxMissingPackets.
 }
 
 // NewDepacketizer creates a new Opus RTP Depacketizer.
 func NewDepacketizer() *Depacketizer {
-	return &Depacketizer{}
+	return &Depacketizer{
+		MaxMissing: DefaultMaxMissingPackets,
+	}
 }
 
 // Depacketize extracts the Opus packet and reports missing packets count since the previous call.
-// If missingCount > 0, the receiver should perform Packet Loss Concealment (e.g. dec.Decode(nil, ...)).
+// It properly handles 16-bit sequence number wraparound, ignores out-of-order/late packets without
+// rewinding the sequence, bounds missing packets to MaxMissing, and records sequence numbers even on empty packets.
 func (d *Depacketizer) Depacketize(pkt *Packet) (opusPayload []byte, missingCount int, err error) {
-	if pkt == nil || len(pkt.Payload) == 0 {
-		return nil, 0, ErrEmptyOpusPayload
+	if pkt == nil {
+		return nil, 0, errors.New("rtp: packet is nil")
+	}
+
+	maxMissing := d.MaxMissing
+	if maxMissing <= 0 {
+		maxMissing = DefaultMaxMissingPackets
 	}
 
 	if !d.haveSeq {
 		d.lastSeq = pkt.SequenceNumber
 		d.haveSeq = true
+		if len(pkt.Payload) == 0 {
+			return nil, 0, ErrEmptyOpusPayload
+		}
 		return pkt.Payload, 0, nil
 	}
 
-	diff := int(pkt.SequenceNumber - d.lastSeq)
+	// Signed 16-bit arithmetic correctly handles sequence number wrapping (e.g. 65535 -> 0)
+	// and identifies late/out-of-order packets.
+	diff := int16(pkt.SequenceNumber - d.lastSeq)
+
+	if diff <= 0 {
+		// Out-of-order, late, or duplicate packet.
+		// Do not rewind or advance lastSeq, and report no missing packets.
+		if len(pkt.Payload) == 0 {
+			return nil, 0, ErrEmptyOpusPayload
+		}
+		return pkt.Payload, 0, nil
+	}
+
 	d.lastSeq = pkt.SequenceNumber
 
 	if diff > 1 {
-		missingCount = diff - 1
+		missing := int(diff - 1)
+		if missing > maxMissing {
+			// Large jump suggests stream sequence restart or extreme packet loss;
+			// resync without flooding decoder with thousands of PLC iterations.
+			missingCount = 0
+		} else {
+			missingCount = missing
+		}
+	}
+
+	if len(pkt.Payload) == 0 {
+		return nil, missingCount, ErrEmptyOpusPayload
 	}
 
 	return pkt.Payload, missingCount, nil
