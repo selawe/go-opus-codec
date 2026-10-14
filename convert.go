@@ -86,7 +86,34 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 	return EncodeWAVToOggOpusContext(context.Background(), wavReader, oggWriter, opts)
 }
 
+// ctxReader makes every Read of the source check the context first, so cancellation is noticed in the middle of a
+// call that is skimming through the input (an Ogg reader skipping thousands of pages before it finds an audio
+// packet), not only between frames or packets. A Read that is already blocked inside the source is not interrupted.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
+// contextReader wraps r only when ctx can actually be cancelled: the plain (non-context) API passes
+// context.Background, whose Done channel is nil, and pays nothing.
+func contextReader(ctx context.Context, r io.Reader) io.Reader {
+	if ctx.Done() == nil {
+		return r
+	}
+	return ctxReader{ctx: ctx, r: r}
+}
+
 // EncodeWAVToOggOpusContext is like EncodeWAVToOggOpus but respects ctx cancellation and timeouts.
+//
+// Cancellation is checked before each frame and before every read from wavReader. A Read that is already blocked
+// inside wavReader (a stalled network source) is not interrupted: close the source, or give it a deadline, to unblock it.
 func EncodeWAVToOggOpusContext(ctx context.Context, wavReader io.Reader, oggWriter io.Writer, opts *EncodeOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -97,6 +124,7 @@ func EncodeWAVToOggOpusContext(ctx context.Context, wavReader io.Reader, oggWrit
 	if wavReader == nil {
 		return errors.New("wavReader cannot be nil")
 	}
+	wavReader = contextReader(ctx, wavReader)
 	if oggWriter == nil {
 		return errors.New("oggWriter cannot be nil")
 	}
@@ -448,6 +476,10 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 }
 
 // DecodeOggOpusToWAVContext is like DecodeOggOpusToWAV but respects ctx cancellation and timeouts.
+//
+// Cancellation is checked before each packet and before every read from oggReader, so it also stops a stream that is
+// skipping through pages without yielding audio. A Read that is already blocked inside oggReader (a stalled network
+// source) is not interrupted: close the source, or give it a deadline, to unblock it.
 func DecodeOggOpusToWAVContext(ctx context.Context, oggReader io.Reader, wavWriter io.WriteSeeker, opts ...DecodeOption) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -458,6 +490,7 @@ func DecodeOggOpusToWAVContext(ctx context.Context, oggReader io.Reader, wavWrit
 	if oggReader == nil {
 		return errors.New("oggReader cannot be nil")
 	}
+	oggReader = contextReader(ctx, oggReader)
 	if wavWriter == nil {
 		return errors.New("wavWriter cannot be nil")
 	}
@@ -595,6 +628,12 @@ func ConvertWAVFileToOggOpus(srcPath, dstPath string, opts *EncodeOptions) error
 
 // ConvertWAVFileToOggOpusContext is like ConvertWAVFileToOggOpus but respects ctx cancellation and timeouts.
 func ConvertWAVFileToOggOpusContext(ctx context.Context, srcPath, dstPath string, opts *EncodeOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err // before any file is opened or created
+	}
 	inF, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
@@ -620,6 +659,12 @@ func ConvertOggOpusFileToWAV(srcPath, dstPath string, opts ...DecodeOption) erro
 
 // ConvertOggOpusFileToWAVContext is like ConvertOggOpusFileToWAV but respects ctx cancellation and timeouts.
 func ConvertOggOpusFileToWAVContext(ctx context.Context, srcPath, dstPath string, opts ...DecodeOption) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err // before any file is opened or created
+	}
 	inF, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)

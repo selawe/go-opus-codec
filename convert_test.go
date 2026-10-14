@@ -1053,3 +1053,96 @@ func TestEncodeAndDecodeContextCancellation(t *testing.T) {
 		t.Fatalf("Encode with mid-stream cancel: err = %v, want context.Canceled", err)
 	}
 }
+
+// cancelAfterReader cancels a context once n bytes have been read from it, then keeps serving data, so a conversion
+// that does not notice the cancellation reads on to the end.
+type cancelAfterReader struct {
+	r      io.Reader
+	cancel context.CancelFunc
+	after  int64
+	read   int64
+}
+
+func (c *cancelAfterReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.read >= c.after {
+		c.cancel()
+	}
+	return n, err
+}
+
+// A hostile Ogg file can make one ReadAudioPacket call skim through millions of pages that never produce an audio packet (here:
+// pages of another stream). The context must still be noticed, inside that call, not only between packets.
+func TestDecodeContextCancelsWhileSkippingPages(t *testing.T) {
+	enc := new(bytes.Buffer)
+	if err := EncodeWAVToOggOpus(bytes.NewReader(generateSineWAV(t, 48000, 2, 4800)), enc, &EncodeOptions{Serial: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// An Ogg stream that is all headers for the Opus stream and then endless pages of an unrelated stream: ReadAudioPacket
+	// skips those without ever returning.
+	var foreign bytes.Buffer
+	pw := ogg.NewPacketWriter(&foreign, 99)
+	if err := pw.WritePacket([]byte("\x01other"), 0, true, false); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20000; i++ {
+		if err := pw.WritePacket(make([]byte, 400), uint64(i+1), false, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	// Drop the Opus stream's audio and EOS pages: keep only its two header pages, so the reader waits for audio that never comes.
+	pages := splitOggPages(t, enc.Bytes())
+	data := append(append([]byte(nil), pages[0]...), pages[1]...)
+	data = append(data, foreign.Bytes()...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	src := &cancelAfterReader{r: bytes.NewReader(data), cancel: cancel, after: 2_000_000}
+	err := DecodeOggOpusToWAVContext(ctx, src, &memWriteSeeker{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if src.read > int64(len(data))/2 {
+		t.Errorf("read %d of %d bytes after the cancellation: it was only noticed near the end", src.read, len(data))
+	}
+}
+
+// The context is checked before anything is touched: a cancelled one must not even look for the source file.
+func TestFileConversionChecksContextFirst(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "out.opus")
+	if err := ConvertWAVFileToOggOpusContext(ctx, filepath.Join(dir, "missing.wav"), dst, nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("encode: err = %v, want context.Canceled before the missing source is noticed", err)
+	}
+	if err := ConvertOggOpusFileToWAVContext(ctx, filepath.Join(dir, "missing.opus"), filepath.Join(dir, "out.wav")); !errors.Is(err, context.Canceled) {
+		t.Errorf("decode: err = %v, want context.Canceled", err)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Errorf("files were created for a cancelled conversion: %v", ents)
+	}
+}
+
+func splitOggPages(t *testing.T, raw []byte) [][]byte {
+	t.Helper()
+	var pages [][]byte
+	pr := ogg.NewPageReader(bytes.NewReader(raw))
+	off := 0
+	for {
+		p, err := pr.ReadPage()
+		if errors.Is(err, io.EOF) {
+			return pages
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 27 + len(p.SegmentTable) + len(p.SegmentData)
+		pages = append(pages, raw[off:off+n])
+		off += n
+	}
+}
