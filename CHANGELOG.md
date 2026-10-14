@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Multiplexed Ogg files.** A file with several logical streams interleaved (Opus next to Theora or Vorbis, or several Opus streams) used to fail with `ErrSerialMismatch`. `ogg.PacketReader` gains `SelectStream` and `SelectSerial` (pages of streams that are not selected are skipped; in a chain each new stream is chosen by the same rule), and `ogg.NewOpusReaderWithOptions` adds `WithSerial`, `WithStreamSelector` and `WithVerifyCRC`. The default, also for `NewOpusReader`, `DecodeOggOpusToWAV` and the players, is the first stream that starts with `OpusHead`; `ErrNotOpusOgg` when there is none. Seeking and `LastPageGranule` ignore the streams that were passed over, and `LastPageGranule` widens its window when the end of the file holds only their pages. Without a selection the raw `PacketReader` behaves as before (`fd41395`)
+- `player.NewPlayerFromReader`, `NewPlayerF32FromReader`, `NewPlayerFromFile`, `NewPlayerF32FromFile` (and the `opusgo` wrappers) accept optional `ogg.ReaderOption` values to choose the stream of a multiplexed file; existing calls are unchanged (`f732978`)
+
+### Changed
+- A page of an unrelated stream in the middle of an Ogg Opus file is now skipped instead of failing the read. Anything relying on `ErrSerialMismatch` from `OpusReader` must use a raw `PacketReader` (`fd41395`)
+
 ## [0.7.0] - 2026-10-14
 
 Minor release (pre-1.0 semver): `player` now plays chained Ogg streams through (it used to stop after the first stream), plus new `opus` API (`ErrClosed`, decoder getters) and lower allocation use in the WAV paths.

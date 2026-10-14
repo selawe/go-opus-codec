@@ -456,6 +456,21 @@ out = append(out, r.FlushInt16()...) // ends the stream; output length is exact
 
 ---
 
+### Multiplexed Ogg files
+
+An Ogg file can interleave several logical streams (Opus next to a Theora video or a Vorbis track, or one Opus
+stream per language). `ogg.OpusReader`, `DecodeOggOpusToWAV` and the players read the **first Opus stream** and skip
+the pages of the others. To read another one, pass an option:
+
+```go
+r, err := ogg.NewOpusReaderWithOptions(f, ogg.WithSerial(0x1234))         // by serial number
+r, err := ogg.NewOpusReaderWithOptions(f, ogg.WithStreamSelector(accept)) // by looking at the stream's first packet
+p, err := opusgo.NewPlayerFromFile("talk.ogg", true, ogg.WithSerial(0x1234))
+```
+
+A file with no Opus stream at all fails with `ogg.ErrNotOpusOgg`. The raw `ogg.PacketReader` keeps the strict
+behaviour (a second serial is an error) unless you call `SelectStream` or `SelectSerial`.
+
 ### Chained Ogg files
 
 An Ogg Opus file can hold several logical bitstreams one after another (RFC 7845, for example
