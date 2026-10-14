@@ -67,11 +67,88 @@ type PacketReader struct {
 
 	streamEnded bool
 	streamCount uint32
+
+	// Stream selection (SelectStream / SelectSerial). With filter set, pages of streams that do not pass it are
+	// skipped instead of failing with ErrSerialMismatch, so multiplexed files (Opus next to Theora, say) read.
+	filter       func(page *Page) bool
+	firstSerial  *uint32             // the first selected stream, restored by a seek
+	foreign      map[uint32]struct{} // serials of streams seen and passed over; ignored by seeking and length
+	skippedPages int
 }
 
 // StreamIndex returns the 0-based index of the logical bitstream currently being read.
 func (r *PacketReader) StreamIndex() uint32 {
 	return r.streamCount
+}
+
+// maxForeignSerials bounds the set of skipped stream serials remembered, so a file announcing endless
+// streams cannot grow it without limit.
+const maxForeignSerials = 1024
+
+// firstPacketPrefix returns the bytes of the first packet that starts on a (BOS) page, as far as the page holds it.
+func firstPacketPrefix(page *Page) []byte {
+	n := 0
+	for _, seg := range page.SegmentTable {
+		n += int(seg)
+		if seg < 255 {
+			break
+		}
+	}
+	return page.SegmentData[:min(n, len(page.SegmentData))]
+}
+
+// SelectStream makes the reader follow only the logical bitstreams whose first packet (the one on their
+// BOS page) satisfies accept, skipping every other stream's pages. Without it the reader takes the first
+// stream it meets and fails with ErrSerialMismatch on any other serial. In a chained file each new stream
+// is chosen the same way. Call it before the first read.
+func (r *PacketReader) SelectStream(accept func(firstPacket []byte) bool) {
+	if accept == nil {
+		r.filter = nil
+		return
+	}
+	r.filter = func(page *Page) bool { return accept(firstPacketPrefix(page)) }
+}
+
+// SelectSerial makes the reader follow only the bitstream with the given serial number; see SelectStream.
+func (r *PacketReader) SelectSerial(serial uint32) {
+	r.filter = func(page *Page) bool { return page.BitstreamSerial == serial }
+}
+
+// skipPage records that page belongs to a stream the reader is passing over.
+func (r *PacketReader) skipPage(page *Page) {
+	r.skippedPages++
+	if page.IsBOS() && len(r.foreign) < maxForeignSerials {
+		if r.foreign == nil {
+			r.foreign = make(map[uint32]struct{})
+		}
+		r.foreign[page.BitstreamSerial] = struct{}{}
+	}
+}
+
+// isForeign reports whether a stream with this serial was passed over by the stream selection.
+func (r *PacketReader) isForeign(serial uint32) bool {
+	_, ok := r.foreign[serial]
+	return ok
+}
+
+// beginStream starts following the stream with the given serial, forgetting any half-assembled packet.
+func (r *PacketReader) beginStream(serial uint32) {
+	chained := r.streamEnded
+	r.serial = &serial
+	if r.firstSerial == nil {
+		first := serial
+		r.firstSerial = &first
+	}
+	r.lastSeq = 0
+	r.haveSeq = false
+	r.pending = nil
+	r.havePending = false
+	r.pendingBOS = false
+	r.gap = false
+	r.streamEnded = false
+	if chained {
+		r.streamCount++
+	}
 }
 
 // NewPacketReader creates a new PacketReader that demuxes packets from the Ogg stream in r.
@@ -98,8 +175,12 @@ func (r *PacketReader) reset() {
 	r.haveSeq = false
 	r.gap = false
 	r.streamEnded = false
-	r.serial = nil // the first page after a seek defines the stream again
 	r.streamCount = 0
+	r.serial = nil // the first page after a seek defines the stream again ...
+	if r.filter != nil && r.firstSerial != nil {
+		first := *r.firstSerial // ... except with stream selection, where the first selected stream stays
+		r.serial = &first
+	}
 }
 
 // keep reading bytes until we find the start of an ogg page
@@ -203,7 +284,7 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 	}
 	restore := func() { _, _ = seeker.Seek(resume, io.SeekStart) }
 
-	before, found, err := searchPages(seeker, total, granulePos)
+	before, found, err := searchPages(seeker, total, granulePos, r.isForeign)
 	if err != nil || !found {
 		restore()
 		if err != nil {
@@ -250,6 +331,7 @@ type seekPage struct {
 	off     int64
 	size    int
 	granule uint64 // math.MaxUint64 when no packet ends on the page
+	serial  uint32
 }
 
 // maxPageBytes is the largest possible Ogg page: a 27-byte header, 255 segment entries and
@@ -320,16 +402,17 @@ func pageAtOrAfter(seeker io.ReadSeeker, buf []byte, off, total int64) (seekPage
 		if !last && (end+4 > n || !bytes.Equal(buf[end:end+4], []byte("OggS"))) {
 			continue // not followed by another page: the capture pattern was inside a payload
 		}
-		return seekPage{valid: true, off: off + int64(i), size: end - i, granule: binary.LittleEndian.Uint64(buf[i+6 : i+14])}, nil
+		return seekPage{valid: true, off: off + int64(i), size: end - i, granule: binary.LittleEndian.Uint64(buf[i+6 : i+14]), serial: binary.LittleEndian.Uint32(buf[i+14 : i+18])}, nil
 	}
 	return seekPage{}, nil
 }
 
-// firstPageWithGranule is pageAtOrAfter that skips pages on which no packet ends.
-func firstPageWithGranule(seeker io.ReadSeeker, buf []byte, off, total int64) (seekPage, error) {
+// firstPageWithGranule is pageAtOrAfter that skips pages on which no packet ends and pages of streams that
+// were passed over by stream selection (foreign may be nil).
+func firstPageWithGranule(seeker io.ReadSeeker, buf []byte, off, total int64, foreign func(serial uint32) bool) (seekPage, error) {
 	for {
 		p, err := pageAtOrAfter(seeker, buf, off, total)
-		if err != nil || !p.valid || p.granule != math.MaxUint64 {
+		if err != nil || !p.valid || (p.granule != math.MaxUint64 && (foreign == nil || !foreign(p.serial))) {
 			return p, err
 		}
 		off = p.off + int64(p.size)
@@ -342,14 +425,14 @@ const seekScanSlack = 128 * 1024
 // searchPages binary-searches the byte range for the first page whose granule reaches target and
 // returns the page before it (the last one below target), if any. found is false when no page
 // reaches the target. It assumes granule positions only increase through the stream.
-func searchPages(seeker io.ReadSeeker, total int64, target uint64) (before seekPage, found bool, err error) {
+func searchPages(seeker io.ReadSeeker, total int64, target uint64, foreign func(serial uint32) bool) (before seekPage, found bool, err error) {
 	buf := make([]byte, 2*maxPageBytes+4)
 	lo, hi := int64(0), total
 	// Once the target page is known to exist and fewer bytes remain than the final scan's page
 	// reader buffers anyway, more probing would only re-read what that scan reads next.
 	for lo < hi && (!found || hi-lo > seekScanSlack) {
 		mid := lo + (hi-lo)/2
-		p, err := firstPageWithGranule(seeker, buf, mid, total)
+		p, err := firstPageWithGranule(seeker, buf, mid, total, foreign)
 		if err != nil {
 			return seekPage{}, false, err
 		}
@@ -376,44 +459,66 @@ func searchPages(seeker io.ReadSeeker, total int64, target uint64) (before seekP
 // Otherwise it reads through to the end of the stream, which is destructive:
 // no more packets can be read afterwards.
 func (r *PacketReader) LastPageGranule() (int64, error) {
-	pages := r.pr
 	seeker, ok := r.reader.(io.ReadSeeker)
-	if ok {
-		// The underlying offset already accounts for the page reader's read-ahead
-		// buffer, so seeking back to it resumes reading exactly where it stopped.
-		resume, err := seeker.Seek(0, io.SeekCurrent)
+	if !ok {
+		granule, found, err := r.lastGranuleIn(r.pr)
 		if err != nil {
 			return 0, err
 		}
-		defer func() { _, _ = seeker.Seek(resume, io.SeekStart) }()
-
-		total, err := seeker.Seek(0, io.SeekEnd)
-		if err != nil {
-			return 0, err
+		if !found {
+			return 0, fmt.Errorf("ogg: could not find last page granule")
 		}
+		return granule, nil
+	}
 
-		// A single Ogg page is at most maxOggPageSize bytes, so backing up that far from
-		// EOF is guaranteed to include the start of the final page in a well-formed stream.
-		backup := max(0, total-maxOggPageSize)
+	// The underlying offset already accounts for the page reader's read-ahead
+	// buffer, so seeking back to it resumes reading exactly where it stopped.
+	resume, err := seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _, _ = seeker.Seek(resume, io.SeekStart) }()
+
+	total, err := seeker.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+
+	// A single Ogg page is at most maxOggPageSize bytes, so backing up that far from EOF is guaranteed to
+	// include the start of the final page in a well-formed stream. In a multiplexed file the tail may hold only
+	// pages of other streams (one stream can end long before another), so widen the window until a page of the
+	// followed stream turns up, or the whole file has been covered.
+	for window := int64(maxOggPageSize); ; window *= 8 {
+		backup := max(0, total-window)
 		position, err := seeker.Seek(backup, io.SeekStart)
 		if err != nil {
 			return 0, err
 		}
-
 		index, err := r.findNextPage(seeker, position, &bytes.Buffer{})
-		if err != nil {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return 0, err
 		}
-		if index == -1 {
+		if err == nil && index != -1 {
+			if _, err := seeker.Seek(index, io.SeekStart); err != nil {
+				return 0, err
+			}
+			granule, found, err := r.lastGranuleIn(r.newPageReader(seeker))
+			if err != nil {
+				return 0, err
+			}
+			if found {
+				return granule, nil
+			}
+		}
+		if backup == 0 {
 			return 0, fmt.Errorf("ogg: could not find last page granule")
 		}
-		if _, err := seeker.Seek(index, io.SeekStart); err != nil {
-			return 0, err
-		}
-
-		pages = r.newPageReader(seeker)
 	}
+}
 
+// lastGranuleIn reads pages to the end and returns the granule position of the last page of the followed stream
+// that has one, stopping early at that stream's end-of-stream page.
+func (r *PacketReader) lastGranuleIn(pages *PageReader) (granule int64, found bool, err error) {
 	lastGranule := int64(-1)
 	for {
 		page, err := pages.ReadPage()
@@ -421,7 +526,10 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			return 0, fmt.Errorf("ogg: could not find last page granule: %w", err)
+			return 0, false, fmt.Errorf("ogg: could not find last page granule: %w", err)
+		}
+		if r.isForeign(page.BitstreamSerial) {
+			continue // another stream of a multiplexed file; its granule positions mean something else
 		}
 		// -1 (all ones) means "no packet ends on this page"; values of 2^63 and above cannot be
 		// a sample count and would turn negative in int64, so they are ignored too.
@@ -429,13 +537,10 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			lastGranule = int64(page.GranulePosition)
 		}
 		if page.IsEOS() && page.GranulePosition <= math.MaxInt64 {
-			return int64(page.GranulePosition), nil
+			return int64(page.GranulePosition), true, nil
 		}
 	}
-	if lastGranule >= 0 {
-		return lastGranule, nil
-	}
-	return 0, fmt.Errorf("ogg: could not find last page granule")
+	return lastGranule, lastGranule >= 0, nil
 }
 
 func (r *PacketReader) SetVerifyCRC(v bool) {
@@ -461,20 +566,23 @@ func (r *PacketReader) ReadPacket() (*Packet, error) {
 			return nil, err
 		}
 
-		if r.streamEnded {
+		if r.filter != nil {
+			if r.streamEnded || r.serial == nil {
+				// Looking for a stream to follow: only the BOS page of an accepted one starts it.
+				if !page.IsBOS() || !r.filter(page) {
+					r.skipPage(page)
+					continue
+				}
+				r.beginStream(page.BitstreamSerial)
+			} else if page.BitstreamSerial != *r.serial {
+				r.skipPage(page)
+				continue
+			}
+		} else if r.streamEnded {
 			if !page.IsBOS() {
 				return nil, fmt.Errorf("%w: chained bitstream must begin with BOS page (got serial %d)", ErrSerialMismatch, page.BitstreamSerial)
 			}
-			s := page.BitstreamSerial
-			r.serial = &s
-			r.lastSeq = 0
-			r.haveSeq = false
-			r.pending = nil
-			r.havePending = false
-			r.pendingBOS = false
-			r.gap = false
-			r.streamEnded = false
-			r.streamCount++
+			r.beginStream(page.BitstreamSerial)
 		} else if r.serial == nil {
 			s := page.BitstreamSerial
 			r.serial = &s

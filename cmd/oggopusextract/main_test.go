@@ -270,16 +270,17 @@ func TestOggOpusExtract_FailureLeavesNoPartialOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Append a page of a different logical stream so reading fails mid-way.
+	// Chain a second stream whose OpusHead is damaged, so that reading fails after the first stream's packets were
+	// already written. (A page of an unrelated stream no longer fails: other streams are skipped.)
 	var extra bytes.Buffer
 	pw := ogg.NewPacketWriter(&extra, 0xDEADBEEF)
-	if err := pw.WritePacket([]byte{1, 2, 3}, 960, false, false); err != nil {
+	if err := pw.WritePacket([]byte("OpusHead\x01\x02"), 0, true, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := pw.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	badPath := filepath.Join(t.TempDir(), "mixed.opus")
+	badPath := filepath.Join(t.TempDir(), "badchain.opus")
 	if err := os.WriteFile(badPath, append(raw, extra.Bytes()...), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -288,9 +289,42 @@ func TestOggOpusExtract_FailureLeavesNoPartialOutput(t *testing.T) {
 	outPath := filepath.Join(outDir, "packets.bin")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--out", outPath, badPath}, &stdout, &stderr); code == 0 {
-		t.Fatal("expected failure on the mixed-serial stream")
+		t.Fatal("expected failure on the chained stream with a damaged OpusHead")
 	}
 	if ents, _ := os.ReadDir(outDir); len(ents) != 0 {
 		t.Errorf("partial output left behind: %v", ents)
+	}
+}
+
+// Pages of another logical stream are skipped (the file is multiplexed), so the extraction succeeds and
+// contains only the Opus stream's packets.
+func TestOggOpusExtract_SkipsOtherStreams(t *testing.T) {
+	path, _ := buildTestOgg(t, 5)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extra bytes.Buffer
+	pw := ogg.NewPacketWriter(&extra, 0xDEADBEEF)
+	if err := pw.WritePacket([]byte{1, 2, 3}, 960, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	mixed := filepath.Join(t.TempDir(), "mixed.opus")
+	if err := os.WriteFile(mixed, append(append([]byte(nil), raw...), extra.Bytes()...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var plainOut, mixedOut, stderr bytes.Buffer
+	if code := run([]string{path}, &plainOut, &stderr); code != 0 {
+		t.Fatalf("plain: exit %d (%s)", code, stderr.String())
+	}
+	if code := run([]string{mixed}, &mixedOut, &stderr); code != 0 {
+		t.Fatalf("mixed: exit %d (%s)", code, stderr.String())
+	}
+	if !bytes.Equal(plainOut.Bytes(), mixedOut.Bytes()) {
+		t.Fatal("the foreign stream's packets leaked into the extraction")
 	}
 }

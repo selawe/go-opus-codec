@@ -133,17 +133,70 @@ const MaxOpusPacketSize = 64 * 1024
 // MaxOpusPacketSize. Audio packets are still limited to MaxOpusPacketSize.
 const MaxOpusHeaderPacketSize = 16 * 1024 * 1024
 
+// ReaderOption configures NewOpusReaderWithOptions.
+type ReaderOption func(*readerConfig)
+
+type readerConfig struct {
+	verifyCRC bool
+	serial    *uint32
+	accept    func(firstPacket []byte) bool
+}
+
+// WithVerifyCRC enables or disables checksum verification from the very first page on (the default is on).
+// Calling OpusReader.SetVerifyCRC afterwards is too late for the header pages, which are already parsed.
+func WithVerifyCRC(verify bool) ReaderOption {
+	return func(c *readerConfig) { c.verifyCRC = verify }
+}
+
+// WithSerial reads only the logical bitstream with this serial number, whatever it contains. Use it to pick one
+// of several Opus streams in a file (for example one per language).
+func WithSerial(serial uint32) ReaderOption {
+	return func(c *readerConfig) { c.serial = &serial }
+}
+
+// WithStreamSelector reads only the logical bitstreams whose first packet satisfies accept. The default,
+// without WithSerial or this option, is the first stream that starts with "OpusHead".
+func WithStreamSelector(accept func(firstPacket []byte) bool) ReaderOption {
+	return func(c *readerConfig) { c.accept = accept }
+}
+
 // NewOpusReader creates a new OpusReader reading from r, parsing the mandatory OpusHead and OpusTags headers.
+//
+// In a multiplexed file (Opus next to a video or Vorbis stream) the pages of the other streams are skipped and the
+// first Opus stream is read; ErrNotOpusOgg is returned if there is none. Use NewOpusReaderWithOptions to choose a
+// different stream.
 func NewOpusReader(r io.Reader) (*OpusReader, error) {
-	return NewOpusReaderVerifyCRC(r, true)
+	return NewOpusReaderWithOptions(r)
 }
 
 // NewOpusReaderVerifyCRC is NewOpusReader with control over checksum verification from the
-// very first page. Calling SetVerifyCRC afterwards is too late for the header pages, which
+// very first page on. Calling SetVerifyCRC afterwards is too late for the header pages, which
 // NewOpusReader has already parsed with verification on.
 func NewOpusReaderVerifyCRC(r io.Reader, verifyCRC bool) (*OpusReader, error) {
+	return NewOpusReaderWithOptions(r, WithVerifyCRC(verifyCRC))
+}
+
+// NewOpusReaderWithOptions creates an OpusReader like NewOpusReader, with options for stream selection and CRC
+// checking. WithSerial takes precedence over WithStreamSelector, which takes precedence over the default of
+// "the first stream that starts with OpusHead".
+func NewOpusReaderWithOptions(r io.Reader, opts ...ReaderOption) (*OpusReader, error) {
+	cfg := readerConfig{verifyCRC: true}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	pr := NewPacketReader(r)
-	pr.SetVerifyCRC(verifyCRC)
+	pr.SetVerifyCRC(cfg.verifyCRC)
+	switch {
+	case cfg.serial != nil:
+		pr.SelectSerial(*cfg.serial)
+	case cfg.accept != nil:
+		pr.SelectStream(cfg.accept)
+	default:
+		pr.SelectStream(func(first []byte) bool { return bytes.HasPrefix(first, opusHeadMagic) })
+	}
 	pr.SetMaxPacketSize(MaxOpusHeaderPacketSize)
 	or := &OpusReader{pr: pr}
 	if err := or.readHeaders(); err != nil {
@@ -172,6 +225,9 @@ func (r *OpusReader) SetVerifyCRC(v bool) {
 func (r *OpusReader) readHeaders() error {
 	// Opus in Ogg is: BOS page contains OpusHead packet first, then OpusTags.
 	pkt1, err := r.pr.ReadPacket()
+	if errors.Is(err, io.EOF) && r.pr.skippedPages > 0 {
+		return fmt.Errorf("%w: no Opus stream among %d pages of other streams", ErrNotOpusOgg, r.pr.skippedPages)
+	}
 	if err != nil {
 		return err
 	}
