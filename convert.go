@@ -2,6 +2,7 @@ package opusgo
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -82,6 +83,17 @@ func DefaultEncodeOptions() EncodeOptions {
 // rate. Pre-skip and granule positions are always counted at 48 kHz (RFC 7845 Section 4), so the
 // decoded stream has exactly ceil(frames*48000/rate) samples per channel.
 func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOptions) error {
+	return EncodeWAVToOggOpusContext(context.Background(), wavReader, oggWriter, opts)
+}
+
+// EncodeWAVToOggOpusContext is like EncodeWAVToOggOpus but respects ctx cancellation and timeouts.
+func EncodeWAVToOggOpusContext(ctx context.Context, wavReader io.Reader, oggWriter io.Writer, opts *EncodeOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if wavReader == nil {
 		return errors.New("wavReader cannot be nil")
 	}
@@ -238,13 +250,13 @@ func EncodeWAVToOggOpus(wavReader io.Reader, oggWriter io.Writer, opts *EncodeOp
 		if resampler != nil {
 			codec.resample, codec.flush = resampler.Process, resampler.Flush
 		}
-		err = encodeStream(codec, layout, pw)
+		err = encodeStream(ctx, codec, layout, pw)
 	} else {
 		codec := pcmCodec[int16]{read: wr.ReadInt16PCM, encode: enc.Encode}
 		if resampler != nil {
 			codec.resample, codec.flush = resampler.ProcessInt16, resampler.FlushInt16
 		}
-		err = encodeStream(codec, layout, pw)
+		err = encodeStream(ctx, codec, layout, pw)
 	}
 	if err != nil {
 		return err
@@ -290,7 +302,7 @@ type encodeLayout struct {
 
 // encodeStream reads PCM from c, encodes it frame by frame and writes the audio packets to pw,
 // ending the stream with an EOS page whose granule position trims the lookahead padding.
-func encodeStream[T int16 | float32](c pcmCodec[T], l encodeLayout, pw *ogg.PacketWriter) error {
+func encodeStream[T int16 | float32](ctx context.Context, c pcmCodec[T], l encodeLayout, pw *ogg.PacketWriter) error {
 	frameSamples := l.frameSize * l.channels
 	packet := make([]byte, 4000)
 	pcm := make([]T, frameSamples)
@@ -302,6 +314,9 @@ func encodeStream[T int16 | float32](c pcmCodec[T], l encodeLayout, pw *ogg.Pack
 	var eofReached bool
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		for len(pending) < frameSamples && !eofReached {
 			n, rerr := c.read(readBuf)
 			if rerr != nil && !errors.Is(rerr, io.EOF) {
@@ -429,6 +444,17 @@ func WithMaxOutputBytes(maxBytes int64) DecodeOption {
 // Optional DecodeOption arguments (e.g. WithMaxOutputBytes) may be provided. Without a limit the
 // output is bounded only by the 4 GiB WAV size, so use WithMaxOutputBytes for untrusted input.
 func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...DecodeOption) error {
+	return DecodeOggOpusToWAVContext(context.Background(), oggReader, wavWriter, opts...)
+}
+
+// DecodeOggOpusToWAVContext is like DecodeOggOpusToWAV but respects ctx cancellation and timeouts.
+func DecodeOggOpusToWAVContext(ctx context.Context, oggReader io.Reader, wavWriter io.WriteSeeker, opts ...DecodeOption) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if oggReader == nil {
 		return errors.New("oggReader cannot be nil")
 	}
@@ -471,6 +497,9 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 	prevHead := r.Head
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		pkt, err := r.ReadAudioPacket()
 		if errors.Is(err, io.EOF) {
 			break
@@ -561,6 +590,11 @@ func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...D
 
 // ConvertWAVFileToOggOpus encodes a WAV file at srcPath to an Ogg Opus file at dstPath.
 func ConvertWAVFileToOggOpus(srcPath, dstPath string, opts *EncodeOptions) error {
+	return ConvertWAVFileToOggOpusContext(context.Background(), srcPath, dstPath, opts)
+}
+
+// ConvertWAVFileToOggOpusContext is like ConvertWAVFileToOggOpus but respects ctx cancellation and timeouts.
+func ConvertWAVFileToOggOpusContext(ctx context.Context, srcPath, dstPath string, opts *EncodeOptions) error {
 	inF, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
@@ -573,7 +607,7 @@ func ConvertWAVFileToOggOpus(srcPath, dstPath string, opts *EncodeOptions) error
 	}
 	defer outF.Abort()
 
-	if err := EncodeWAVToOggOpus(inF, outF, opts); err != nil {
+	if err := EncodeWAVToOggOpusContext(ctx, inF, outF, opts); err != nil {
 		return err
 	}
 	return outF.Commit()
@@ -581,6 +615,11 @@ func ConvertWAVFileToOggOpus(srcPath, dstPath string, opts *EncodeOptions) error
 
 // ConvertOggOpusFileToWAV decodes an Ogg Opus file at srcPath to a WAV file at dstPath.
 func ConvertOggOpusFileToWAV(srcPath, dstPath string, opts ...DecodeOption) error {
+	return ConvertOggOpusFileToWAVContext(context.Background(), srcPath, dstPath, opts...)
+}
+
+// ConvertOggOpusFileToWAVContext is like ConvertOggOpusFileToWAV but respects ctx cancellation and timeouts.
+func ConvertOggOpusFileToWAVContext(ctx context.Context, srcPath, dstPath string, opts ...DecodeOption) error {
 	inF, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open src: %w", err)
@@ -593,7 +632,7 @@ func ConvertOggOpusFileToWAV(srcPath, dstPath string, opts ...DecodeOption) erro
 	}
 	defer outF.Abort()
 
-	if err := DecodeOggOpusToWAV(inF, outF, opts...); err != nil {
+	if err := DecodeOggOpusToWAVContext(ctx, inF, outF, opts...); err != nil {
 		return err
 	}
 	return outF.Commit()

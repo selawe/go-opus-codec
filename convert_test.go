@@ -2,6 +2,7 @@ package opusgo
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -997,5 +998,58 @@ func TestDefaultMaxOutputBytesIsEnforced(t *testing.T) {
 	}
 	if err := DecodeOggOpusToWAV(bytes.NewReader(enc.Bytes()), &memWriteSeeker{}, WithMaxOutputBytes(DefaultMaxOutputBytes)); err != nil {
 		t.Fatalf("within the default limit: %v", err)
+	}
+}
+
+func TestEncodeAndDecodeContextCancellation(t *testing.T) {
+	wavData := generateSineWAV(t, 48000, 2, 48000*2) // 2 seconds of audio
+
+	// Test 1: pre-canceled context on Encode
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var buf bytes.Buffer
+	err := EncodeWAVToOggOpusContext(canceledCtx, bytes.NewReader(wavData), &buf, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Encode with pre-canceled context: err = %v, want context.Canceled", err)
+	}
+
+	// Test 2: normal encode with context
+	var enc bytes.Buffer
+	err = EncodeWAVToOggOpusContext(context.Background(), bytes.NewReader(wavData), &enc, nil)
+	if err != nil {
+		t.Fatalf("Encode with valid context: %v", err)
+	}
+
+	// Test 3: pre-canceled context on Decode
+	var out memWriteSeeker
+	err = DecodeOggOpusToWAVContext(canceledCtx, bytes.NewReader(enc.Bytes()), &out)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Decode with pre-canceled context: err = %v, want context.Canceled", err)
+	}
+
+	// Test 4: normal decode with context
+	var outValid memWriteSeeker
+	err = DecodeOggOpusToWAVContext(context.Background(), bytes.NewReader(enc.Bytes()), &outValid)
+	if err != nil {
+		t.Fatalf("Decode with valid context: %v", err)
+	}
+	if len(outValid.Bytes()) == 0 {
+		t.Fatal("expected non-empty decoded wav output")
+	}
+
+	// Test 5: mid-stream cancellation on Encode
+	ctxMid, cancelMid := context.WithCancel(context.Background())
+	pr, pw := io.Pipe()
+	go func() {
+		// send header and some samples then cancel
+		_, _ = pw.Write(wavData[:4096])
+		cancelMid()
+		_, _ = pw.Write(wavData[4096:])
+		_ = pw.Close()
+	}()
+	err = EncodeWAVToOggOpusContext(ctxMid, pr, io.Discard, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Encode with mid-stream cancel: err = %v, want context.Canceled", err)
 	}
 }
