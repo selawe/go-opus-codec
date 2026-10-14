@@ -11,6 +11,9 @@
 // Chained Ogg files (several logical bitstreams one after another) are not followed: playback
 // ends at the first stream's end-of-stream page, and Length and seeking assume a single stream.
 // Use opusgo.DecodeOggOpusToWAV or ogg.OpusReader, which do follow chains, to read them whole.
+//
+// Every method takes one mutex, held across I/O on the underlying reader (see Close): a blocked
+// source blocks the other methods too, and a non-seekable source is consumed whole by Length.
 package player
 
 import (
@@ -152,6 +155,11 @@ func NewPlayerF32FromFile(path string, stream bool) (*OpusPlayer[float32], error
 
 // Close closes the underlying decoder and any opened file streams.
 // It is safe to call Close multiple times or concurrently.
+//
+// Read, Seek, Length and Close share one lock that is held while the underlying io.Reader is read.
+// Over a slow or blocking source (a network stream) a Close from another goroutine therefore waits
+// for the Read in progress. To stop a blocked player, cancel or close the source itself (for
+// example the http response body) so that its Read returns; Close then completes.
 func (player *OpusPlayer[T]) Close() error {
 	player.mu.Lock()
 	defer player.mu.Unlock()
