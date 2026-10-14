@@ -16,8 +16,6 @@ type PacketWriter struct {
 	serial uint32
 	seq    uint32
 
-	crcTable [256]uint32
-
 	// MaxPageSize controls multi-packet page batching (RFC 3533 §6).
 	// If MaxPageSize > 0, small packets are buffered together into a single page
 	// until MaxPageSize is reached, 255 segments are accumulated, or Flush/FlushPage/EOS occurs.
@@ -52,7 +50,6 @@ func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
 		bw:           bw,
 		serial:       serial,
 		seq:          0,
-		crcTable:     crcTable8[0],
 		pageSegTable: make([]byte, 0, 255),
 		pageData:     make([]byte, 0, 4096),
 		laceBuf:      make([]byte, 0, 255),

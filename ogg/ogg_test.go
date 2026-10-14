@@ -336,7 +336,6 @@ func TestPageReader_ParsePageDirect_LargePageExceedsBuffer(t *testing.T) {
 		r:         bufio.NewReaderSize(bytes.NewReader(buf.Bytes()), 64),
 		VerifyCRC: true,
 		Resync:    true,
-		crcTable:  crcTable8[0],
 	}
 
 	page, err := pr.ReadPage()

@@ -78,7 +78,6 @@ type PageReader struct {
 	VerifyCRC bool
 	Resync    bool // If true, recover from stream desync by scanning for "OggS" (RFC 3533 §4)
 	MaxResync int  // Maximum bytes to scan during resynchronization (default: 128KB)
-	crcTable  [256]uint32
 	gotPage   bool // a page has been returned, so trailing garbage is an end of stream
 }
 
@@ -119,7 +118,6 @@ func NewPageReader(r io.Reader) *PageReader {
 		VerifyCRC: true,
 		Resync:    true,
 		MaxResync: 128 * 1024,
-		crcTable:  crcTable8[0],
 	}
 }
 
