@@ -6,7 +6,8 @@
 //     ConvertWAVFileToOggOpus, and ConvertOggOpusFileToWAV) with Context cancellation support.
 //   - OpusPlayer for straightforward playback, frame-accurate seeking, and streaming
 //     of Opus audio files and streams.
-//   - Fast in-place OpusTags metadata editing without re-encoding audio (RewriteOpusTags).
+//   - OpusTags metadata editing without re-encoding audio (RewriteOpusTags): a streaming copy from a reader to a
+//     writer, so the file is not modified in place; write to a temporary file and rename it to replace the original.
 //
 // For lower-level access to Opus decoding, encoding, packet inspection, and networking,
 // see the sub-packages:
@@ -25,7 +26,10 @@ import (
 )
 
 // RewriteOpusTags streams an Ogg Opus file from r to w, replacing its metadata tags
-// without re-encoding any audio packets.
+// without re-encoding any audio packets. It copies page by page (memory is bounded by the tags and one page) and
+// never edits r in place: to change a file, write the result to a new file and rename it over the original. It fails
+// instead of losing data on a corrupt, truncated or tag-less input, and validates newTags (see ogg.ValidateOpusTags).
+// Only the first Opus stream of a multiplexed or chained file has its tags rewritten; see ogg.RewriteOpusTags.
 func RewriteOpusTags(r io.Reader, w io.Writer, newTags ogg.OpusTags) error {
 	return ogg.RewriteOpusTags(r, w, newTags)
 }
