@@ -784,7 +784,16 @@ func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (int, error)
 	return int(ret), nil
 }
 
+// maxEncodeF32Amplitude bounds the float input the encoder sees. libopus expects samples in
+// [-1.0, 1.0]; headroom beyond that works, but at an amplitude of about 2000 the transpiled
+// encoder overflows internally and silently emits digital silence. Staying at 16 (+24 dB over full
+// scale) keeps a wide margin below that.
+const maxEncodeF32Amplitude = 16
+
 // EncodeF32 encodes interleaved float32 PCM (normalized to [-1.0, 1.0]) into a single Opus packet.
+//
+// Samples are clamped to +/-16 and NaN is treated as 0, so a malformed or extreme input cannot make
+// the encoder produce silence. Values inside that range are passed through unchanged.
 //
 // frameSize is the number of samples per channel in the input PCM.
 // Supported frame sizes at 48 kHz are 120, 240, 480, 960, 1920, and 2880 (2.5, 5, 10, 20, 40, and 60 ms).
@@ -823,7 +832,17 @@ func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (int, e
 	} else {
 		e.pcmF32 = e.pcmF32[:nNeeded]
 	}
-	copy(e.pcmF32, pcm[:nNeeded])
+	for i, v := range pcm[:nNeeded] { // staging copy that also sanitises, at no extra pass
+		switch {
+		case v != v: // NaN
+			v = 0
+		case v > maxEncodeF32Amplitude:
+			v = maxEncodeF32Amplitude
+		case v < -maxEncodeF32Amplitude:
+			v = -maxEncodeF32Amplitude
+		}
+		e.pcmF32[i] = v
+	}
 
 	pcmPtr := libc.PtrFloat32(e.pcmF32)
 	outPtr := libc.PtrByte(e.encBuf)

@@ -1,6 +1,7 @@
 package opus
 
 import (
+	"math"
 	"testing"
 )
 
@@ -59,5 +60,55 @@ func TestDecodePacketOnNilDecoderReturnsError(t *testing.T) {
 	}
 	if _, _, err := d.DecodePacketFEC(nil, nil); err == nil {
 		t.Error("DecodePacketFEC on a nil decoder must return an error")
+	}
+}
+
+// Float input far beyond full scale used to make the encoder emit silence without an error.
+func TestEncodeF32ExtremeAmplitudeDoesNotGoSilent(t *testing.T) {
+	for _, amp := range []float64{1, 1000, 1e4, 1e6, 1e30, math.Inf(1), math.NaN()} {
+		enc, err := NewEncoder(48000, 1, ApplicationAudio)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec, err := NewDecoder(48000, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pcm := make([]float32, 960)
+		out := make([]float32, 960)
+		pkt := make([]byte, 4000)
+		peak := float32(0)
+		for f := 0; f < 10; f++ {
+			for i := range pcm {
+				v := math.Sin(2*math.Pi*440*float64(f*960+i)/48000) * amp
+				if math.IsNaN(amp) {
+					v = math.NaN()
+				} else if math.IsInf(amp, 0) {
+					v = math.Inf(1)
+				}
+				pcm[i] = float32(v)
+			}
+			n, err := enc.EncodeF32(pcm, 960, pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, err := dec.DecodeF32(pkt[:n], out, 960, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, v := range out[:m] {
+				peak = max(peak, v)
+			}
+		}
+		if math.IsNaN(amp) {
+			// NaN becomes silence by design; it must simply not break the encoder.
+			if peak != peak || peak > 0.01 {
+				t.Errorf("NaN input: peak %v, want ~0", peak)
+			}
+		} else if peak < 0.5 {
+			t.Errorf("amplitude %g decoded to silence (peak %v)", amp, peak)
+		}
+		enc.Close()
+		dec.Close()
 	}
 }
