@@ -1,6 +1,7 @@
 package opus
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -386,5 +387,125 @@ func TestBandwidthAndSignalStrings(t *testing.T) {
 		if got := tt.s.String(); got != tt.want {
 			t.Errorf("Signal(%d).String() = %q, want %q", int(tt.s), got, tt.want)
 		}
+	}
+}
+
+func TestDecoderGetters(t *testing.T) {
+	enc, err := NewEncoder(48000, 1, ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	if err := enc.SetBandwidth(BandwidthWideband); err != nil {
+		t.Fatal(err)
+	}
+	dec, err := NewDecoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dec.Close()
+
+	if bw, err := dec.Bandwidth(); err != nil || bw != 0 {
+		t.Fatalf("before any packet: Bandwidth = %v, %v; want 0", bw, err)
+	}
+
+	pcm := make([]int16, 960)
+	for i := range pcm {
+		pcm[i] = int16(6000 * float64(i%96-48) / 48) // something voiced-ish to encode
+	}
+	pkt := make([]byte, 1275)
+	out := make([]int16, 960)
+	for range 4 {
+		n, err := enc.Encode(pcm, 960, pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dec.Decode(pkt[:n], out, 960, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if bw, err := dec.Bandwidth(); err != nil || bw != BandwidthWideband {
+		t.Errorf("Bandwidth = %v, %v; want wideband", bw, err)
+	}
+	if d, err := dec.LastPacketDuration(); err != nil || d != 960 {
+		t.Errorf("LastPacketDuration = %d, %v; want 960", d, err)
+	}
+	if p, err := dec.Pitch(); err != nil || p < 0 {
+		t.Errorf("Pitch = %d, %v; want a non-negative value", p, err)
+	}
+
+	if err := dec.SetGain(256); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := dec.Gain(); err != nil || g != 256 {
+		t.Errorf("Gain = %d, %v; want 256", g, err)
+	}
+
+	// libopus disables phase inversion by default on a mono decoder (there is nothing to downmix), not on stereo.
+	if off, err := dec.PhaseInversionDisabled(); err != nil || !off {
+		t.Errorf("mono decoder: PhaseInversionDisabled default = %v, %v; want true", off, err)
+	}
+	stereo, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stereo.Close()
+	if off, err := stereo.PhaseInversionDisabled(); err != nil || off {
+		t.Errorf("stereo decoder: PhaseInversionDisabled default = %v, %v; want false", off, err)
+	}
+	if err := stereo.SetPhaseInversionDisabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if off, err := stereo.PhaseInversionDisabled(); err != nil || !off {
+		t.Errorf("after set = %v, %v; want true", off, err)
+	}
+	if err := stereo.SetPhaseInversionDisabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if off, err := stereo.PhaseInversionDisabled(); err != nil || off {
+		t.Errorf("after clearing = %v, %v; want false", off, err)
+	}
+
+	// A concealed frame still counts for LastPacketDuration.
+	if _, err := dec.Decode(nil, out, 960, false); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := dec.LastPacketDuration(); err != nil || d != 960 {
+		t.Errorf("after PLC: LastPacketDuration = %d, %v; want 960", d, err)
+	}
+
+	dec.Close()
+	if _, err := dec.Bandwidth(); !errors.Is(err, ErrClosed) {
+		t.Errorf("closed decoder: err = %v, want ErrClosed", err)
+	}
+	var nilDec *Decoder
+	if _, err := nilDec.Gain(); !errors.Is(err, ErrClosed) {
+		t.Errorf("nil decoder: err = %v, want ErrClosed", err)
+	}
+}
+
+// The multistream decoder forwards these controls to its streams; whatever libopus supports must work,
+// and nothing may crash or leave the scratch stack unbalanced for later calls.
+func TestMultistreamDecoderGetters(t *testing.T) {
+	dec, err := NewMultistreamDecoder(48000, 2, 1, 1, []uint8{0, 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dec.Close()
+	for name, f := range map[string]func() error{
+		"Bandwidth":          func() error { _, err := dec.Bandwidth(); return err },
+		"LastPacketDuration": func() error { _, err := dec.LastPacketDuration(); return err },
+		"Gain":               func() error { _, err := dec.Gain(); return err },
+		"Pitch":              func() error { _, err := dec.Pitch(); return err },
+	} {
+		if err := f(); err != nil {
+			t.Logf("%s on a multistream decoder: %v (acceptable if libopus does not forward it)", name, err)
+		}
+	}
+	if err := dec.SetGain(128); err != nil {
+		t.Fatalf("SetGain after the getters: %v", err)
+	}
+	if g, err := dec.Gain(); err == nil && g != 128 {
+		t.Errorf("Gain = %d, want 128", g)
 	}
 }

@@ -520,6 +520,80 @@ func (d *Decoder) FinalRange() (uint32, error) {
 	return libc.LoadUint32(outPtr), nil
 }
 
+// ctlGetInt32 runs a GET control that returns one int32.
+func (d *Decoder) ctlGetInt32(request int32, what string) (int32, error) {
+	if d == nil {
+		return 0, errDecoderClosed
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.tls == nil || d.st == 0 {
+		return 0, errDecoderClosed
+	}
+
+	bp := d.tls.Alloc(32)
+	defer d.tls.Free(32)
+
+	outPtr := bp + 16 // clear of the VaList slot at bp
+	libc.StoreInt32(outPtr, 0)
+
+	var ret int32
+	if d.multistream {
+		ret = opuscc.Opus_opus_multistream_decoder_ctl(d.tls, d.st, request, libc.VaList(bp, outPtr))
+	} else {
+		ret = opuscc.Opus_opus_decoder_ctl(d.tls, d.st, request, libc.VaList(bp, outPtr))
+	}
+	if ret != opuscc.OPUS_OK {
+		return 0, fmt.Errorf("opus: get %s failed: %s (%d)", what, opusccErrorString(ret), ret)
+	}
+	return libc.LoadInt32(outPtr), nil
+}
+
+// Bandwidth returns the audio bandwidth of the most recently decoded packet. It reads as 0 until a
+// packet has been decoded.
+func (d *Decoder) Bandwidth() (Bandwidth, error) {
+	v, err := d.ctlGetInt32(int32(opuscc.OPUS_GET_BANDWIDTH_REQUEST), "bandwidth")
+	return Bandwidth(v), err
+}
+
+// LastPacketDuration returns the number of samples per channel, at the decoder's sample rate, of the
+// most recently decoded packet. It includes concealed (lost) frames.
+func (d *Decoder) LastPacketDuration() (int, error) {
+	v, err := d.ctlGetInt32(int32(opuscc.OPUS_GET_LAST_PACKET_DURATION_REQUEST), "last packet duration")
+	return int(v), err
+}
+
+// Gain returns the output gain set with SetGain, in dB as an 8.8 fixed-point integer (Q8).
+func (d *Decoder) Gain() (int, error) {
+	v, err := d.ctlGetInt32(int32(opuscc.OPUS_GET_GAIN_REQUEST), "gain")
+	return int(v), err
+}
+
+// Pitch returns the pitch period of the most recently decoded frame, in samples at 48 kHz, or 0 when
+// the frame was not voiced or carried no pitch information.
+func (d *Decoder) Pitch() (int, error) {
+	v, err := d.ctlGetInt32(int32(opuscc.OPUS_GET_PITCH_REQUEST), "pitch")
+	return int(v), err
+}
+
+// SetPhaseInversionDisabled disables the decoder's phase inversion (an intensity-stereo technique
+// that cancels when the output is downmixed to mono) when true. libopus starts mono decoders with it
+// disabled (there is nothing to downmix) and stereo decoders with it enabled.
+func (d *Decoder) SetPhaseInversionDisabled(disabled bool) error {
+	var v int32
+	if disabled {
+		v = 1
+	}
+	return d.ctlInt32(int32(opuscc.OPUS_SET_PHASE_INVERSION_DISABLED_REQUEST), v)
+}
+
+// PhaseInversionDisabled reports whether phase inversion is disabled.
+func (d *Decoder) PhaseInversionDisabled() (bool, error) {
+	v, err := d.ctlGetInt32(int32(opuscc.OPUS_GET_PHASE_INVERSION_DISABLED_REQUEST), "phase inversion")
+	return v != 0, err
+}
+
 // DecodePacket decodes an Ogg OpusAudioPacket into interleaved signed 16-bit PCM.
 // If pcm is nil or smaller than required, a new buffer is allocated.
 // If packet is nil or packet.Data is nil, Packet Loss Concealment (PLC) is safely triggered per RFC 6716 Section 3.4
