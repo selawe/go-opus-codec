@@ -223,3 +223,68 @@ func TestConvertSMPTEToVorbis51(t *testing.T) {
 	}
 }
 
+
+// A downmix that is "normalized" must have a total gain of 1 from the loudest left (or right) combination, so a
+// half-scale signal in every channel comes out at half scale. Full scale cannot show this: an int16 or a clamped
+// float saturates and hides a gain above 1, which is how 7.1 once shipped with a gain of 1.12.
+func TestDownmixNormalizedGain(t *testing.T) {
+	const half = 16384
+	near := func(got, want int16, tol int16) bool { return got >= want-tol && got <= want+tol }
+
+	in51 := []int16{half, half, half, half, half, half}
+	out, err := Downmix51ToStereoNormalized(nil, in51)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(out[0], half, 2) || !near(out[1], half, 2) {
+		t.Errorf("5.1 normalized: half scale in every channel gave %v, want about %d (total gain 1)", out, half)
+	}
+
+	in71 := []int16{half, half, half, half, half, half, half, half}
+	out, err = Downmix71ToStereoNormalized(nil, in71)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !near(out[0], half, 2) || !near(out[1], half, 2) {
+		t.Errorf("7.1 normalized: half scale in every channel gave %v, want about %d (total gain 1)", out, half)
+	}
+
+	f51, err := Downmix51ToStereoNormalizedF32(nil, []float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f71, err := Downmix71ToStereoNormalizedF32(nil, []float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string][]float32{"5.1": f51, "7.1": f71} {
+		for i, v := range got {
+			if math.Abs(float64(v)-0.5) > 1e-4 {
+				t.Errorf("%s float normalized: output[%d] = %v, want 0.5 (total gain 1)", name, i, v)
+			}
+		}
+	}
+
+	// Each channel's share on the left output, one at a time (7.1 order FL FC FR SL SR RL RR LFE): the shares of the
+	// channels that feed L must add up to 1, and the LFE and the right-only channels must not leak in.
+	var sum float64
+	for ch, want := range map[int]float64{0: 1, 1: sqrt2Inv, 3: 0.5, 5: 0.5} {
+		src := make([]float32, 8)
+		src[ch] = 1
+		o, _ := Downmix71ToStereoNormalizedF32(nil, src)
+		sum += float64(o[0])
+		if got, w := float64(o[0]), want*norm71; math.Abs(got-w) > 1e-5 {
+			t.Errorf("7.1 channel %d feeds L with %v, want %v", ch, got, w)
+		}
+	}
+	if math.Abs(sum-1) > 1e-4 {
+		t.Errorf("7.1 left channels sum to %v, want 1", sum)
+	}
+	for _, ch := range []int{2, 4, 6, 7} {
+		src := make([]float32, 8)
+		src[ch] = 1
+		if o, _ := Downmix71ToStereoNormalizedF32(nil, src); o[0] != 0 {
+			t.Errorf("7.1 channel %d leaks %v into L", ch, o[0])
+		}
+	}
+}

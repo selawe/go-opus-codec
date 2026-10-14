@@ -21,8 +21,8 @@ import (
 //            3: LFE,              4: Rear Left (RL),   5: Rear Right (RR),
 //            6: Side Left (SL),   7: Side Right (SR)]
 //
-// If your input is from a WAV file or SMPTE stream, use ConvertSMPTEToVorbis51 before
-// calling Downmix51ToStereo, or use DownmixSMPTE51ToStereo.
+// If your input is from a WAV file or SMPTE stream, reorder it first with ConvertSMPTEToVorbis51
+// (or its float32 variant) and then call Downmix51ToStereo or Downmix51ToStereoNormalized.
 
 var (
 	ErrInvalidSampleCount = errors.New("opus: sample count is not a multiple of channel count")
@@ -35,8 +35,10 @@ const sqrt2Inv = 0.7071067811865475
 // Prevents hard clipping when all channels are driven at full scale.
 const norm51 = 0.41421356237309503
 
-// Normalization factor for 7.1: 1 / (1 + sqrt2Inv + 2*(sqrt2Inv*0.7071)) ≈ 0.41421356.
-const norm71 = 0.41421356237309503
+// Normalization factor for 7.1. The left output sums FL (1) + FC (1/sqrt(2)) + SL (1/2) + RL (1/2) = 2 + 1/sqrt(2)
+// ≈ 2.7071, more than the 5.1 sum (1 + 2/sqrt(2) ≈ 2.4142), so it needs its own factor: 1/2.7071 ≈ 0.36940.
+// Reusing the 5.1 factor left a total gain of 1.12, which still clips at full scale.
+const norm71 = 1 / (2 + sqrt2Inv)
 
 func clampI16(val float64) int16 {
 	if val > 32767.0 {
@@ -299,7 +301,7 @@ func Downmix71ToStereoNormalized(dst []int16, src []int16) ([]int16, error) {
 
 	const cFront = norm71
 	const cCenter = norm71 * sqrt2Inv
-	const cSurround = norm71 * (sqrt2Inv * 0.7071)
+	const cSurround = norm71 * 0.5
 
 	for i := 0; i < numFrames; i++ {
 		offset := i * 8
@@ -381,7 +383,7 @@ func Downmix71ToStereoNormalizedF32(dst []float32, src []float32) ([]float32, er
 
 	const cFront = float32(norm71)
 	const cCenter = float32(norm71 * sqrt2Inv)
-	const cSurround = float32(norm71 * (sqrt2Inv * 0.7071))
+	const cSurround = float32(norm71 * 0.5)
 
 	for i := 0; i < numFrames; i++ {
 		offset := i * 8
