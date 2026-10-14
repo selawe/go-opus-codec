@@ -22,6 +22,14 @@ const (
 	FormatExtensible = 0xFFFE
 )
 
+// readerBufSize and writerBufSize are the I/O buffers each Reader and Writer allocates. 64 KiB keeps
+// syscalls rare (a few thousand samples per read is all the callers ask for) without costing a megabyte
+// per conversion, which dominated the allocations of short clips.
+const (
+	readerBufSize = 64 << 10
+	writerBufSize = 64 << 10
+)
+
 // MaxSampleRate is the highest sample rate NewReader accepts. Headers are
 // untrusted, and absurd rates would otherwise drive downstream resampler sizing.
 const MaxSampleRate = 768000
@@ -52,7 +60,7 @@ type Reader struct {
 
 // NewReader creates a new WAV reader parsing the RIFF or RF64 header from r.
 func NewReader(r io.Reader) (*Reader, error) {
-	wr := &Reader{br: bufio.NewReaderSize(r, 1<<20)}
+	wr := &Reader{br: bufio.NewReaderSize(r, readerBufSize)}
 	if err := wr.readHeader(); err != nil {
 		return nil, err
 	}

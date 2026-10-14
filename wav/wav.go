@@ -67,7 +67,7 @@ func NewWriter(w io.WriteSeeker, sampleRate int, channels int) (*Writer, error) 
 		maxData:    maxDataBytes - uint64(fmtSize-16), // a longer fmt chunk leaves less room below 4 GiB
 		start:      start,
 		w:          w,
-		bw:         bufio.NewWriterSize(w, 1<<20),
+		bw:         bufio.NewWriterSize(w, writerBufSize),
 		sampleRate: uint32(sampleRate),
 		channels:   uint16(channels),
 	}
