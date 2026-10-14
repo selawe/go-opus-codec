@@ -12,7 +12,7 @@ test-cgo0:
 
 ## test-race: Run race detector on handwritten Go packages
 test-race:
-	go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus ./resample ./internal/...
+	go test -race -gcflags=all=-d=checkptr=0 -v . ./ogg ./wav ./player ./test ./opus ./resample ./rtp ./internal/...
 
 ## conformance: Run the RFC 6716 conformance matrix (downloads and verifies the test vectors first)
 conformance:

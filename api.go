@@ -3,14 +3,16 @@
 //
 // It provides:
 //   - High-level conversion helpers (EncodeWAVToOggOpus, DecodeOggOpusToWAV,
-//     ConvertWAVFileToOggOpus, and ConvertOggOpusFileToWAV).
+//     ConvertWAVFileToOggOpus, and ConvertOggOpusFileToWAV) with Context cancellation support.
 //   - OpusPlayer for straightforward playback, frame-accurate seeking, and streaming
 //     of Opus audio files and streams.
+//   - Fast in-place OpusTags metadata editing without re-encoding audio (RewriteOpusTags).
 //
-// For lower-level access to Opus decoding, encoding, and packet inspection,
+// For lower-level access to Opus decoding, encoding, packet inspection, and networking,
 // see the sub-packages:
-//   - opus: Low-level Opus encoder, decoder, and RFC 6716 / RFC 8251 packet utilities.
+//   - opus: Low-level Opus encoder, decoder, RFC 6716 / RFC 8251 packet utilities, and ITU-R BS.775 downmixers.
 //   - ogg: RFC 3533 Ogg bitstream and RFC 7845 Ogg Opus container demuxer/muxer.
+//   - rtp: RFC 7587 / RFC 3550 Opus RTP packetizer and depacketizer for WebRTC and VoIP.
 //   - player: High-level streaming player with int16 and float32 PCM output.
 //   - wav: Reading and writing of 16-bit linear PCM WAV files.
 package opusgo
@@ -21,6 +23,12 @@ import (
 	"github.com/selawe/go-opus-codec/ogg"
 	"github.com/selawe/go-opus-codec/player"
 )
+
+// RewriteOpusTags streams an Ogg Opus file from r to w, replacing its metadata tags
+// without re-encoding any audio packets.
+func RewriteOpusTags(r io.Reader, w io.Writer, newTags ogg.OpusTags) error {
+	return ogg.RewriteOpusTags(r, w, newTags)
+}
 
 // OpusPlayer is the high-level Ogg Opus audio player supporting int16 or float32 PCM.
 type OpusPlayer[T player.DataType] = player.OpusPlayer[T]
