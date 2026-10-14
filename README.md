@@ -27,6 +27,12 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
 > - **Performance**: Slice-by-8 parallel CRC32 (~3.9x speedup), Ogg multi-packet page batching, and byte resynchronization.
 > - **Any Input Sample Rate**: `EncodeWAVToOggOpus` and `wav2oggopus` accept WAV at any rate (8/12/16/24/48 kHz encoded natively, others such as 44.1 kHz resampled) using the streaming `resample` package, adapted from upstream [kazzmir/opus-go](https://github.com/kazzmir/opus-go).
 > - **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.
+> - **More WAV Formats**: `wav.Reader` reads 8/24/32-bit integer and 32-bit float PCM (also `WAVE_FORMAT_EXTENSIBLE`) and RF64/BW64 files over 4 GiB, converting to int16 or float32; `wav.Writer` writes the extensible header above two channels.
+> - **Chained & Multiplexed Ogg**: readers, `DecodeOggOpusToWAV` and `player` follow chained streams; files with several interleaved logical streams (Opus next to video, or one Opus stream per language) read the first Opus stream, with options to choose another.
+> - **Context Cancellation**: `...Context` variants of every conversion stop promptly, leaving no partial files.
+> - **OpusTags Editing**: `ogg.RewriteOpusTags` replaces comments without re-encoding, failing loudly on corrupt input.
+> - **RTP & Downmix**: the `rtp` package (RFC 7587 packetizer/depacketizer with loss detection) and ITU-R BS.775 surround downmix routines.
+> - **Hardening**: bounded work on hostile input (resampler tables, WAV rates, Ogg resync, output limits), a rewritten, correct `SeekToPage`, atomic output files, and panic recovery inside the codec (see [Security](#security)).
 > - **Compile-Time Guard**: Rejection of 32-bit builds to prevent runtime pointer misalignment.
 
 > [!WARNING]
@@ -54,10 +60,19 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
   - [6. Float32 Dynamic Range Soft Clipping](#6-float32-dynamic-range-soft-clipping)
   - [7. Muxing & Demuxing Ogg Opus Containers](#7-muxing--demuxing-ogg-opus-containers)
   - [8. Encoding Audio of Any Sample Rate & Resampling](#8-encoding-audio-of-any-sample-rate--resampling)
+  - [9. Cancelling a Conversion with a Context](#9-cancelling-a-conversion-with-a-context)
+  - [10. Editing OpusTags Without Re-encoding](#10-editing-opustags-without-re-encoding)
+  - [11. Opus over RTP (RFC 7587)](#11-opus-over-rtp-rfc-7587)
+  - [12. Surround Downmix to Stereo](#12-surround-downmix-to-stereo)
+  - [13. Encoder & Decoder Controls](#13-encoder--decoder-controls)
+  - [Multiplexed Ogg files](#multiplexed-ogg-files)
+  - [Chained Ogg files](#chained-ogg-files)
 - [Examples Directory](#examples-directory)
 - [Command Line Utilities](#command-line-utilities)
 - [Testing & Conformance](#testing--conformance)
+  - [Fuzzing](#fuzzing)
 - [Benchmarks](#benchmarks)
+- [Security](#security)
 - [License](#license)
 
 ---
@@ -702,7 +717,7 @@ The repository includes complete, executable examples in the [`examples/`](examp
 | [`examples/cbr_padding`](examples/cbr_padding) | Enforcing constant packet sizes via `PacketPad` and `PacketUnpad` | **Pure Go** | `cd examples/cbr_padding && go run .` |
 | [`examples/convert`](examples/convert) | High-performance MP3 to Ogg Opus converter with the `resample` package and progress bar | `go-mp3` | `cd examples/convert && go run . in.mp3 out.opus` |
 | [`examples/decode`](examples/decode) | Throughput benchmarking of Opus file decoding to `io.Discard` | **Pure Go** | `cd examples/decode && go run . audio.opus` |
-| [`examples/play`](examples/play) | Local audio playback with sample-accurate seeking (int16 & float32) | `oto/v3` | `cd examples/play && go run . audio.opus` |
+| [`examples/play`](examples/play) | Local audio playback with sample-accurate seeking (int16 & float32) | `oto/v3` | `cd examples/play && go run . audio.opus` (`-int16` for integer output) |
 | [`examples/net`](examples/net) | Real-time playback of remote HTTP/HTTPS Opus audio streams | `oto/v3` | `cd examples/net && go run . https://url/stream.opus` |
 
 ---
