@@ -109,7 +109,7 @@ func (t *OpusTags) Delete(key string) {
 	prefix := strings.ToUpper(key) + "="
 	var kept []string
 	for _, c := range t.Comments {
-		if !(len(c) >= len(prefix) && strings.EqualFold(c[:len(prefix)], prefix)) {
+		if len(c) < len(prefix) || !strings.EqualFold(c[:len(prefix)], prefix) {
 			kept = append(kept, c)
 		}
 	}

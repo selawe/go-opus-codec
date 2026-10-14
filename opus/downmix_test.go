@@ -160,10 +160,8 @@ func TestDownmix51ToStereoNormalized_NoClipping(t *testing.T) {
 		t.Fatalf("Downmix51ToStereoNormalized: %v", err)
 	}
 
-	// Total sum coefficient is exactly 1.0 (0.4142 + 2*0.29289 = 1.0), so result must be <= 32767
-	if stereo[0] > 32767 || stereo[1] > 32767 {
-		t.Errorf("expected normalized output <= 32767, got (%d, %d)", stereo[0], stereo[1])
-	}
+	// Total sum coefficient is exactly 1.0 (0.4142 + 2*0.29289 = 1.0); an int16 cannot exceed 32767, so
+	// "no clipping" is checked with a half-scale input in TestDownmixNormalizedGain.
 	// Result should be approximately 32767
 	if math.Abs(float64(stereo[0]-32767)) > 2 {
 		t.Errorf("expected ~32767, got %d", stereo[0])
@@ -182,12 +180,8 @@ func TestDownmix51ToStereoNormalized_NoClipping(t *testing.T) {
 
 func TestDownmix71ToStereoNormalized_NoClipping(t *testing.T) {
 	fullScale := []int16{32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767}
-	stereo, err := Downmix71ToStereoNormalized(nil, fullScale)
-	if err != nil {
+	if _, err := Downmix71ToStereoNormalized(nil, fullScale); err != nil {
 		t.Fatalf("Downmix71ToStereoNormalized: %v", err)
-	}
-	if stereo[0] > 32767 || stereo[1] > 32767 {
-		t.Errorf("expected normalized 7.1 output <= 32767, got (%d, %d)", stereo[0], stereo[1])
 	}
 
 	fullScaleF32 := []float32{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}

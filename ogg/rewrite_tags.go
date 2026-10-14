@@ -51,7 +51,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	for {
 		p, err := pr.ReadPage()
 		if err != nil {
-			if errors.Is(err, io.ErrUnexpectedEOF) || err == ErrTruncatedPage {
+			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrTruncatedPage) {
 				return ErrTruncatedPage
 			}
 			return fmt.Errorf("read old OpusTags: %w", err)
@@ -106,7 +106,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	for {
 		p, err := pr.ReadPage()
 		if err != nil {
-			if errors.Is(err, io.ErrUnexpectedEOF) || err == ErrTruncatedPage {
+			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrTruncatedPage) {
 				return ErrTruncatedPage
 			}
 			if errors.Is(err, io.EOF) {
