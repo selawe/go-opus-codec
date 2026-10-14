@@ -28,6 +28,15 @@ var (
 	// zero (RFC 3550 counts the count byte itself, so it is at least 1) or larger than the packet. It matches
 	// ErrPacketTooShort with errors.Is.
 	ErrInvalidPadding = fmt.Errorf("rtp: invalid padding: %w", ErrPacketTooShort)
+
+	// ErrDuplicatePacket is returned by Depacketizer.Depacketize for a packet with the sequence number of the one
+	// accepted last. It carries no payload: drop it, or the same audio is decoded twice.
+	ErrDuplicatePacket = errors.New("rtp: duplicate packet")
+
+	// ErrLatePacket is returned by Depacketizer.Depacketize for a packet older than one already accepted. It carries
+	// no payload: drop it, since decoding it now would play audio out of order. Put a jitter buffer in front of the
+	// Depacketizer if reordered packets should be put back in sequence rather than dropped.
+	ErrLatePacket = errors.New("rtp: late packet (older than one already accepted)")
 )
 
 // HeaderLength is the minimum RTP header length in bytes per RFC 3550.
@@ -232,8 +241,10 @@ func NewDepacketizer() *Depacketizer {
 }
 
 // Depacketize extracts the Opus packet and reports missing packets count since the previous call.
-// It properly handles 16-bit sequence number wraparound, ignores out-of-order/late packets without
-// rewinding the sequence, bounds missing packets to MaxMissing, and records sequence numbers even on empty packets.
+// It properly handles 16-bit sequence number wraparound, bounds missing packets to MaxMissing, and records sequence
+// numbers even on empty packets. Feed it packets in arrival order after any jitter buffer: a duplicate
+// (ErrDuplicatePacket) or a packet older than one already accepted (ErrLatePacket) comes back without a payload and
+// without moving the sequence, and the caller should simply drop it.
 func (d *Depacketizer) Depacketize(pkt *Packet) (opusPayload []byte, missingCount int, err error) {
 	if pkt == nil {
 		return nil, 0, errors.New("rtp: packet is nil")
@@ -257,13 +268,13 @@ func (d *Depacketizer) Depacketize(pkt *Packet) (opusPayload []byte, missingCoun
 	// and identifies late/out-of-order packets.
 	diff := int16(pkt.SequenceNumber - d.lastSeq)
 
-	if diff <= 0 {
-		// Out-of-order, late, or duplicate packet.
-		// Do not rewind or advance lastSeq, and report no missing packets.
-		if len(pkt.Payload) == 0 {
-			return nil, 0, ErrEmptyOpusPayload
-		}
-		return pkt.Payload, 0, nil
+	if diff == 0 {
+		return nil, 0, ErrDuplicatePacket
+	}
+	if diff < 0 {
+		// Older than a packet already accepted: lastSeq stays where it is, and the payload is withheld so the
+		// caller cannot decode it out of order.
+		return nil, 0, ErrLatePacket
 	}
 
 	d.lastSeq = pkt.SequenceNumber

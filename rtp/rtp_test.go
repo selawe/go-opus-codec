@@ -97,9 +97,9 @@ func TestRTP_DepacketizerLossDetection(t *testing.T) {
 
 	// Late / out-of-order packet (seq 12 arrives late after seq 14)
 	pktLate := &Packet{SequenceNumber: 12, Payload: []byte{0x60, 0x02}}
-	_, missing, err = d.Depacketize(pktLate)
-	if err != nil || missing != 0 {
-		t.Errorf("expected missing=0 for late packet, got %d", missing)
+	payload, missing, err = d.Depacketize(pktLate)
+	if !errors.Is(err, ErrLatePacket) || payload != nil || missing != 0 {
+		t.Errorf("a late packet must come back as ErrLatePacket without payload, got payload=%v missing=%d err=%v", payload, missing, err)
 	}
 
 	// Next normal packet after seq 14 is seq 15 (should NOT consider seq 12 as lastSeq)
@@ -259,6 +259,58 @@ func TestRTP_ErrorCases(t *testing.T) {
 	pktz := NewPacketizer(1, 111, 1, 0)
 	if _, err := pktz.Packetize(nil); !errors.Is(err, ErrEmptyOpusPayload) {
 		t.Errorf("expected ErrEmptyOpusPayload on nil slice, got %v", err)
+	}
+}
+
+// Packets that repeat or arrive after a newer one must not be handed to the decoder: it would play the same audio
+// twice, or play it out of order.
+func TestRTP_DepacketizerDropsDuplicatesAndLatePackets(t *testing.T) {
+	d := NewDepacketizer()
+	mk := func(seq uint16) *Packet { return &Packet{SequenceNumber: seq, Payload: []byte{0xFC, byte(seq)}} }
+
+	type step struct {
+		seq     uint16
+		wantErr error
+		missing int
+	}
+	for i, st := range []step{
+		{10, nil, 0},
+		{11, nil, 0},
+		{11, ErrDuplicatePacket, 0}, // the same packet again
+		{9, ErrLatePacket, 0},       // older than the last one
+		{10, ErrLatePacket, 0},      // an earlier one, even though it was accepted before
+		{13, nil, 1},                // 12 is lost; the late ones above did not disturb the count
+		{14, nil, 0},
+	} {
+		payload, missing, err := d.Depacketize(mk(st.seq))
+		if !errors.Is(err, st.wantErr) || missing != st.missing {
+			t.Fatalf("step %d (seq %d): err=%v missing=%d, want err=%v missing=%d", i, st.seq, err, missing, st.wantErr, st.missing)
+		}
+		if st.wantErr != nil && payload != nil {
+			t.Fatalf("step %d (seq %d): a dropped packet must not carry a payload, got %v", i, st.seq, payload)
+		}
+		if st.wantErr == nil && (len(payload) != 2 || payload[1] != byte(st.seq)) {
+			t.Fatalf("step %d (seq %d): payload %v", i, st.seq, payload)
+		}
+	}
+
+	// Across the 16-bit wrap: 65535 then 0 is the next packet, 65535 again is a duplicate of the older one (late).
+	w := NewDepacketizer()
+	for _, seq := range []uint16{65534, 65535, 0} {
+		if _, missing, err := w.Depacketize(mk(seq)); err != nil || missing != 0 {
+			t.Fatalf("wrap: seq %d: err=%v missing=%d", seq, err, missing)
+		}
+	}
+	if _, _, err := w.Depacketize(mk(65535)); !errors.Is(err, ErrLatePacket) {
+		t.Fatalf("65535 after 0: err=%v, want ErrLatePacket", err)
+	}
+	// A duplicate of an empty packet is still a duplicate.
+	e := NewDepacketizer()
+	if _, _, err := e.Depacketize(&Packet{SequenceNumber: 5}); !errors.Is(err, ErrEmptyOpusPayload) {
+		t.Fatal(err)
+	}
+	if _, _, err := e.Depacketize(&Packet{SequenceNumber: 5, Payload: []byte{1}}); !errors.Is(err, ErrDuplicatePacket) {
+		t.Fatalf("seq 5 again: err=%v, want ErrDuplicatePacket", err)
 	}
 }
 
