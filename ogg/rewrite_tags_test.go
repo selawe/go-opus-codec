@@ -317,3 +317,48 @@ func TestRewriteOpusTags_SpanningTagPagesUseGranuleMinusOne(t *testing.T) {
 		}
 	}
 }
+
+// RewriteOpusTags writes into someone's file, so it refuses tags that no reader should have to cope with.
+func TestRewriteOpusTags_ValidatesNewTags(t *testing.T) {
+	music, err := os.ReadFile("../test/music_64kbps.opus")
+	if err != nil {
+		t.Skip(err)
+	}
+	big := make([]string, 17)
+	for i := range big {
+		big[i] = "COMMENT=" + strings.Repeat("x", 1<<20)
+	}
+	bad := map[string]OpusTags{
+		"no equals sign":               {Comments: []string{"JUSTTEXT"}},
+		"empty field name":             {Comments: []string{"=value"}},
+		"control character":            {Comments: []string{"KE\x01Y=v"}},
+		"tilde in field name":          {Comments: []string{"KE~Y=v"}}, // 0x7E is outside 0x20-0x7D
+		"non-ASCII field name":         {Comments: []string{"TÍTULO=v"}},
+		"invalid UTF-8 value":          {Comments: []string{"TITLE=\xff\xfe"}},
+		"invalid UTF-8 vendor":         {Vendor: "v\xff", Comments: []string{"A=b"}},
+		"larger than a reader accepts": {Comments: big},
+	}
+	for name, tags := range bad {
+		var out bytes.Buffer
+		err := RewriteOpusTags(bytes.NewReader(music), &out, tags)
+		if !errors.Is(err, ErrBadOpusTags) {
+			t.Errorf("%s: err = %v, want ErrBadOpusTags", name, err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("%s: %d bytes were written although the tags are invalid", name, out.Len())
+		}
+	}
+
+	good := OpusTags{Vendor: "vendör", Comments: []string{"TITLE=Ünïcode ✓", "EMPTY=", "lower=case", "A B=space in name", "MULTI=line1\nline2"}}
+	var out bytes.Buffer
+	if err := RewriteOpusTags(bytes.NewReader(music), &out, good); err != nil {
+		t.Fatalf("valid tags rejected: %v", err)
+	}
+	r, err := NewOpusReader(bytes.NewReader(out.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Tags.Comments) != len(good.Comments) || r.Tags.Vendor != good.Vendor {
+		t.Fatalf("tags did not round trip: %+v", r.Tags)
+	}
+}

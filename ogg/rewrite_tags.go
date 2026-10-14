@@ -5,7 +5,42 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"unicode/utf8"
 )
+
+// ValidateOpusTags checks that tags are something every reader can take: RFC 7845 section 5.2 comments of the form
+// FIELD=value, a field name of one or more characters in 0x20-0x7D other than '=', UTF-8 text in the vendor string and the
+// values, and a total size a reader will accept (MaxOpusHeaderPacketSize). The errors match ErrBadOpusTags.
+// RewriteOpusTags calls it; BuildOpusTagsPacket does not, so it can still build the malformed packets that tests need.
+func ValidateOpusTags(tags OpusTags) error {
+	if !utf8.ValidString(tags.Vendor) {
+		return fmt.Errorf("%w: vendor string is not valid UTF-8", ErrBadOpusTags)
+	}
+	size := 8 + 4 + len(tags.Vendor) + 4
+	for i, c := range tags.Comments {
+		eq := strings.IndexByte(c, '=')
+		if eq < 1 {
+			return fmt.Errorf("%w: comment %d has no FIELD=value form with a non-empty field name", ErrBadOpusTags, i)
+		}
+		for j := 0; j < eq; j++ {
+			if c[j] < 0x20 || c[j] > 0x7D {
+				return fmt.Errorf("%w: comment %d: field name has a character outside 0x20-0x7D at byte %d", ErrBadOpusTags, i, j)
+			}
+		}
+		if !utf8.ValidString(c[eq+1:]) {
+			return fmt.Errorf("%w: comment %d: value is not valid UTF-8", ErrBadOpusTags, i)
+		}
+		size += 4 + len(c)
+		if size > MaxOpusHeaderPacketSize {
+			return fmt.Errorf("%w: tags exceed %d bytes, more than a reader accepts", ErrBadOpusTags, MaxOpusHeaderPacketSize)
+		}
+	}
+	if size > MaxOpusHeaderPacketSize {
+		return fmt.Errorf("%w: tags exceed %d bytes, more than a reader accepts", ErrBadOpusTags, MaxOpusHeaderPacketSize)
+	}
+	return nil
+}
 
 // truncatedInputError is what RewriteOpusTags returns when its input ends early. It matches ErrTruncatedPage and
 // io.ErrUnexpectedEOF but, unlike ErrTruncatedPage (which wraps io.EOF for the page reader's benefit), NOT io.EOF:
@@ -25,6 +60,8 @@ var errTruncatedInput error = truncatedInputError{}
 // All audio data and granule positions are preserved bit-for-bit, while page sequence
 // numbers and page checksums are updated to maintain bitstream validity (RFC 3533 & RFC 7845).
 //
+// The new tags are checked with ValidateOpusTags first, so nothing is written for malformed ones.
+//
 // In a multiplexed file the tags of the first Opus stream (the first one that starts with OpusHead) are rewritten and
 // the pages of every other stream are copied through unchanged. In a chained file only the first link's tags are
 // rewritten; later links are copied as they are.
@@ -34,6 +71,9 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	}
 	if w == nil {
 		return errors.New("ogg: writer cannot be nil")
+	}
+	if err := ValidateOpusTags(newTags); err != nil {
+		return err // before anything is read or written
 	}
 
 	pr := NewPageReader(r)
