@@ -122,7 +122,7 @@ func NewDecoder(sampleRate, channels int) (*Decoder, error) {
 		}
 		opuscc.FreePseudostackTLS(tls)
 		tls.Close()
-		return nil, fmt.Errorf("opus: decoder_create failed: %w", err)
+		return nil, createFailure("decoder_create", err)
 	}
 
 	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, lastFrameSize: sampleRate * 20 / 1000}
@@ -182,7 +182,7 @@ func NewMultistreamDecoder(sampleRate, channels, streams, coupledStreams int, ma
 		}
 		opuscc.FreePseudostackTLS(tls)
 		tls.Close()
-		return nil, fmt.Errorf("opus: multistream_decoder_create failed: %w", err)
+		return nil, createFailure("multistream_decoder_create", err)
 	}
 
 	dec := &Decoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, multistream: true, lastFrameSize: sampleRate * 20 / 1000}
@@ -230,13 +230,28 @@ func (d *Decoder) recoverCodecPanic(n *int, err *error) {
 }
 
 // SampleRate returns the sample rate in Hz configured for the decoder.
-func (d *Decoder) SampleRate() int { return d.sampleRate }
+func (d *Decoder) SampleRate() int {
+	if d == nil {
+		return 0
+	}
+	return d.sampleRate
+}
 
 // Channels returns the number of channels decoded (1 for mono, 2 for stereo, up to 8 for surround).
-func (d *Decoder) Channels() int { return d.channels }
+func (d *Decoder) Channels() int {
+	if d == nil {
+		return 0
+	}
+	return d.channels
+}
 
 // IsMultistream returns true if the decoder was initialized in multistream mode.
-func (d *Decoder) IsMultistream() bool { return d.multistream }
+func (d *Decoder) IsMultistream() bool {
+	if d == nil {
+		return false
+	}
+	return d.multistream
+}
 
 // Decode decodes a single Opus packet into interleaved signed 16-bit PCM.
 //
@@ -603,4 +618,13 @@ func opusccErrorString(code int32) string {
 		return "(unknown)"
 	}
 	return s
+}
+
+// createFailure describes a failed *_create call. libopus can hand back a nil state with no
+// error code (an allocation failure); err is then nil, and wrapping it would print "%!w(<nil>)".
+func createFailure(call string, err error) error {
+	if err == nil {
+		return fmt.Errorf("opus: %s failed: allocation failed", call)
+	}
+	return fmt.Errorf("opus: %s failed: %w", call, err)
 }

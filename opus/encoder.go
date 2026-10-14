@@ -117,7 +117,7 @@ func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
 		}
 		opusccenc.FreePseudostackTLS(tls)
 		tls.Close()
-		return nil, fmt.Errorf("opus: encoder_create failed: %w", err)
+		return nil, createFailure("encoder_create", err)
 	}
 
 	enc := &Encoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, application: application, allStereo: channels == 2}
@@ -263,16 +263,36 @@ func (e *Encoder) Close() error {
 }
 
 // SampleRate returns the encoder input sample rate in Hz.
-func (e *Encoder) SampleRate() int { return e.sampleRate }
+func (e *Encoder) SampleRate() int {
+	if e == nil {
+		return 0
+	}
+	return e.sampleRate
+}
 
 // Channels returns the number of input channels (1 or 2 for basic encoder, up to 255 for multistream).
-func (e *Encoder) Channels() int { return e.channels }
+func (e *Encoder) Channels() int {
+	if e == nil {
+		return 0
+	}
+	return e.channels
+}
 
 // IsMultistream returns true if the encoder was initialized in multistream mode.
-func (e *Encoder) IsMultistream() bool { return e.multistream }
+func (e *Encoder) IsMultistream() bool {
+	if e == nil {
+		return false
+	}
+	return e.multistream
+}
 
 // Application returns the configured Opus application mode.
-func (e *Encoder) Application() int { return e.application }
+func (e *Encoder) Application() int {
+	if e == nil {
+		return 0
+	}
+	return e.application
+}
 
 // SetBitrate sets the target bitrate in bits per second (e.g. 64000 or 96000).
 func (e *Encoder) SetBitrate(bps int) error {

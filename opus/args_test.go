@@ -253,3 +253,25 @@ func TestSetForceChannelsMultistreamIsAllOrNothing(t *testing.T) {
 		t.Fatal("nil encoder must return an error, not panic")
 	}
 }
+
+func TestAccessorsOnNilReceiversAreSafe(t *testing.T) {
+	var d *Decoder
+	if d.SampleRate() != 0 || d.Channels() != 0 || d.IsMultistream() {
+		t.Error("nil Decoder accessors must return zero values")
+	}
+	var e *Encoder
+	if e.SampleRate() != 0 || e.Channels() != 0 || e.Application() != 0 || e.IsMultistream() {
+		t.Error("nil Encoder accessors must return zero values")
+	}
+}
+
+func TestCreateFailureNeverPrintsNilVerb(t *testing.T) {
+	msg := createFailure("decoder_create", nil).Error()
+	if strings.Contains(msg, "%!") || !strings.Contains(msg, "decoder_create") {
+		t.Fatalf("message %q is malformed", msg)
+	}
+	cause := errors.New("boom")
+	if err := createFailure("encoder_create", cause); !errors.Is(err, cause) {
+		t.Fatalf("createFailure must wrap its cause, got %v", err)
+	}
+}
