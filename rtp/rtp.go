@@ -1,0 +1,223 @@
+// Package rtp implements RFC 7587 (RTP Payload Format for the Opus Speech and Audio Codec)
+// and RFC 3550 RTP packet serialization and depacketization.
+//
+// Key features:
+//   - Packetizer: Wraps Opus frames into RFC 7587 compliant RTP packets with 48 kHz timestamping.
+//   - Depacketizer: Extracts Opus payloads and detects packet loss gaps for Packet Loss Concealment (PLC).
+//   - 100% pure Go with zero external dependencies.
+package rtp
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+
+	"github.com/selawe/go-opus-codec/opus"
+)
+
+var (
+	ErrPacketTooShort     = errors.New("rtp: packet is too short for header")
+	ErrUnsupportedVersion = errors.New("rtp: unsupported RTP version (must be 2)")
+	ErrEmptyOpusPayload   = errors.New("rtp: empty opus payload")
+)
+
+// HeaderLength is the minimum RTP header length in bytes per RFC 3550.
+const HeaderLength = 12
+
+// ClockRate is the standard RTP timestamp clock rate (48000 Hz) mandated by RFC 7587 §4.1.
+const ClockRate = 48000
+
+// Packet represents an RTP packet carrying an Opus payload (RFC 3550 & RFC 7587).
+type Packet struct {
+	Version        uint8
+	Padding        bool
+	Extension      bool
+	Marker         bool
+	PayloadType    uint8
+	SequenceNumber uint16
+	Timestamp      uint32
+	SSRC           uint32
+	CSRC           []uint32
+	Payload        []byte
+}
+
+// Marshal serializes the Packet into RFC 3550 binary wire format.
+func (p *Packet) Marshal() []byte {
+	csrcLen := len(p.CSRC) * 4
+	totalLen := HeaderLength + csrcLen + len(p.Payload)
+	buf := make([]byte, totalLen)
+
+	v := uint8(2)
+	if p.Version != 0 {
+		v = p.Version
+	}
+	b0 := (v << 6) & 0xC0
+	if p.Padding {
+		b0 |= 0x20
+	}
+	if p.Extension {
+		b0 |= 0x10
+	}
+	b0 |= uint8(len(p.CSRC)) & 0x0F
+	buf[0] = b0
+
+	b1 := p.PayloadType & 0x7F
+	if p.Marker {
+		b1 |= 0x80
+	}
+	buf[1] = b1
+
+	binary.BigEndian.PutUint16(buf[2:4], p.SequenceNumber)
+	binary.BigEndian.PutUint32(buf[4:8], p.Timestamp)
+	binary.BigEndian.PutUint32(buf[8:12], p.SSRC)
+
+	off := HeaderLength
+	for _, csrc := range p.CSRC {
+		binary.BigEndian.PutUint32(buf[off:off+4], csrc)
+		off += 4
+	}
+
+	copy(buf[off:], p.Payload)
+	return buf
+}
+
+// Unmarshal parses an RTP packet from binary wire format.
+func (p *Packet) Unmarshal(data []byte) error {
+	if len(data) < HeaderLength {
+		return ErrPacketTooShort
+	}
+
+	p.Version = data[0] >> 6
+	if p.Version != 2 {
+		return fmt.Errorf("%w: got %d", ErrUnsupportedVersion, p.Version)
+	}
+	p.Padding = (data[0] & 0x20) != 0
+	p.Extension = (data[0] & 0x10) != 0
+	csrcCount := int(data[0] & 0x0F)
+
+	p.Marker = (data[1] & 0x80) != 0
+	p.PayloadType = data[1] & 0x7F
+
+	p.SequenceNumber = binary.BigEndian.Uint16(data[2:4])
+	p.Timestamp = binary.BigEndian.Uint32(data[4:8])
+	p.SSRC = binary.BigEndian.Uint32(data[8:12])
+
+	off := HeaderLength
+	csrcBytes := csrcCount * 4
+	if len(data) < off+csrcBytes {
+		return ErrPacketTooShort
+	}
+
+	if csrcCount > 0 {
+		p.CSRC = make([]uint32, csrcCount)
+		for i := 0; i < csrcCount; i++ {
+			p.CSRC[i] = binary.BigEndian.Uint32(data[off : off+4])
+			off += 4
+		}
+	} else {
+		p.CSRC = nil
+	}
+
+	// Extension header handling if present
+	if p.Extension {
+		if len(data) < off+4 {
+			return ErrPacketTooShort
+		}
+		extLen := int(binary.BigEndian.Uint16(data[off+2:off+4])) * 4
+		off += 4 + extLen
+		if len(data) < off {
+			return ErrPacketTooShort
+		}
+	}
+
+	payloadEnd := len(data)
+	if p.Padding && payloadEnd > off {
+		paddingLen := int(data[payloadEnd-1])
+		if payloadEnd-paddingLen < off {
+			return ErrPacketTooShort
+		}
+		payloadEnd -= paddingLen
+	}
+
+	p.Payload = data[off:payloadEnd]
+	return nil
+}
+
+// Packetizer wraps Opus audio frames into RFC 7587 compliant RTP packets.
+type Packetizer struct {
+	ssrc        uint32
+	payloadType uint8
+	seq         uint16
+	timestamp   uint32
+}
+
+// NewPacketizer creates a new RTP Packetizer for Opus audio streams.
+func NewPacketizer(ssrc uint32, payloadType uint8, initialSeq uint16, initialTimestamp uint32) *Packetizer {
+	return &Packetizer{
+		ssrc:        ssrc,
+		payloadType: payloadType,
+		seq:         initialSeq,
+		timestamp:   initialTimestamp,
+	}
+}
+
+// Packetize wraps an Opus encoded packet into an RTP Packet.
+// It inspects the Opus packet TOC to compute the exact 48 kHz timestamp delta per RFC 7587 §4.1.
+func (p *Packetizer) Packetize(opusPacket []byte) (*Packet, error) {
+	if len(opusPacket) == 0 {
+		return nil, ErrEmptyOpusPayload
+	}
+
+	// Calculate sample count at 48 kHz (RFC 7587 mandates 48 kHz timestamp clock)
+	samples, err := opus.PacketTotalSamples(opusPacket, ClockRate)
+	if err != nil {
+		return nil, fmt.Errorf("rtp: parse opus packet duration: %w", err)
+	}
+
+	pkt := &Packet{
+		Version:        2,
+		PayloadType:    p.payloadType,
+		SequenceNumber: p.seq,
+		Timestamp:      p.timestamp,
+		SSRC:           p.ssrc,
+		Payload:        opusPacket,
+	}
+
+	p.seq++
+	p.timestamp += uint32(samples)
+	return pkt, nil
+}
+
+// Depacketizer unpacks Opus audio frames from incoming RTP packets and detects sequence gaps.
+type Depacketizer struct {
+	lastSeq uint16
+	haveSeq bool
+}
+
+// NewDepacketizer creates a new Opus RTP Depacketizer.
+func NewDepacketizer() *Depacketizer {
+	return &Depacketizer{}
+}
+
+// Depacketize extracts the Opus packet and reports missing packets count since the previous call.
+// If missingCount > 0, the receiver should perform Packet Loss Concealment (e.g. dec.Decode(nil, ...)).
+func (d *Depacketizer) Depacketize(pkt *Packet) (opusPayload []byte, missingCount int, err error) {
+	if pkt == nil || len(pkt.Payload) == 0 {
+		return nil, 0, ErrEmptyOpusPayload
+	}
+
+	if !d.haveSeq {
+		d.lastSeq = pkt.SequenceNumber
+		d.haveSeq = true
+		return pkt.Payload, 0, nil
+	}
+
+	diff := int(pkt.SequenceNumber - d.lastSeq)
+	d.lastSeq = pkt.SequenceNumber
+
+	if diff > 1 {
+		missingCount = diff - 1
+	}
+
+	return pkt.Payload, missingCount, nil
+}
