@@ -275,3 +275,60 @@ func TestOpusReader_ChainedStreamsAmongForeignOnes(t *testing.T) {
 		t.Fatalf("ids %v, new streams %d, tags %v", ids, newStreams, r.Tags.Comments)
 	}
 }
+
+// pagesOf returns the raw pages of raw that belong to serial, in order.
+func pagesOf(t *testing.T, raw []byte, serial uint32) [][]byte {
+	t.Helper()
+	var out [][]byte
+	for _, pg := range splitPages(t, raw) {
+		if uint32(pg[14])|uint32(pg[15])<<8|uint32(pg[16])<<16|uint32(pg[17])<<24 == serial {
+			out = append(out, pg)
+		}
+	}
+	return out
+}
+
+// RewriteOpusTags on a multiplexed file: the Opus stream gets the new tags, and the other streams' pages (which may
+// even come before OpusHead, as BOS pages are grouped first) are passed through byte for byte.
+func TestRewriteOpusTags_MultiplexedFile(t *testing.T) {
+	foreign := foreignStream(t, 20, 30, 200)
+	opus := opusPart(t, 10, "old", 1, 25, 300)
+	for name, file := range map[string][]byte{
+		"foreign BOS first": multiplex(t, foreign, opus),
+		"Opus BOS first":    multiplex(t, opus, foreign),
+	} {
+		var out bytes.Buffer
+		if err := RewriteOpusTags(bytes.NewReader(file), &out, OpusTags{Vendor: "new", Comments: []string{"TITLE=rewritten"}}); err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		r, err := NewOpusReader(bytes.NewReader(out.Bytes()))
+		if err != nil {
+			t.Errorf("%s: output unreadable: %v", name, err)
+			continue
+		}
+		if r.Tags.Vendor != "new" || len(r.Tags.Comments) != 1 || r.Tags.Comments[0] != "TITLE=rewritten" {
+			t.Errorf("%s: tags %+v", name, r.Tags)
+		}
+		ids := audioIDs(t, r)
+		if len(ids) != 25 || ids[0] != 1 || ids[24] != 25 {
+			t.Errorf("%s: audio packets %v", name, ids)
+		}
+		got, want := pagesOf(t, out.Bytes(), 20), pagesOf(t, file, 20)
+		if len(got) != len(want) {
+			t.Errorf("%s: %d foreign pages kept, want %d", name, len(got), len(want))
+			continue
+		}
+		for i := range want {
+			if !bytes.Equal(got[i], want[i]) {
+				t.Errorf("%s: foreign page %d was changed", name, i)
+				break
+			}
+		}
+	}
+
+	// Several streams and none of them Opus: nothing to rewrite.
+	if err := RewriteOpusTags(bytes.NewReader(multiplex(t, foreignStream(t, 20, 4), foreignStream(t, 21, 4))), &bytes.Buffer{}, OpusTags{}); !errors.Is(err, ErrNotOpusOgg) {
+		t.Errorf("no Opus stream: err = %v, want ErrNotOpusOgg", err)
+	}
+}

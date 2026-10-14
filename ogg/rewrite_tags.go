@@ -24,6 +24,10 @@ var errTruncatedInput error = truncatedInputError{}
 // metadata comments with newTags without decoding or re-encoding any audio packets.
 // All audio data and granule positions are preserved bit-for-bit, while page sequence
 // numbers and page checksums are updated to maintain bitstream validity (RFC 3533 & RFC 7845).
+//
+// In a multiplexed file the tags of the first Opus stream (the first one that starts with OpusHead) are rewritten and
+// the pages of every other stream are copied through unchanged. In a chained file only the first link's tags are
+// rewritten; later links are copied as they are.
 func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	if r == nil {
 		return errors.New("ogg: reader cannot be nil")
@@ -36,17 +40,28 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	pr.VerifyCRC = true
 	pr.Resync = false // Never skip corrupted bytes silently in a file rewriting tool
 
-	// Step 1: Read the first page (must be BOS and contain OpusHead).
-	p0, err := pr.ReadPage()
-	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return errTruncatedInput
+	// Step 1: find the OpusHead page. In a multiplexed file the BOS pages of all streams come first, so pages of
+	// other streams may precede it; they are passed through untouched. A non-BOS page before any OpusHead means
+	// there is no Opus stream.
+	var p0 *Page
+	for p0 == nil {
+		p, err := pr.ReadPage()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return errTruncatedInput
+			}
+			return fmt.Errorf("read BOS page: %w", err)
 		}
-		return fmt.Errorf("read BOS page: %w", err)
-	}
-
-	if !p0.IsBOS() || len(p0.SegmentData) < 8 || string(p0.SegmentData[:8]) != "OpusHead" {
-		return ErrNotOpusOgg
+		if !p.IsBOS() {
+			return ErrNotOpusOgg
+		}
+		if len(p.SegmentData) >= 8 && string(p.SegmentData[:8]) == "OpusHead" {
+			p0 = p
+			break
+		}
+		if err := writeRawPage(w, p); err != nil {
+			return fmt.Errorf("write page of another stream: %w", err)
+		}
 	}
 	serial := p0.BitstreamSerial
 	expectedInputSeq := p0.PageSequence + 1
@@ -108,7 +123,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 		return fmt.Errorf("build opus tags packet: %w", err)
 	}
 
-	currSeq := uint32(1)
+	currSeq := p0.PageSequence + 1 // the rewritten pages continue the numbering after OpusHead
 	if err := writeSpanningTags(w, serial, &currSeq, tagsPkt); err != nil {
 		return fmt.Errorf("write new OpusTags: %w", err)
 	}
