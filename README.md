@@ -26,7 +26,7 @@ A pure Go implementation of an Ogg/Opus audio parser, decoder, encoder, and repa
 > - **Memory Safety**: Heap staging buffers and chunked block allocator in `libcshim` to eliminate pointer instability.
 > - **Performance**: Slice-by-8 parallel CRC32 (~3.9x speedup), Ogg multi-packet page batching, and byte resynchronization.
 > - **Any Input Sample Rate**: `EncodeWAVToOggOpus` and `wav2oggopus` accept WAV at any rate (8/12/16/24/48 kHz encoded natively, others such as 44.1 kHz resampled) using the streaming `resample` package, adapted from upstream [kazzmir/opus-go](https://github.com/kazzmir/opus-go).
-- **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.
+> - **Float32 & Int16**: First-class support for both normalized float32 `[-1.0, 1.0]` and 16-bit linear PCM.
 > - **Compile-Time Guard**: Rejection of 32-bit builds to prevent runtime pointer misalignment.
 
 > [!WARNING]
@@ -388,24 +388,29 @@ func main() {
     var buf bytes.Buffer
     pw := ogg.NewPacketWriter(&buf, 0x12345678)
 
-    // 1. Write OpusHead
-    head := ogg.OpusHead{
-        Version:         1,
-        Channels:        2,
-        PreSkip:         312,
-        InputSampleRate: 48000,
+    // 1. Write OpusHead and OpusTags. WriteOpusHeaders keeps the RFC 7845 page layout: OpusHead alone on the
+    // first (BOS) page, OpusTags ending its own page, so audio always starts on a fresh page.
+    err := pw.WriteOpusHeaders(
+        ogg.OpusHead{Version: 1, Channels: 2, PreSkip: 312, InputSampleRate: 48000},
+        ogg.OpusTags{
+            Vendor:   "go-opus-codec",
+            Comments: []string{"TITLE=My Track", "ARTIST=Selawé"},
+        },
+    )
+    if err != nil {
+        log.Fatalf("WriteOpusHeaders failed: %v", err)
     }
-    headPkt, _ := ogg.BuildOpusHeadPacket(head)
-    _ = pw.WritePacket(headPkt, 0, true, false)
 
-    // 2. Write OpusTags
-    tags := ogg.OpusTags{
-        Vendor:   "go-opus-codec",
-        Comments: []string{"TITLE=My Track", "ARTIST=Selawé"},
+    // 2. Write the audio packets (here one placeholder; in practice opus.Encoder.Encode output) and flag the last
+    // one as the end of the stream. Close writes any buffered page and flushes; it reports ogg.ErrMissingEOS if
+    // the stream was never terminated.
+    audio := []byte{0xFC, 0x00}
+    if err := pw.WritePacket(audio, 312+960, false, true); err != nil {
+        log.Fatalf("WritePacket failed: %v", err)
     }
-    tagsPkt, _ := ogg.BuildOpusTagsPacket(tags)
-    _ = pw.WritePacket(tagsPkt, 0, false, false)
-    _ = pw.Flush()
+    if err := pw.Close(); err != nil {
+        log.Fatalf("Close failed: %v", err)
+    }
 
     // 3. Read back using OpusReader
     reader, err := ogg.NewOpusReader(&buf)
@@ -419,8 +424,9 @@ func main() {
 
 Notes for writing and reading real streams:
 - **Granule positions** (RFC 7845 Section 4) count every sample decoded so far, *pre-skip included*: page *n* of 20 ms frames carries `n*960`, not `PreSkip + n*960`. Only the last page is trimmed, to `PreSkip + input length`, and you must keep encoding silence after the input ends until the encoder lookahead (`enc.Lookahead()`) is flushed. See [`examples/stream_mux`](examples/stream_mux).
-- **Page batching**: set `pw.MaxPageSize` (bytes) and `pw.MaxPagePackets` to group packets into pages instead of one page per packet (a 27+ byte header each), and call `pw.FlushPage()` after OpusTags so audio starts on a fresh page.
-- **Damaged input**: a stream cut inside a page returns `ogg.ErrTruncatedPage` (matches `io.ErrUnexpectedEOF`, and still `io.EOF` for loops that only stop on EOF). A gap in the page sequence drops the damaged packet instead of splicing it and sets `Discontinuity` on the next `OpusAudioPacket`, so you can conceal the loss with `DecodePacket(nil, ...)`.
+- **Page batching**: set `pw.MaxPageSize` (bytes) and `pw.MaxPagePackets` to group packets into pages instead of one page per packet (a 27+ byte header each). `WriteOpusHeaders` already ends the OpusTags page, so batched audio still starts on a fresh page; if you write the two header packets yourself, call `pw.FlushPage()` after each.
+- **Ending the stream**: flag the last audio packet `eos=true` and call `pw.Close()`. Writes after an end-of-stream packet or after `Close` fail (`ErrWriteAfterEOS`, `ErrWriterClosed`), and the first write error is sticky.
+- **Damaged input**: a stream cut inside a page returns `ogg.ErrTruncatedPage` from the page and packet readers (it matches `io.ErrUnexpectedEOF`, and still `io.EOF` for loops that only stop on EOF; `ogg.RewriteOpusTags` is stricter and does not match `io.EOF`). A gap in the page sequence drops the damaged packet instead of splicing it and sets `Discontinuity` on the next `OpusAudioPacket`, so you can conceal the loss with `DecodePacket(nil, ...)`.
 - `OpusTags` may be up to `ogg.MaxOpusHeaderPacketSize` (16 MiB, for embedded cover art); audio packets are capped at `ogg.MaxOpusPacketSize` (64 KiB).
 
 ---
@@ -429,7 +435,7 @@ Notes for writing and reading real streams:
 libopus only encodes 8, 12, 16, 24 and 48 kHz. The high-level helper handles everything else for you:
 
 ```go
-in, _ := os.Open("cd_quality_44k1.wav") // any rate, mono or stereo, 16-bit PCM
+in, _ := os.Open("cd_quality_44k1.wav") // any rate, mono or stereo; 8/16/24/32-bit integer or 32-bit float PCM
 out, _ := os.Create("out.opus")
 defer in.Close()
 defer out.Close()
@@ -445,7 +451,7 @@ To resample PCM yourself, `resample` is a streaming polyphase windowed-sinc conv
 ```go
 import "github.com/selawe/go-opus-codec/resample"
 
-r := resample.New(2, 44100, 48000) // channels, from, to (panics on non-positive arguments)
+r := resample.New(2, 44100, 48000) // channels, from, to (panics on invalid arguments: see Check below)
 var out []int16
 for chunk := range chunks {        // any chunking; interleaved 16-bit PCM
     out = append(out, r.ProcessInt16(chunk)...)
@@ -453,6 +459,8 @@ for chunk := range chunks {        // any chunking; interleaved 16-bit PCM
 out = append(out, r.FlushInt16()...) // ends the stream; output length is exact
 // or, for a whole buffer at once: resample.Int16(pcm, 2, 44100, 48000)
 ```
+
+`resample.New` panics for non-positive arguments and for a rate pair whose filter table would be enormous (two large coprime rates need up to `resample.MaxTableEntries`, ~16 MB). When the rates come from untrusted input, such as a WAV header, call `resample.Check(channels, from, to)` first: it returns an error instead. `wav.NewReader` already rejects sample rates above `wav.MaxSampleRate` (768 kHz), and `EncodeWAVToOggOpus` runs `Check` itself.
 
 ---
 
@@ -532,16 +540,28 @@ The repository provides several production-ready command line tools in `cmd/`:
 
 ### Standard Unit Tests & Race Detection
 ```bash
-# Run all unit tests offline (< 1 sec)
-go test -v ./...
+# Run all unit tests offline (a few seconds)
+go test ./...
 
 # Run race detector. -d=checkptr=0 is required (see the note under "Supported Platforms"):
 # the transpiled codec passes Go memory as uintptr, which -race's checkptr rejects.
-go test -race -gcflags=all=-d=checkptr=0 . ./ogg ./wav ./player ./test ./opus
+go test -race -gcflags=all=-d=checkptr=0 . ./ogg ./wav ./player ./test ./opus ./resample ./rtp ./internal/...
 
-# Run static analysis
-go vet -unsafeptr=false ./opus/... ./test/... ./wav/...
+# Static analysis (the transpiled opuscc/opusccenc packages are excluded)
+make vet
+make lint      # golangci-lint, configured in .golangci.yml
 ```
+
+The Makefile wraps these: `make test`, `make test-cgo0` (`CGO_ENABLED=0`), `make test-race`, `make cross-compile`, `make build-examples` and `make conformance` (download, verify and run the RFC vectors).
+
+### Fuzzing
+The parsers and the decoder have fuzz targets (`ogg`, `wav`, `opus`, `resample`). Run one locally with, for example:
+
+```bash
+go test -run '^$' -fuzz '^FuzzOpusReaderNoCRC$' -fuzztime 30s ./ogg
+```
+
+`-fuzz` is a regexp, so anchor the name: `FuzzDecode` alone also matches `FuzzDecodeF32` and `go test` refuses to fuzz. A scheduled workflow (`.github/workflows/fuzz.yml`) runs every target nightly and uploads crashing inputs as artifacts.
 
 > [!TIP]
 > Without `-gcflags=all=-d=checkptr=0`, `go test -race` fails immediately with `checkptr: pointer arithmetic result points to invalid allocation`. That is expected for this library and not a data race. The same applies to your own tests that import `opus` or `player`.
