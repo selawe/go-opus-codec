@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `player.OpusPlayer` plays chained Ogg streams through (the usual shape of an internet radio Opus stream): after an end-of-stream packet it reads one packet ahead, and a following stream gets a fresh decoder, its own pre-skip and end trimming while `CurrentSample`/`CurrentTime` keep counting. `IsFinished` turns true only at the real end. A stream with a different channel count ends playback with the sticky `player.ErrStreamChange` after the earlier stream has played in full. Seeking, `Length` and `TotalSamples` remain single-stream (`8354580`)
+- `opus.ErrClosed`: every method of a closed (or codec-error-disabled) `Encoder`, `Decoder`, `Repacketizer` and `SoftClipper` returns an error that matches it with `errors.Is`; the messages still name the object (`f345cf7`)
+- `opus.Decoder` getters `Bandwidth`, `LastPacketDuration`, `Gain`, `Pitch` and `SetPhaseInversionDisabled`/`PhaseInversionDisabled`. On a multistream decoder libopus does not forward every control (`Pitch` reports "request not implemented") and that is returned as an error (`d5294dc`)
+
+### Performance
+- `wav.Reader` and `wav.Writer` use 64 KiB I/O buffers instead of 1 MiB each: encoding 10 s of 48 kHz stereo allocates 0.63 MB instead of 1.6 MB per call, decoding to WAV 0.7 MB instead of 4.7 MB, at the same speed (`0dd1b67`)
+
+### Tests
+- `memWriteSeeker` grows its buffer in amortised fashion (it copied everything on every write), and `BenchmarkDecodeToWAV` writes to a sink that keeps nothing (`033361a`)
+
 ## [0.6.0] - 2026-10-14
 
 Minor release (pre-1.0 semver): new public API (encoder controls, more WAV formats, chained Ogg, `PacketWriter.Close`/`WriteOpusHeaders`, `DefaultMaxOutputBytes`) and a few behaviors that tighten, listed under Changed and Security. The `SeekToPage` rewrite is the largest change.
