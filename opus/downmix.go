@@ -471,3 +471,41 @@ func ConvertSMPTEToVorbis51F32(dst []float32, src []float32) ([]float32, error) 
 	}
 	return dst, nil
 }
+
+// ConvertSMPTEToVorbis71 converts 7.1 channel ordering from Microsoft WAV/SMPTE
+// [FL, FR, FC, LFE, RL, RR, SL, SR] to Vorbis/Opus RFC 7845 [FL, FC, FR, SL, SR, RL, RR, LFE].
+// dst may be src[:0] only if they do not overlap partially; use a separate buffer otherwise.
+func ConvertSMPTEToVorbis71(dst []int16, src []int16) ([]int16, error) {
+	if len(src)%8 != 0 {
+		return nil, ErrInvalidSampleCount
+	}
+	if cap(dst) >= len(src) {
+		dst = dst[:len(src)]
+	} else {
+		dst = make([]int16, len(src))
+	}
+	for off := 0; off < len(src); off += 8 {
+		fl, fr, fc, lfe, rl, rr, sl, sr := src[off], src[off+1], src[off+2], src[off+3], src[off+4], src[off+5], src[off+6], src[off+7]
+		dst[off], dst[off+1], dst[off+2], dst[off+3] = fl, fc, fr, sl
+		dst[off+4], dst[off+5], dst[off+6], dst[off+7] = sr, rl, rr, lfe
+	}
+	return dst, nil
+}
+
+// ConvertSMPTEToVorbis71F32 is ConvertSMPTEToVorbis71 for float32 samples.
+func ConvertSMPTEToVorbis71F32(dst []float32, src []float32) ([]float32, error) {
+	if len(src)%8 != 0 {
+		return nil, ErrInvalidSampleCount
+	}
+	if cap(dst) >= len(src) {
+		dst = dst[:len(src)]
+	} else {
+		dst = make([]float32, len(src))
+	}
+	for off := 0; off < len(src); off += 8 {
+		fl, fr, fc, lfe, rl, rr, sl, sr := src[off], src[off+1], src[off+2], src[off+3], src[off+4], src[off+5], src[off+6], src[off+7]
+		dst[off], dst[off+1], dst[off+2], dst[off+3] = fl, fc, fr, sl
+		dst[off+4], dst[off+5], dst[off+6], dst[off+7] = sr, rl, rr, lfe
+	}
+	return dst, nil
+}

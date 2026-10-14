@@ -223,7 +223,6 @@ func TestConvertSMPTEToVorbis51(t *testing.T) {
 	}
 }
 
-
 // A downmix that is "normalized" must have a total gain of 1 from the loudest left (or right) combination, so a
 // half-scale signal in every channel comes out at half scale. Full scale cannot show this: an int16 or a clamped
 // float saturates and hides a gain above 1, which is how 7.1 once shipped with a gain of 1.12.
@@ -286,5 +285,53 @@ func TestDownmixNormalizedGain(t *testing.T) {
 		if o, _ := Downmix71ToStereoNormalizedF32(nil, src); o[0] != 0 {
 			t.Errorf("7.1 channel %d leaks %v into L", ch, o[0])
 		}
+	}
+}
+
+// Each channel carries its own name as its value, so the reorder is visible: SMPTE 7.1 is
+// FL FR FC LFE RL RR SL SR (1..8), Vorbis/Opus 7.1 is FL FC FR SL SR RL RR LFE.
+func TestConvertSMPTEToVorbis71(t *testing.T) {
+	const FL, FR, FC, LFE, RL, RR, SL, SR = 1, 2, 3, 4, 5, 6, 7, 8
+	smpte := []int16{FL, FR, FC, LFE, RL, RR, SL, SR, FL + 10, FR + 10, FC + 10, LFE + 10, RL + 10, RR + 10, SL + 10, SR + 10}
+	want := []int16{FL, FC, FR, SL, SR, RL, RR, LFE, FL + 10, FC + 10, FR + 10, SL + 10, SR + 10, RL + 10, RR + 10, LFE + 10}
+	got, err := ConvertSMPTEToVorbis71(nil, smpte)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("int16: got %v, want %v", got, want)
+		}
+	}
+	f := make([]float32, len(smpte))
+	for i, v := range smpte {
+		f[i] = float32(v)
+	}
+	gf, err := ConvertSMPTEToVorbis71F32(nil, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range want {
+		if gf[i] != float32(want[i]) {
+			t.Fatalf("float32: got %v, want %v", gf, want)
+		}
+	}
+	if _, err := ConvertSMPTEToVorbis71(nil, make([]int16, 9)); !errors.Is(err, ErrInvalidSampleCount) {
+		t.Fatalf("a length that is not a multiple of 8: err = %v", err)
+	}
+
+	// The point of the reorder: after it, the downmix puts the centre in both ears and the LFE nowhere.
+	smpteCenterOnly := make([]float32, 8)
+	smpteCenterOnly[2] = 1 // FC in SMPTE order
+	vorbis, _ := ConvertSMPTEToVorbis71F32(nil, smpteCenterOnly)
+	out, _ := Downmix71ToStereoNormalizedF32(nil, vorbis)
+	if out[0] == 0 || out[0] != out[1] {
+		t.Errorf("SMPTE centre after the reorder and downmix: %v, want equal non-zero L and R", out)
+	}
+	smpteLFEOnly := make([]float32, 8)
+	smpteLFEOnly[3] = 1
+	vorbis, _ = ConvertSMPTEToVorbis71F32(nil, smpteLFEOnly)
+	if out, _ := Downmix71ToStereoNormalizedF32(nil, vorbis); out[0] != 0 || out[1] != 0 {
+		t.Errorf("SMPTE LFE after the reorder and downmix: %v, want silence", out)
 	}
 }
