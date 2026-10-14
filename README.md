@@ -494,7 +494,7 @@ The repository provides several production-ready command line tools in `cmd/`:
   ```sh
   go run ./cmd/oggopus2wav --out out.wav input.opus
   ```
-  Decoding stops with an error once the PCM exceeds `--max-bytes` (default 1 GiB), so a small hostile file cannot fill the disk.
+  Decoding stops with an error once the PCM exceeds `--max-bytes` (default 1 GiB), so a small hostile file cannot fill the disk. The library functions apply no limit by default: when decoding untrusted input call `DecodeOggOpusToWAV` / `ConvertOggOpusFileToWAV` with `opusgo.WithMaxOutputBytes(opusgo.DefaultMaxOutputBytes)`, because an Opus packet of a few bytes can decode to 120 ms of audio.
 - **Encode WAV to Ogg Opus** (any sample rate, mono or stereo; 8/16/24/32-bit integer PCM or 32-bit float, including RF64; non-libopus rates such as 44.1 kHz are resampled to 48 kHz):
   ```sh
   go run ./cmd/wav2oggopus --bitrate 64000 --out out.opus input.wav

@@ -979,3 +979,22 @@ func TestDecodeOggOpusToWAV_TooManyChainedStreams(t *testing.T) {
 		t.Fatalf("9 streams: err = %v, want ErrTooManyStreams", err)
 	}
 }
+
+// The limit the CLI applies is available to library callers, and enforced the same way.
+func TestDefaultMaxOutputBytesIsEnforced(t *testing.T) {
+	if DefaultMaxOutputBytes != 1<<30 {
+		t.Fatalf("DefaultMaxOutputBytes = %d, want 1 GiB (the CLI default)", DefaultMaxOutputBytes)
+	}
+	var enc bytes.Buffer
+	if err := EncodeWAVToOggOpus(bytes.NewReader(generateSineWAV(t, 48000, 2, 48000)), &enc, nil); err != nil {
+		t.Fatal(err)
+	}
+	// One second of stereo is 192000 bytes: a limit below that must trip, the default must not.
+	err := DecodeOggOpusToWAV(bytes.NewReader(enc.Bytes()), &memWriteSeeker{}, WithMaxOutputBytes(100_000))
+	if !errors.Is(err, ErrOutputLimitExceeded) {
+		t.Fatalf("err = %v, want ErrOutputLimitExceeded", err)
+	}
+	if err := DecodeOggOpusToWAV(bytes.NewReader(enc.Bytes()), &memWriteSeeker{}, WithMaxOutputBytes(DefaultMaxOutputBytes)); err != nil {
+		t.Fatalf("within the default limit: %v", err)
+	}
+}

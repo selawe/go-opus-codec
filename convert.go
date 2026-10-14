@@ -404,9 +404,17 @@ type decodeConfig struct {
 	maxOutputBytes int64
 }
 
+// DefaultMaxOutputBytes is the output limit the command line tools apply (1 GiB of PCM, about
+// 90 minutes of 48 kHz stereo). The library functions apply no such limit unless asked; pass
+// WithMaxOutputBytes(DefaultMaxOutputBytes) when decoding input you do not trust.
+const DefaultMaxOutputBytes int64 = 1 << 30
+
 // WithMaxOutputBytes sets an upper bound on the number of uncompressed PCM data
-// bytes written to the WAV output. If <= 0, no custom limit is applied (up to
-// the RIFF 4 GiB container limit).
+// bytes written to the WAV output; exceeding it returns ErrOutputLimitExceeded. If <= 0,
+// no custom limit is applied (up to the RIFF 4 GiB container limit).
+//
+// Always set it for untrusted input: an Opus packet of a few bytes can decode to up to 120 ms of
+// audio, so a file of about a megabyte can expand to several GiB of PCM and CPU time.
 func WithMaxOutputBytes(maxBytes int64) DecodeOption {
 	return func(c *decodeConfig) {
 		c.maxOutputBytes = maxBytes
@@ -416,7 +424,8 @@ func WithMaxOutputBytes(maxBytes int64) DecodeOption {
 // DecodeOggOpusToWAV reads an Ogg Opus stream from oggReader and writes
 // a 48kHz 16-bit linear PCM WAV stream to wavWriter.
 // wavWriter must implement io.WriteSeeker so WAV header chunk sizes can be finalized on completion.
-// Optional DecodeOption arguments (e.g. WithMaxOutputBytes) may be provided.
+// Optional DecodeOption arguments (e.g. WithMaxOutputBytes) may be provided. Without a limit the
+// output is bounded only by the 4 GiB WAV size, so use WithMaxOutputBytes for untrusted input.
 func DecodeOggOpusToWAV(oggReader io.Reader, wavWriter io.WriteSeeker, opts ...DecodeOption) error {
 	if oggReader == nil {
 		return errors.New("oggReader cannot be nil")
