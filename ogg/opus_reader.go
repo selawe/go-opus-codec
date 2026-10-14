@@ -106,6 +106,9 @@ type OpusReader struct {
 	tagsRead bool
 
 	streamIndex uint32
+	// the first stream's headers, restored when SeekToPage(0) rewinds a reader that has followed a chain
+	firstHead OpusHead
+	firstTags OpusTags
 
 	cachedTotalSamples int64
 	cachedTotalErr     error
@@ -147,6 +150,7 @@ func NewOpusReaderVerifyCRC(r io.Reader, verifyCRC bool) (*OpusReader, error) {
 		return nil, err
 	}
 	pr.SetMaxPacketSize(MaxOpusPacketSize)
+	or.firstHead, or.firstTags = or.Head, or.Tags
 	return or, nil
 }
 
@@ -264,7 +268,12 @@ func (r *OpusReader) ReadAudioPacket() (*OpusAudioPacket, error) {
 // file that does not hold (each stream counts from zero), so a seek can land in the wrong stream
 // without reporting an error: read chained files sequentially.
 func (r *OpusReader) SeekToPage(granulePos uint64) (uint64, error) {
-	return r.pr.SeekToPage(granulePos)
+	g, err := r.pr.SeekToPage(granulePos)
+	if err == nil && granulePos == 0 {
+		// Back at the very start: the first stream's headers apply again.
+		r.Head, r.Tags, r.streamIndex = r.firstHead, r.firstTags, 0
+	}
+	return g, err
 }
 
 // TotalSamples returns the total number of audio samples in the stream, derived from the final page granule position.

@@ -3,6 +3,7 @@ package ogg
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -97,6 +98,8 @@ func (r *PacketReader) reset() {
 	r.haveSeq = false
 	r.gap = false
 	r.streamEnded = false
+	r.serial = nil // the first page after a seek defines the stream again
+	r.streamCount = 0
 }
 
 // keep reading bytes until we find the start of an ogg page
@@ -187,147 +190,180 @@ func (r *PacketReader) SeekToPage(granulePos uint64) (uint64, error) {
 		return 0, nil
 	}
 
+	// Everything up to the final scan only reads: remember where the reader stands (the underlying
+	// offset already accounts for the page reader's buffered read-ahead) so that a failed seek
+	// leaves it exactly where it was.
+	resume, err := seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
 	total, err := seeker.Seek(0, io.SeekEnd)
 	if err != nil {
 		return 0, err
 	}
+	restore := func() { _, _ = seeker.Seek(resume, io.SeekStart) }
 
-	start, err := seeker.Seek(0, io.SeekStart)
-	if err != nil {
-		return 0, err
-	}
-
-	// map of granule positions to file positions that starts the page where the granule is
-	// TODO: possibly consider persisting this so that the granule positions can be reused
-	granulePositions := make(map[uint64]int64)
-
-	highestGranule := uint64(0)
-	highestPage := uint32(0)
-	lowestGranule := uint64(0)
-
-	var seekBuffer bytes.Buffer
-
-	pages := 0
-
-	for start < total {
-		position := (total + start) / 2
-
-		pagePosition, err := r.findNextPage(seeker, position, &seekBuffer)
-
+	before, found, err := searchPages(seeker, total, granulePos)
+	if err != nil || !found {
+		restore()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				total = position
-				continue
-			}
-
 			return 0, err
 		}
-
-		if pagePosition == -1 {
-			// if we don't find a page then back up
-			total = position
-		} else {
-			// found a page at index, seek there and read the page
-			// if the granule position is less than the target, move start up
-			// if the granule position is greater than the target then this might be the page we want
-			// but we still have to check the previous page
-
-			if _, err := seeker.Seek(pagePosition, io.SeekStart); err != nil {
-				return 0, err
-			}
-			pr := r.newPageReader(seeker)
-			page, err := pr.ReadPage()
-			if err != nil {
-				// this wasn't a page after all?
-				total = position
-				continue
-			}
-
-			pages += 1
-
-			if page.GranulePosition == math.MaxUint64 {
-				// No packet finishes on this page; granule is invalid.
-				total = position
-				continue
-			}
-
-			last, ok := granulePositions[page.GranulePosition]
-			if ok && last == pagePosition {
-				// we already scanned this page. total must be too close to start
-				// force scanning at start
-				total = start + 1
-
-				// tie break
-				if position == start {
-					break
-				}
-
-				continue
-			}
-
-			granulePositions[page.GranulePosition] = pagePosition
-
-			// the highest granule position that is above or equal to the target
-			if page.GranulePosition >= granulePos && (highestGranule == 0 || page.GranulePosition <= highestGranule) {
-				highestGranule = page.GranulePosition
-				highestPage = page.PageSequence
-				// search down for the next highest page
-				total = position
-
-				// this is the earliest page that can have data on it or exact target
-				if highestPage == 2 || page.GranulePosition == granulePos {
-					break
-				}
-			}
-
-			// this page is too low
-			if page.GranulePosition < granulePos {
-				if page.GranulePosition > lowestGranule {
-					lowestGranule = page.GranulePosition
-				}
-
-				// this is one byte after the start of the page we just found, but we
-				// have no way to know how many bytes this page takes up, so just jump ahead a bit
-				// there must be another page that comes after this one
-				start = pagePosition + 1
-			}
-		}
-	}
-
-	if highestGranule == 0 {
-		// never found the page, or the target granule position is beyond the end of the stream
+		// no page reaches the target: it lies beyond the end of the stream
 		return 0, fmt.Errorf("ogg: could not find page with granule position %d", granulePos)
 	}
 
-	position, ok := granulePositions[lowestGranule]
-	if !ok {
-		// just start at the beginning
-		position = 0
+	// Scan from the page before the target page (or from the start when the target page is the
+	// first audio page). Its granule is the answer's "last" even if its only packet was the tail of
+	// one that began earlier and is dropped as an orphan continuation.
+	position, last := int64(0), uint64(0)
+	if before.valid {
+		position, last = before.off, before.granule
 	}
-
 	if _, err := seeker.Seek(position, io.SeekStart); err != nil {
+		restore()
 		return 0, err
 	}
 	r.reset()
 	r.pr = r.newPageReader(seeker)
 
-	// fmt.Printf("start sequential scan at position %d pages %d\n", position, pages)
-	last := uint64(0)
 	for {
-		page, err := r.ReadPacket()
+		pkt, err := r.ReadPacket()
 		if err != nil {
 			return 0, err
 		}
-		pages += 1
-		if page.GranulePosition != math.MaxUint64 && page.GranulePosition >= granulePos {
+		if pkt.GranulePosition == math.MaxUint64 {
+			continue
+		}
+		if pkt.GranulePosition >= granulePos {
 			// put back in the queue
-			r.queue = slices.Insert(r.queue, 0, page)
-			// fmt.Printf("ogg: SeekToPage scanned %d pages to find granule position %d\n", pages, granulePos)
+			r.queue = slices.Insert(r.queue, 0, pkt)
 			return last, nil
-		} else if page.GranulePosition != math.MaxUint64 {
-			last = page.GranulePosition
+		}
+		last = max(last, pkt.GranulePosition)
+	}
+}
+
+// seekPage describes one Ogg page found while searching a seekable stream.
+type seekPage struct {
+	valid   bool
+	off     int64
+	size    int
+	granule uint64 // math.MaxUint64 when no packet ends on the page
+}
+
+// maxPageBytes is the largest possible Ogg page: a 27-byte header, 255 segment entries and
+// 255 segments of 255 bytes.
+const maxPageBytes = 27 + 255 + 255*255
+
+// pageAtOrAfter returns the first page that starts at or after off. A candidate "OggS" is only
+// accepted if the whole page fits and what follows it is another "OggS" or the end of the
+// stream, which rejects a capture pattern that merely occurs inside a payload. The window grows
+// only as far as that check needs (usually one page), so a probe costs a few KiB rather than the
+// 128 KiB a page reader would buffer. buf is reused between calls and must hold at least
+// 2*maxPageBytes+4 bytes.
+func pageAtOrAfter(seeker io.ReadSeeker, buf []byte, off, total int64) (seekPage, error) {
+	if off >= total {
+		return seekPage{}, nil
+	}
+	if _, err := seeker.Seek(off, io.SeekStart); err != nil {
+		return seekPage{}, err
+	}
+	limit := int(min(int64(len(buf)), total-off))
+	have := 0
+	// ensure makes the window cover at least n bytes (reading ahead in 4 KiB steps), as far as the
+	// stream goes, and reports how many bytes it now holds.
+	ensure := func(n int) (int, error) {
+		if n <= have {
+			return have, nil
+		}
+		want := min(max(n, have+4096), limit)
+		if want > have {
+			if _, err := io.ReadFull(seeker, buf[have:want]); err != nil {
+				return have, err
+			}
+			have = want
+		}
+		return have, nil
+	}
+
+	for i := 0; i <= maxPageBytes; i++ {
+		n, err := ensure(i + 27)
+		if err != nil {
+			return seekPage{}, err
+		}
+		if i+27 > n {
+			break // fewer than a header's worth of bytes remain
+		}
+		if !bytes.HasPrefix(buf[i:n], []byte("OggS\x00")) {
+			continue
+		}
+		nseg := int(buf[i+26])
+		if n, err = ensure(i + 27 + nseg); err != nil {
+			return seekPage{}, err
+		}
+		if i+27+nseg > n {
+			continue
+		}
+		body := 0
+		for _, v := range buf[i+27 : i+27+nseg] {
+			body += int(v)
+		}
+		end := i + 27 + nseg + body
+		last := off+int64(end) == total
+		if n, err = ensure(end + 4); err != nil {
+			return seekPage{}, err
+		}
+		if end > n || (!last && !(end+4 <= n && bytes.Equal(buf[end:end+4], []byte("OggS")))) {
+			continue
+		}
+		return seekPage{valid: true, off: off + int64(i), size: end - i, granule: binary.LittleEndian.Uint64(buf[i+6 : i+14])}, nil
+	}
+	return seekPage{}, nil
+}
+
+// firstPageWithGranule is pageAtOrAfter that skips pages on which no packet ends.
+func firstPageWithGranule(seeker io.ReadSeeker, buf []byte, off, total int64) (seekPage, error) {
+	for {
+		p, err := pageAtOrAfter(seeker, buf, off, total)
+		if err != nil || !p.valid || p.granule != math.MaxUint64 {
+			return p, err
+		}
+		off = p.off + int64(p.size)
+	}
+}
+
+// seekScanSlack is the read-ahead of the page reader that finishes a seek (see NewPageReader).
+const seekScanSlack = 128 * 1024
+
+// searchPages binary-searches the byte range for the first page whose granule reaches target and
+// returns the page before it (the last one below target), if any. found is false when no page
+// reaches the target. It assumes granule positions only increase through the stream.
+func searchPages(seeker io.ReadSeeker, total int64, target uint64) (before seekPage, found bool, err error) {
+	buf := make([]byte, 2*maxPageBytes+4)
+	lo, hi := int64(0), total
+	// Once the target page is known to exist and fewer bytes remain than the final scan's page
+	// reader buffers anyway, more probing would only re-read what that scan reads next.
+	for lo < hi && !(found && hi-lo <= seekScanSlack) {
+		mid := lo + (hi-lo)/2
+		p, err := firstPageWithGranule(seeker, buf, mid, total)
+		if err != nil {
+			return seekPage{}, false, err
+		}
+		switch {
+		case !p.valid:
+			hi = mid // nothing with a granule at or after mid
+		case p.granule >= target:
+			found = true
+			hi = mid
+		default:
+			if !before.valid || p.off > before.off {
+				before = p
+			}
+			lo = p.off + int64(p.size)
 		}
 	}
+	return before, found, nil
 }
 
 // LastPageGranule returns the last granule position in the stream.
