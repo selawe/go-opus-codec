@@ -3,7 +3,6 @@ package opus
 import (
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 
 	libc "github.com/selawe/go-opus-codec/libcshim"
@@ -85,8 +84,10 @@ func checkPadSizes(packetLen, newLen int) error {
 	if packetLen > maxPadInput {
 		return fmt.Errorf("%w: %d bytes (limit %d)", ErrPacketTooLarge, packetLen, maxPadInput)
 	}
-	if newLen > math.MaxInt32 {
-		return fmt.Errorf("%w: target length %d", ErrPacketTooLarge, newLen)
+	// The target is capped like the input: a padded packet above maxPadInput could not be
+	// padded or unpadded again, and an untrusted length would otherwise allocate up to 2 GiB.
+	if newLen > maxPadInput {
+		return fmt.Errorf("%w: target length %d (limit %d)", ErrPacketTooLarge, newLen, maxPadInput)
 	}
 	return nil
 }

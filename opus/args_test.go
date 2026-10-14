@@ -1,6 +1,7 @@
 package opus
 
 import (
+	"errors"
 	"math"
 	"testing"
 )
@@ -110,5 +111,42 @@ func TestEncodeF32ExtremeAmplitudeDoesNotGoSilent(t *testing.T) {
 		}
 		enc.Close()
 		dec.Close()
+	}
+}
+
+func TestConstructorsRejectValuesThatWrapInt32(t *testing.T) {
+	if d, err := NewDecoder(1<<32+48000, 1); err == nil {
+		d.Close()
+		t.Error("NewDecoder accepted a sample rate that wraps to 48000")
+	}
+	if d, err := NewDecoder(48000, 1<<32+2); err == nil {
+		d.Close()
+		t.Error("NewDecoder accepted a channel count that wraps to 2")
+	}
+	if e, err := NewEncoder(1<<32+48000, 1, ApplicationAudio); err == nil {
+		e.Close()
+		t.Error("NewEncoder accepted a sample rate that wraps to 48000")
+	}
+	if e, err := NewEncoder(48000, 1, 1<<32+ApplicationAudio); err == nil {
+		e.Close()
+		t.Error("NewEncoder accepted an application that wraps to a valid one")
+	}
+	d, err := NewDecoder(48000, 2)
+	if err != nil {
+		t.Fatalf("a valid decoder must still work: %v", err)
+	}
+	d.Close()
+}
+
+func TestPacketPadRejectsLargeTargetBeforeAllocating(t *testing.T) {
+	pkt := encodeOne(t)
+	if _, err := PacketPad(pkt, maxPadInput+1); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("err = %v, want ErrPacketTooLarge", err)
+	}
+	if _, err := PacketPad(pkt, 1<<30); !errors.Is(err, ErrPacketTooLarge) {
+		t.Fatalf("1 GiB target: err = %v, want ErrPacketTooLarge", err)
+	}
+	if out, err := PacketPad(pkt, maxPadInput); err != nil || len(out) != maxPadInput {
+		t.Fatalf("pad to the limit: len=%d err=%v", len(out), err)
 	}
 }

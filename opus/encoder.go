@@ -92,6 +92,15 @@ type Encoder struct {
 // sampleRate must be 8000, 12000, 16000, 24000, or 48000 Hz. channels must be 1 (mono) or 2 (stereo).
 // application is one of ApplicationVoIP, ApplicationAudio, or ApplicationRestrictedLowDelay.
 func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
+	// See NewDecoder: values that wrap to a valid int32 must not reach libopus.
+	for _, a := range []struct {
+		name string
+		v    int
+	}{{"sample rate", sampleRate}, {"channel count", channels}, {"application", application}} {
+		if _, err := int32Arg(a.name, a.v); err != nil {
+			return nil, err
+		}
+	}
 	tls := libc.NewTLS()
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")

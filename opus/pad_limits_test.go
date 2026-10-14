@@ -29,8 +29,9 @@ func TestPacketPadRejectsOversizedInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad to the limit: %v", err)
 	}
-	if _, err := PacketPad(ok, maxPadInput+1); err != nil {
-		t.Fatalf("limit-sized input must still work: %v", err)
+	// A packet at the limit cannot grow (the target is capped too) but is still accepted as-is.
+	if out, err := PacketPad(ok, maxPadInput); err != nil || len(out) != maxPadInput {
+		t.Fatalf("limit-sized input must still work: len=%d err=%v", len(out), err)
 	}
 	big := append(append([]byte(nil), ok...), make([]byte, 10)...)
 	if _, err := PacketPad(big, len(big)+1); !errors.Is(err, ErrPacketTooLarge) {

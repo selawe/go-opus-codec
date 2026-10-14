@@ -99,6 +99,14 @@ func NewDecoderFromHead(head ogg.OpusHead) (*Decoder, error) {
 // NewDecoder creates a new Opus decoder for standard mono or stereo audio.
 // sampleRate is typically 48000, and channels must be 1 or 2.
 func NewDecoder(sampleRate, channels int) (*Decoder, error) {
+	// Reject values that would wrap to a valid int32 (1<<32 + 48000 reads as 48000 to libopus
+	// while the Decoder would keep the huge value for its own sizing).
+	if _, err := int32Arg("sample rate", sampleRate); err != nil {
+		return nil, err
+	}
+	if _, err := int32Arg("channel count", channels); err != nil {
+		return nil, err
+	}
 	tls := libc.NewTLS()
 	if tls == nil {
 		return nil, errors.New("opus: failed to allocate TLS")
