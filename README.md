@@ -464,6 +464,203 @@ out = append(out, r.FlushInt16()...) // ends the stream; output length is exact
 
 ---
 
+### 9. Cancelling a Conversion with a Context
+Every high-level conversion has a `...Context` variant that stops promptly when the context is cancelled or its deadline passes:
+
+```go
+package main
+
+import (
+    "context"
+    "errors"
+    "log"
+    "time"
+
+    opusgo "github.com/selawe/go-opus-codec"
+)
+
+func main() {
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    err := opusgo.ConvertWAVFileToOggOpusContext(ctx, "in.wav", "out.opus", &opusgo.EncodeOptions{Bitrate: 64000})
+    switch {
+    case errors.Is(err, context.DeadlineExceeded):
+        log.Fatal("conversion took too long; no output file was left behind")
+    case err != nil:
+        log.Fatal(err)
+    }
+}
+```
+
+The context is checked before any file is opened, before each frame or packet, and before every read from the source, so it also stops a hostile Ogg file that skims through thousands of pages without yielding audio. A cancelled file conversion leaves neither the destination nor a temporary file. A `Read` that is already blocked inside the source (a stalled network reader) is not interrupted: close the source or give it a deadline. `EncodeWAVToOggOpusContext` and `DecodeOggOpusToWAVContext` take readers and writers instead of paths.
+
+---
+
+### 10. Editing OpusTags Without Re-encoding
+`ogg.RewriteOpusTags` copies an Ogg Opus stream from a reader to a writer with new comment tags; audio packets, granule positions and the EOS flag are untouched (page numbers and CRCs are rewritten). It never edits in place, so write to a temporary file and rename it over the original:
+
+```go
+package main
+
+import (
+    "io"
+    "log"
+    "os"
+    "path/filepath"
+
+    "github.com/selawe/go-opus-codec/ogg"
+)
+
+func retag(path string) error {
+    in, err := os.Open(path)
+    if err != nil {
+        return err
+    }
+    defer in.Close()
+
+    r, err := ogg.NewOpusReader(in) // reads the current tags
+    if err != nil {
+        return err
+    }
+    tags := r.Tags
+    tags.Set("TITLE", "New title") // replaces any existing TITLE
+    tags.Add("COMMENT", "re-tagged")
+    tags.Delete("ENCODER")
+    if _, err := in.Seek(0, io.SeekStart); err != nil {
+        return err
+    }
+
+    tmp, err := os.CreateTemp(filepath.Dir(path), ".retag-*")
+    if err != nil {
+        return err
+    }
+    defer os.Remove(tmp.Name()) // does nothing once the rename has happened
+    if err := ogg.RewriteOpusTags(in, tmp, tags); err != nil {
+        tmp.Close()
+        return err
+    }
+    if err := tmp.Close(); err != nil {
+        return err
+    }
+    in.Close() // Windows cannot rename over an open file
+    return os.Rename(tmp.Name(), path)
+}
+
+func main() {
+    if err := retag("song.opus"); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+`RewriteOpusTags` fails instead of losing data silently: a stream without OpusTags, a bad CRC or page-sequence gap, a truncated page and a stream that ends without an EOS page are all errors (a truncation error matches `io.ErrUnexpectedEOF`, not `io.EOF`). The new tags are checked first with `ogg.ValidateOpusTags` (RFC 7845 comment syntax, UTF-8, size) and nothing is written for malformed ones. In a multiplexed file the tags of the first Opus stream are rewritten and the other streams' pages are copied unchanged; in a chained file only the first link's tags are rewritten.
+
+---
+
+### 11. Opus over RTP (RFC 7587)
+The `rtp` package turns Opus packets into RTP packets and back, with the 48 kHz timestamp clock RFC 7587 requires whatever the codec rate, and reports lost packets so the receiver can conceal them:
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+    "log"
+
+    "github.com/selawe/go-opus-codec/opus"
+    "github.com/selawe/go-opus-codec/rtp"
+)
+
+func main() {
+    // Sender: SSRC, first sequence number and first timestamp are random, as RFC 3550 recommends.
+    pz, err := rtp.NewRandomPacketizer(111) // 111: a dynamic payload type for Opus
+    if err != nil {
+        log.Fatal(err)
+    }
+    enc, _ := opus.NewEncoder(48000, 2, opus.ApplicationVoIP)
+    defer enc.Close()
+    frame := make([]byte, 1275)
+    n, _ := enc.Encode(make([]int16, 960*2), 960, frame) // 20 ms of silence
+    pkt, err := pz.Packetize(frame[:n])                  // pz.PacketizeMarker(frame[:n], true) after a DTX pause
+    if err != nil {
+        log.Fatal(err)
+    }
+    wire, err := pkt.Marshal() // send over UDP
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Receiver.
+    var in rtp.Packet
+    if err := in.Unmarshal(wire); err != nil {
+        log.Fatal(err)
+    }
+    dp := rtp.NewDepacketizer()
+    payload, missing, err := dp.Depacketize(&in)
+    if errors.Is(err, rtp.ErrDuplicatePacket) || errors.Is(err, rtp.ErrLatePacket) {
+        return // drop it: decoding would repeat audio or play it out of order
+    } else if err != nil {
+        log.Fatal(err)
+    }
+    dec, _ := opus.NewDecoder(48000, 2)
+    defer dec.Close()
+    pcm := make([]int16, 960*2)
+    for i := 0; i < missing; i++ {
+        dec.Decode(nil, pcm, 960, false) // packet loss concealment for each lost packet
+    }
+    frames, _ := dec.Decode(payload, pcm, 960, false)
+    fmt.Println("decoded frames:", frames, "missing before it:", missing)
+}
+```
+
+Notes: `Packetize` refuses payloads above `Packetizer.MaxPayloadSize` (default `rtp.DefaultMaxPayloadSize`, 1200 bytes) and invalid payload types before it uses up a sequence number. Call `SkipTimestamp` for time in which nothing was sent (DTX), and set the marker bit on the first packet afterwards. `Packet.Marshal` returns an error for what it cannot write (extension headers, padding, more than 15 CSRCs). `Unmarshal` validates the padding count and its `Payload` aliases the input buffer. The `Depacketizer` expects packets in order (put a jitter buffer in front); `Packetizer` and `Depacketizer` are not safe for concurrent use.
+
+---
+
+### 12. Surround Downmix to Stereo
+`opus.Downmix51ToStereo`, `Downmix71ToStereo` and `DownmixStereoToMono` (each with an `F32` variant) follow ITU-R BS.775 and expect the **Opus/Vorbis channel order** (5.1: FL FC FR RL RR LFE; 7.1: FL FC FR SL SR RL RR LFE), which is what the multichannel decoder produces. They saturate when every channel is loud; the `...Normalized` variants scale so that a full signal keeps its level:
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "github.com/selawe/go-opus-codec/opus"
+)
+
+func main() {
+    // One 5.1 frame in Opus/Vorbis order: FL FC FR RL RR LFE.
+    surround := []int16{8000, 6000, 8000, 4000, 4000, 12000}
+    stereo, err := opus.Downmix51ToStereoNormalized(nil, surround)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("L, R:", stereo) // the LFE is not mixed in
+
+    // Samples from a WAV file are in Microsoft/SMPTE order (FL FR FC LFE RL RR): reorder first.
+    wavFrame := []int16{8000, 8000, 6000, 12000, 4000, 4000}
+    vorbis, err := opus.ConvertSMPTEToVorbis51(nil, wavFrame) // ConvertSMPTEToVorbis71 for 7.1
+    if err != nil {
+        log.Fatal(err)
+    }
+    stereo, _ = opus.Downmix51ToStereoNormalized(stereo[:0], vorbis) // dst may be reused; src[:0] converts in place
+    fmt.Println("L, R from the WAV frame:", stereo)
+}
+```
+
+---
+
+### 13. Encoder & Decoder Controls
+Beyond bitrate, VBR and complexity, `opus.Encoder` exposes the signal-type hint (`SetSignal(opus.SignalVoice / SignalMusic / SignalAuto)`), `SetBandwidth` and `SetMaxBandwidth`, `SetForceChannels`, `SetLSBDepth`, `SetPredictionDisabled`, `SetPhaseInversionDisabled` and `SetVBRConstraint`, with a getter for each (`Bitrate`, `Bandwidth`, `Signal`, `Complexity`, ...). `Encoder.Bandwidth()` is the bandwidth of the last encoded frame, not the last value passed to `SetBandwidth`. `opus.Decoder` has `Bandwidth`, `LastPacketDuration` (including concealed frames), `Gain`, `Pitch` and `SetPhaseInversionDisabled`.
+
+Every method of a closed `Encoder`, `Decoder`, `Repacketizer` or `SoftClipper` returns an error that matches `opus.ErrClosed` (`errors.Is`), and so does one whose codec hit an internal error: a panic inside the transpiled code is recovered into an error and disables that object. `EncodeF32` clamps its input to +/-16 and treats NaN as 0, because the transpiled encoder turns far larger values into silence.
+
+---
+
 ### Multiplexed Ogg files
 
 An Ogg file can interleave several logical streams (Opus next to a Theora video or a Vorbis track, or one Opus
@@ -532,7 +729,7 @@ The repository provides several production-ready command line tools in `cmd/`:
   go run ./cmd/oggopusextract --out packets.bin input.opus
   ```
 
-**Output safety.** `oggopus2wav`, `wav2oggopus` and `oggopusextract` (and `ConvertWAVFileToOggOpus` / `ConvertOggOpusFileToWAV`) write through a temporary file that only replaces the destination once the conversion succeeded. A failed run (or a crash or kill part-way) therefore never leaves a partial file behind and never destroys an existing output, and writing onto the input file, or onto a read-only file, is refused with an error. A symlink destination keeps being a symlink and its target is the file that is replaced. Special files such as `/dev/stdout` are written in place. Encoded files batch packets into Ogg pages of about one second, keep OpusTags on their own page, and carry RFC 7845 granule positions, so they play back with the exact input length in libopus-based players (verified with ffmpeg).
+**Output safety.** `oggopus2wav`, `wav2oggopus` and `oggopusextract` (and `ConvertWAVFileToOggOpus` / `ConvertOggOpusFileToWAV`) write through a temporary file that only replaces the destination once the conversion succeeded. A failed run (or a crash or kill part-way) therefore never leaves a partial file behind and never destroys an existing output, and writing onto the input file, or onto a read-only file, is refused with an error. A symlink destination keeps being a symlink and its target is the file that is replaced. Special files such as `/dev/stdout` are written in place. Ctrl-C or SIGTERM discards the temporary file and exits with status 130 or 143 instead of leaving it behind. Encoded files batch packets into Ogg pages of about one second, keep OpusTags on their own page, and carry RFC 7845 granule positions, so they play back with the exact input length in libopus-based players (verified with ffmpeg).
 
 ---
 
@@ -612,6 +809,17 @@ go test -tags nolibopusfile -bench=. -benchmem
 ```
 
 `-tags nolibopusfile` excludes `hraban/opus`'s optional `libopusfile`-based streaming API, which this benchmark doesn't use and which most systems don't have installed (only `libopus-dev` is required, not `libopusfile-dev`). Requires `CGO_ENABLED=1` and `libopus-dev` (or equivalent) installed — e.g. `apt install libopus-dev` on Debian/Ubuntu.
+
+---
+
+## Security
+
+The library parses untrusted input (Ogg, Opus packets, WAV headers). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Things to know when you accept files from others:
+
+- Decoding to WAV: pass `opusgo.WithMaxOutputBytes(opusgo.DefaultMaxOutputBytes)`; a few bytes of Opus can decode to 120 ms of audio.
+- `wav.Reader` rejects sample rates above 768 kHz and `resample.Check` bounds the resampler's filter table.
+- The Ogg readers cap packet sizes (`SetMaxPacketSize`) and bound the work done while resynchronizing over damaged bytes. `DecodeOggOpusToWAV` follows at most 65536 chained streams and returns `opusgo.ErrTooManyStreams` beyond that.
+- `RewriteOpusTags` and the file conversions write through a temporary file and fail without touching the original.
 
 ---
 
