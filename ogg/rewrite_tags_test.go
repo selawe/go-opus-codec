@@ -2,6 +2,7 @@ package ogg
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -166,3 +167,29 @@ func TestRewriteOpusTags_LargeSpanningTags(t *testing.T) {
 		t.Fatalf("pkt2 failed: %v, %v", err, pkt2)
 	}
 }
+
+func TestRewriteOpusTags_MissingTagsPageRejection(t *testing.T) {
+	// Construct a stream that has OpusHead on page 0 and audio immediately on page 1 (missing OpusTags)
+	head := testHead()
+	var oggBuf bytes.Buffer
+	pw := NewPacketWriter(&oggBuf, 0x11223344)
+
+	// Write head
+	headPkt, _ := BuildOpusHeadPacket(head)
+	_ = pw.WritePacket(headPkt, 0, true, false)
+	_ = pw.FlushPage()
+
+	// Immediately write an audio packet on page 1 without OpusTags
+	audioPkt := []byte{0xf8, 0x01, 0x02}
+	_ = pw.WritePacket(audioPkt, 960, false, true)
+	_ = pw.Close()
+
+	// RewriteOpusTags must reject this stream with ErrHeaderSequence
+	var out bytes.Buffer
+	newTags := OpusTags{Vendor: "new", Comments: []string{"A=B"}}
+	err := RewriteOpusTags(bytes.NewReader(oggBuf.Bytes()), &out, newTags)
+	if !errors.Is(err, ErrHeaderSequence) {
+		t.Fatalf("expected ErrHeaderSequence when OpusTags is missing, got: %v", err)
+	}
+}
+

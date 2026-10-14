@@ -45,6 +45,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 
 	// Step 2: Skip old OpusTags page(s).
 	// Per RFC 7845 §3, OpusTags follows OpusHead immediately and terminates its own page.
+	firstTagPage := true
 	for {
 		p, err := pr.ReadPage()
 		if err != nil {
@@ -56,6 +57,13 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 				return err
 			}
 			continue
+		}
+
+		if firstTagPage {
+			if len(p.SegmentData) < 8 || string(p.SegmentData[:8]) != "OpusTags" {
+				return fmt.Errorf("%w: second page is not OpusTags", ErrHeaderSequence)
+			}
+			firstTagPage = false
 		}
 
 		// Check if this page ends the OpusTags packet.
