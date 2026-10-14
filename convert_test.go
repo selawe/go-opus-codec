@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/selawe/go-opus-codec/ogg"
@@ -24,9 +25,9 @@ type memWriteSeeker struct {
 func (m *memWriteSeeker) Write(p []byte) (n int, err error) {
 	end := m.pos + int64(len(p))
 	if end > int64(len(m.buf)) {
-		newBuf := make([]byte, end)
-		copy(newBuf, m.buf)
-		m.buf = newBuf
+		old := len(m.buf)
+		m.buf = slices.Grow(m.buf, int(end)-old)[:end] // amortised growth, not a full copy per write
+		clear(m.buf[old:end])
 	}
 	copy(m.buf[m.pos:], p)
 	m.pos = end

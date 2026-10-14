@@ -34,8 +34,30 @@ func BenchmarkDecodeToWAV(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := DecodeOggOpusToWAV(bytes.NewReader(enc.Bytes()), &memWriteSeeker{}); err != nil {
+		if err := DecodeOggOpusToWAV(bytes.NewReader(enc.Bytes()), &discardSeeker{}); err != nil {
 			b.Fatal(err)
 		}
 	}
+}
+
+// discardSeeker is an io.WriteSeeker that keeps nothing, so a benchmark measures the library's own
+// allocations rather than those of an in-memory sink.
+type discardSeeker struct{ pos, size int64 }
+
+func (d *discardSeeker) Write(p []byte) (int, error) {
+	d.pos += int64(len(p))
+	d.size = max(d.size, d.pos)
+	return len(p), nil
+}
+
+func (d *discardSeeker) Seek(off int64, whence int) (int64, error) {
+	switch whence {
+	case 0:
+		d.pos = off
+	case 1:
+		d.pos += off
+	case 2:
+		d.pos = d.size + off
+	}
+	return d.pos, nil
 }
