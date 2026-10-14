@@ -70,7 +70,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
         uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
-          version: v2.13.2
+          version: v2.14.0
+          # Build the linter with the job's own Go instead of downloading a binary: a prebuilt one
+          # cannot read the export data of a newer Go patch release (go1.27.2 broke v2.13.2:
+          # "export data version 5 is greater than maximum supported version 4").
+          install-mode: goinstall
         env:
           GODEBUG: gotypesalias=1
 
