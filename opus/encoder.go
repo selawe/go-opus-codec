@@ -82,6 +82,7 @@ type Encoder struct {
 	channels    int
 	application int
 	multistream bool
+	allStereo   bool // every underlying encoder is stereo, so forcing 2 channels is valid for all
 
 	encBuf []byte
 	pcmI16 []int16
@@ -119,7 +120,7 @@ func NewEncoder(sampleRate, channels, application int) (*Encoder, error) {
 		return nil, fmt.Errorf("opus: encoder_create failed: %w", err)
 	}
 
-	enc := &Encoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, application: application}
+	enc := &Encoder{tls: tls, st: st, sampleRate: sampleRate, channels: channels, application: application, allStereo: channels == 2}
 	runtime.SetFinalizer(enc, (*Encoder).Close)
 	return enc, nil
 }
@@ -192,6 +193,7 @@ func NewMultistreamEncoder(sampleRate, channels, streams, coupledStreams int, ma
 		channels:    channels,
 		application: application,
 		multistream: true,
+		allStereo:   coupledStreams == streams,
 	}
 	runtime.SetFinalizer(enc, (*Encoder).Close)
 	return enc, nil
@@ -501,8 +503,14 @@ func (e *Encoder) SetForceChannels(channels int) error {
 	if channels != Auto && channels != 1 && channels != 2 {
 		return fmt.Errorf("opus: invalid forced channels %d (must be Auto, 1, or 2)", channels)
 	}
-	if channels > e.channels {
-		return fmt.Errorf("opus: cannot force %d channels on a %d-channel encoder", channels, e.channels)
+	if e == nil {
+		return errors.New("opus: encoder closed")
+	}
+	// libopus applies the control to each underlying encoder in turn and a mono one rejects 2, so
+	// on a multistream encoder with uncoupled streams the call would fail half-applied: the stereo
+	// sub-encoders already changed, ForceChannels() reading back 2. Refuse it up front.
+	if channels == 2 && !e.allStereo {
+		return fmt.Errorf("opus: cannot force stereo on an encoder with mono streams (%d channels, multistream=%v)", e.channels, e.multistream)
 	}
 	return e.ctlInt32(int32(opusccenc.OPUS_SET_FORCE_CHANNELS_REQUEST), int32(channels))
 }

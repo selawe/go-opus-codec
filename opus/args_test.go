@@ -213,3 +213,43 @@ func TestCodecPanicBecomesErrorAndDisablesObject(t *testing.T) {
 		}
 	})
 }
+
+// libopus applies SET_FORCE_CHANNELS(2) to every sub-encoder; a mono one rejects it, which used to
+// leave a multistream encoder half-changed. It must be refused before anything is touched.
+func TestSetForceChannelsMultistreamIsAllOrNothing(t *testing.T) {
+	// 3 channels as one coupled (stereo) stream plus one mono stream.
+	enc, err := NewMultistreamEncoder(48000, 3, 2, 1, []uint8{0, 1, 2}, ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+
+	before, err := enc.ForceChannels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.SetForceChannels(2); err == nil {
+		t.Fatal("forcing stereo on an encoder with a mono stream must fail")
+	}
+	if after, err := enc.ForceChannels(); err != nil || after != before {
+		t.Fatalf("ForceChannels changed from %d to %d (err %v) although the call failed", before, after, err)
+	}
+	if err := enc.SetForceChannels(1); err != nil {
+		t.Fatalf("forcing mono is valid everywhere: %v", err)
+	}
+
+	// All streams coupled: stereo is valid for every sub-encoder.
+	st, err := NewMultistreamEncoder(48000, 4, 2, 2, []uint8{0, 1, 2, 3}, ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetForceChannels(2); err != nil {
+		t.Fatalf("all-stereo multistream: %v", err)
+	}
+
+	var nilEnc *Encoder
+	if err := nilEnc.SetForceChannels(1); err == nil {
+		t.Fatal("nil encoder must return an error, not panic")
+	}
+}
