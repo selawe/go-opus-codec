@@ -261,3 +261,45 @@ func TestRTP_ErrorCases(t *testing.T) {
 		t.Errorf("expected ErrEmptyOpusPayload on nil slice, got %v", err)
 	}
 }
+
+// RFC 3550 section 5.1: with the P bit set the last octet counts the padding octets including itself, so it is at
+// least 1 and at most the number of octets after the header.
+func TestRTP_UnmarshalPaddingValidation(t *testing.T) {
+	header := []byte{0x80 | 0x20, 111, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1} // version 2, P=1
+	build := func(tail ...byte) []byte { return append(append([]byte(nil), header...), tail...) }
+
+	valid := map[string]struct {
+		data []byte
+		want []byte
+	}{
+		"2 padding octets":        {build(0xFC, 0x01, 0x00, 0x02), []byte{0xFC, 0x01}},
+		"padding is everything":   {build(0x00, 0x00, 0x03), []byte{}},
+		"1 octet: just the count": {build(0xFC, 0x01), []byte{0xFC}},
+	}
+	for name, c := range valid {
+		var p Packet
+		if err := p.Unmarshal(c.data); err != nil {
+			t.Errorf("%s: unexpected error %v", name, err)
+			continue
+		}
+		if !bytes.Equal(p.Payload, c.want) {
+			t.Errorf("%s: payload %v, want %v", name, p.Payload, c.want)
+		}
+	}
+
+	for name, data := range map[string][]byte{
+		"padding count 0 (a trailing 0 byte is not padding)": build(0xFC, 0x01, 0x00),
+		"P set, nothing after the header":                    build(),
+		"padding count larger than the data":                 build(0xFC, 0x09),
+		"padding count 255":                                  build(0xFC, 0xFF),
+	} {
+		var p Packet
+		err := p.Unmarshal(data)
+		if !errors.Is(err, ErrInvalidPadding) {
+			t.Errorf("%s: err = %v, want ErrInvalidPadding", name, err)
+		}
+		if !errors.Is(err, ErrPacketTooShort) {
+			t.Errorf("%s: ErrInvalidPadding must still match ErrPacketTooShort", name)
+		}
+	}
+}

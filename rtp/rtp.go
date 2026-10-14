@@ -23,6 +23,11 @@ var (
 	ErrPaddingNotSupported   = errors.New("rtp: padding not supported in marshal")
 	ErrTooManyCSRCs          = errors.New("rtp: CSRC count cannot exceed 15")
 	ErrInvalidPayloadType    = errors.New("rtp: payload type must be <= 127")
+
+	// ErrInvalidPadding is returned by Unmarshal when the padding bit is set but the padding count is missing,
+	// zero (RFC 3550 counts the count byte itself, so it is at least 1) or larger than the packet. It matches
+	// ErrPacketTooShort with errors.Is.
+	ErrInvalidPadding = fmt.Errorf("rtp: invalid padding: %w", ErrPacketTooShort)
 )
 
 // HeaderLength is the minimum RTP header length in bytes per RFC 3550.
@@ -147,10 +152,14 @@ func (p *Packet) Unmarshal(data []byte) error {
 	}
 
 	payloadEnd := len(data)
-	if p.Padding && payloadEnd > off {
+	if p.Padding {
+		// The last byte holds the padding count, which includes that byte itself (RFC 3550 section 5.1).
+		if payloadEnd <= off {
+			return ErrInvalidPadding
+		}
 		paddingLen := int(data[payloadEnd-1])
-		if payloadEnd-paddingLen < off {
-			return ErrPacketTooShort
+		if paddingLen < 1 || paddingLen > payloadEnd-off {
+			return ErrInvalidPadding
 		}
 		payloadEnd -= paddingLen
 	}
