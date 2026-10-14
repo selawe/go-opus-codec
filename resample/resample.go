@@ -14,6 +14,7 @@ package resample
 import (
 	"fmt"
 	"math"
+	"slices"
 )
 
 // MaxTableEntries bounds the polyphase table (phases * taps) so a pathological
@@ -37,6 +38,8 @@ type Resampler struct {
 	table    []float32 // [phase][tap]
 
 	partial  []float32 // incomplete trailing frame carried to the next Process
+	inScr    []float32 // scratch: ProcessInt16's float copy of its input
+	outScr   []float32 // scratch: the float output that ProcessInt16/FlushInt16 convert to int16
 	buf      []float32 // pending input, interleaved; buf[0] is input frame base
 	base     int64
 	inFrames int64 // input frames seen so far
@@ -112,6 +115,12 @@ func filterShape(from, to int) (cutoff float64, half int) {
 // filter window it now fully covers. A trailing partial frame (len(in) not a
 // multiple of the channel count) is held back and completed by the next call.
 func (r *Resampler) Process(in []float32) []float32 {
+	r.consume(in)
+	return r.produce(false)
+}
+
+// consume queues in as pending input, holding back a trailing partial frame.
+func (r *Resampler) consume(in []float32) {
 	if len(r.partial) > 0 {
 		in = append(r.partial, in...)
 		r.partial = nil
@@ -122,7 +131,6 @@ func (r *Resampler) Process(in []float32) []float32 {
 	}
 	r.buf = append(r.buf, in...)
 	r.inFrames += int64(len(in) / r.channels)
-	return r.produce(false)
 }
 
 // Flush ends the stream (treating input past its end as silence) and
@@ -132,20 +140,29 @@ func (r *Resampler) Flush() []float32 {
 }
 
 // ProcessInt16 is Process for 16-bit PCM.
+//
+// Only the returned slice is allocated per call: the float conversion of the input and the float
+// output are kept in scratch buffers of the Resampler.
 func (r *Resampler) ProcessInt16(in []int16) []int16 {
-	f := make([]float32, len(in))
+	r.inScr = slices.Grow(r.inScr[:0], len(in))[:len(in)]
 	for i, v := range in {
-		f[i] = float32(v) / 32768
+		r.inScr[i] = float32(v) / 32768
 	}
-	return toInt16(r.Process(f))
+	r.consume(r.inScr) // copies into the pending input, so the scratch can be reused at once
+	r.outScr = r.produceInto(r.outScr, false)
+	return toInt16(r.outScr)
 }
 
 // FlushInt16 is Flush for 16-bit PCM.
 func (r *Resampler) FlushInt16() []int16 {
-	return toInt16(r.Flush())
+	r.outScr = r.produceInto(r.outScr, true)
+	return toInt16(r.outScr)
 }
 
-func (r *Resampler) produce(final bool) []float32 {
+func (r *Resampler) produce(final bool) []float32 { return r.produceInto(nil, final) }
+
+// produceInto is produce appending to dst[:0], so a caller that only converts the result can reuse one buffer.
+func (r *Resampler) produceInto(dst []float32, final bool) []float32 {
 	end := r.next // one past the last output frame to produce
 	if final {
 		end = (r.inFrames*r.up + r.down - 1) / r.down
@@ -157,7 +174,7 @@ func (r *Resampler) produce(final bool) []float32 {
 			}
 		}
 	}
-	out := make([]float32, 0, int(end-r.next)*r.channels)
+	out := slices.Grow(dst[:0], int(end-r.next)*r.channels)
 	for ; r.next < end; r.next++ {
 		pos := r.next * r.down
 		center := pos / r.up

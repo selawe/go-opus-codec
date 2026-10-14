@@ -248,3 +248,35 @@ func TestToInt16NaN(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// The scratch buffers are internal: a result returned earlier must not change when the next call runs.
+func TestProcessInt16ResultsDoNotAlias(t *testing.T) {
+	r := New(2, 44100, 48000)
+	in := make([]int16, 2*4410)
+	for i := range in {
+		in[i] = int16(i*7%20000 - 10000)
+	}
+	first := r.ProcessInt16(in)
+	snapshot := append([]int16(nil), first...)
+	_ = r.ProcessInt16(in)
+	_ = r.FlushInt16()
+	for i := range snapshot {
+		if first[i] != snapshot[i] {
+			t.Fatalf("sample %d of an earlier result changed from %d to %d", i, snapshot[i], first[i])
+		}
+	}
+}
+
+func BenchmarkProcessInt16(b *testing.B) {
+	in := make([]int16, 2*4410) // 100 ms of 44.1 kHz stereo
+	for i := range in {
+		in[i] = int16(i % 3000)
+	}
+	r := New(2, 44100, 48000)
+	b.SetBytes(int64(len(in) * 2))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = r.ProcessInt16(in)
+	}
+}
