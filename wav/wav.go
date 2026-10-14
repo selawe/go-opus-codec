@@ -1,6 +1,8 @@
 // Package wav implements reading and writing of RIFF/WAVE uncompressed PCM audio files.
 //
-// It supports 16-bit linear PCM audio across mono, stereo, and multichannel configurations.
+// The Writer produces 16-bit linear PCM (a plain PCM header up to two channels, WAVE_FORMAT_EXTENSIBLE
+// above that). The Reader additionally understands 8/24/32-bit integer and 32-bit float samples,
+// WAVE_FORMAT_EXTENSIBLE and RF64/BW64, and converts them to int16 or float32.
 //
 // Concurrency: Types in this package (Reader and Writer) wrap io.Reader or io.WriteSeeker
 // and are not safe for concurrent use by multiple goroutines without external synchronization.
@@ -35,7 +37,9 @@ type Writer struct {
 	buf []byte
 
 	dataBytes uint32
-	start     int64 // offset of the RIFF header in w, which Close patches relative to
+	maxData   uint64 // largest data chunk whose RIFF size still fits a uint32, given the header length
+	fmtSize   uint32 // 16 for plain PCM, 40 for WAVE_FORMAT_EXTENSIBLE (more than two channels)
+	start     int64  // offset of the RIFF header in w, which Close patches relative to
 	closed    bool
 	closeErr  error
 }
@@ -54,7 +58,13 @@ func NewWriter(w io.WriteSeeker, sampleRate int, channels int) (*Writer, error) 
 	if err != nil {
 		start = 0
 	}
+	fmtSize := uint32(16)
+	if channels > 2 {
+		fmtSize = 40 // WAVE_FORMAT_EXTENSIBLE: plain PCM headers are rejected by many players beyond stereo
+	}
 	wr := &Writer{
+		fmtSize:    fmtSize,
+		maxData:    maxDataBytes - uint64(fmtSize-16), // a longer fmt chunk leaves less room below 4 GiB
 		start:      start,
 		w:          w,
 		bw:         bufio.NewWriterSize(w, 1<<20),
@@ -86,7 +96,7 @@ func (wr *Writer) WriteInt16PCM(pcm []int16) error {
 	}
 
 	n := len(pcm) * 2
-	if uint64(wr.dataBytes)+uint64(n) > maxDataBytes {
+	if uint64(wr.dataBytes)+uint64(n) > wr.maxData {
 		return ErrDataTooLarge
 	}
 	if cap(wr.buf) < n {
@@ -123,8 +133,7 @@ func (wr *Writer) finish() error {
 
 	// Patch RIFF chunk size and data chunk size.
 	// RIFF size = 4 (WAVE) + (8+fmt) + (8+data)
-	// We wrote: 12 + (8+16) + 8 + data
-	riffSize := 4 + (8 + 16) + (8 + wr.dataBytes)
+	riffSize := 4 + (8 + wr.fmtSize) + (8 + wr.dataBytes)
 
 	if _, err := wr.w.Seek(wr.start+4, io.SeekStart); err != nil {
 		return err
@@ -132,7 +141,8 @@ func (wr *Writer) finish() error {
 	if err := binary.Write(wr.w, binary.LittleEndian, riffSize); err != nil {
 		return err
 	}
-	if _, err := wr.w.Seek(wr.start+40, io.SeekStart); err != nil {
+	// The size field of the data chunk header follows RIFF (12), the fmt chunk (8 + fmtSize) and "data".
+	if _, err := wr.w.Seek(wr.start+12+8+int64(wr.fmtSize)+4, io.SeekStart); err != nil {
 		return err
 	}
 	if err := binary.Write(wr.w, binary.LittleEndian, wr.dataBytes); err != nil {
@@ -160,10 +170,15 @@ func (wr *Writer) writeHeaderPlaceholder() error {
 	if _, err := wr.bw.Write([]byte("fmt ")); err != nil {
 		return err
 	}
-	if err := binary.Write(wr.bw, binary.LittleEndian, uint32(16)); err != nil { // PCM
+	if err := binary.Write(wr.bw, binary.LittleEndian, wr.fmtSize); err != nil {
 		return err
 	}
-	if err := binary.Write(wr.bw, binary.LittleEndian, uint16(1)); err != nil { // audio format PCM
+	extensible := wr.fmtSize == 40
+	format := uint16(1) // PCM
+	if extensible {
+		format = 0xFFFE
+	}
+	if err := binary.Write(wr.bw, binary.LittleEndian, format); err != nil {
 		return err
 	}
 	if err := binary.Write(wr.bw, binary.LittleEndian, wr.channels); err != nil {
@@ -182,6 +197,20 @@ func (wr *Writer) writeHeaderPlaceholder() error {
 	}
 	if err := binary.Write(wr.bw, binary.LittleEndian, uint16(16)); err != nil { // bits per sample
 		return err
+	}
+	if extensible {
+		// cbSize, valid bits, channel mask, then the PCM sub-format GUID. The mask is 0
+		// ("speaker positions unspecified"): the channel order of the data is the caller's, and a
+		// wrong named layout would be worse than none.
+		ext := []byte{
+			22, 0, // cbSize
+			16, 0, // valid bits per sample
+			0, 0, 0, 0, // channel mask
+			1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71, // KSDATAFORMAT_SUBTYPE_PCM
+		}
+		if _, err := wr.bw.Write(ext); err != nil {
+			return err
+		}
 	}
 
 	// data chunk

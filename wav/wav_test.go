@@ -544,3 +544,93 @@ func TestWriterPatchesRelativeToStartOffset(t *testing.T) {
 		t.Fatal("prefix clobbered")
 	}
 }
+
+// More than two channels need WAVE_FORMAT_EXTENSIBLE: many players reject a plain PCM header there.
+func TestWriterMultichannelUsesExtensibleHeader(t *testing.T) {
+	const ch = 6
+	ws := &memWS{}
+	w, err := NewWriter(ws, 48000, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := 100
+	pcm := make([]int16, frames*ch)
+	for i := range pcm {
+		pcm[i] = int16(i - 300)
+	}
+	if err := w.WriteInt16PCM(pcm); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	b := ws.b
+	if got := binary.LittleEndian.Uint16(b[20:22]); got != 0xFFFE {
+		t.Fatalf("format tag = %#x, want WAVE_FORMAT_EXTENSIBLE", got)
+	}
+	if got := binary.LittleEndian.Uint32(b[16:20]); got != 40 {
+		t.Fatalf("fmt chunk size = %d, want 40", got)
+	}
+	dataBytes := frames * ch * 2
+	if got := binary.LittleEndian.Uint32(b[4:8]); int(got) != len(b)-8 {
+		t.Fatalf("RIFF size = %d, want %d (file length - 8)", got, len(b)-8)
+	}
+	if got := binary.LittleEndian.Uint32(b[64:68]); int(got) != dataBytes {
+		t.Fatalf("data size = %d, want %d", got, dataBytes)
+	}
+	if string(b[60:64]) != "data" || len(b) != 68+dataBytes {
+		t.Fatalf("data chunk is not where the header says (len %d)", len(b))
+	}
+
+	// Our own reader must understand it, and return every sample.
+	r, err := NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("NewReader on an extensible header: %v", err)
+	}
+	if r.Channels() != ch || r.SampleRate() != 48000 || r.BitsPerSample() != 16 {
+		t.Fatalf("parsed %d ch %d Hz %d bit", r.Channels(), r.SampleRate(), r.BitsPerSample())
+	}
+	got := readAll(t, r, 120)
+	if len(got) != len(pcm) {
+		t.Fatalf("read %d samples, want %d", len(got), len(pcm))
+	}
+	for i := range pcm {
+		if got[i] != pcm[i] {
+			t.Fatalf("sample %d = %d, want %d", i, got[i], pcm[i])
+		}
+	}
+}
+
+// Mono and stereo keep the canonical 44-byte header.
+func TestWriterStereoKeepsPlainHeader(t *testing.T) {
+	ws := &memWS{}
+	w, err := NewWriter(ws, 48000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.WriteInt16PCM([]int16{1, 2, 3, 4})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if binary.LittleEndian.Uint16(ws.b[20:22]) != 1 || string(ws.b[36:40]) != "data" || len(ws.b) != 44+8 {
+		t.Fatalf("stereo header changed: format %d, len %d", binary.LittleEndian.Uint16(ws.b[20:22]), len(ws.b))
+	}
+}
+
+// The longer fmt chunk leaves 24 bytes less room below 4 GiB.
+func TestWriterExtensibleDataLimit(t *testing.T) {
+	w, err := NewWriter(&memWS{}, 48000, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.dataBytes = uint32(maxDataBytes - 24)
+	if err := w.WriteInt16PCM(make([]int16, 6)); !errors.Is(err, ErrDataTooLarge) {
+		t.Fatalf("err = %v, want ErrDataTooLarge", err)
+	}
+	w2, _ := NewWriter(&memWS{}, 48000, 6)
+	w2.dataBytes = uint32(maxDataBytes - 24 - 12)
+	if err := w2.WriteInt16PCM(make([]int16, 6)); err != nil {
+		t.Fatalf("12 bytes still fit: %v", err)
+	}
+}
