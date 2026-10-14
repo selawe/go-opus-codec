@@ -217,6 +217,18 @@ func (d *Decoder) Close() error {
 	return nil
 }
 
+// recoverCodecPanic turns a panic raised inside the transpiled codec (an internal assertion, an abort
+// or a pseudo-stack overflow) into an error. The call was abandoned half-way, so the codec's scratch
+// accounting can no longer be trusted: the decoder is marked closed, and later calls report that
+// instead of running on corrupt state. Close still releases it. The caller holds d.mu.
+func (d *Decoder) recoverCodecPanic(n *int, err *error) {
+	if r := recover(); r != nil {
+		d.st = 0
+		*n = 0
+		*err = fmt.Errorf("opus: internal codec error, decoder disabled: %v", r)
+	}
+}
+
 // SampleRate returns the sample rate in Hz configured for the decoder.
 func (d *Decoder) SampleRate() int { return d.sampleRate }
 
@@ -232,12 +244,13 @@ func (d *Decoder) IsMultistream() bool { return d.multistream }
 // Use 5760 for the Opus max frame size at 48kHz (120 ms).
 //
 // Returns the number of samples per channel written into pcm.
-func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bool) (int, error) {
+func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bool) (n int, err error) {
 	if d == nil {
 		return 0, errors.New("opus: decoder closed")
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	defer d.recoverCodecPanic(&n, &err)
 
 	if d.tls == nil || d.st == 0 {
 		return 0, errors.New("opus: decoder closed")
@@ -291,12 +304,13 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 // Use 5760 for the Opus max frame size at 48kHz (120 ms).
 //
 // Returns the number of samples per channel written into pcm.
-func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeFEC bool) (int, error) {
+func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeFEC bool) (n int, err error) {
 	if d == nil {
 		return 0, errors.New("opus: decoder closed")
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	defer d.recoverCodecPanic(&n, &err)
 
 	if d.tls == nil || d.st == 0 {
 		return 0, errors.New("opus: decoder closed")

@@ -3,6 +3,7 @@ package opus
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -149,4 +150,66 @@ func TestPacketPadRejectsLargeTargetBeforeAllocating(t *testing.T) {
 	if out, err := PacketPad(pkt, maxPadInput); err != nil || len(out) != maxPadInput {
 		t.Fatalf("pad to the limit: len=%d err=%v", len(out), err)
 	}
+}
+
+// A panic inside the transpiled codec must come back as an error and disable the object, not
+// unwind the caller or leave a half-updated instance that still looks usable. A tiny bogus state
+// pointer makes the codec dereference an invalid address, which Go raises as a recoverable panic.
+func TestCodecPanicBecomesErrorAndDisablesObject(t *testing.T) {
+	pkt := encodeOne(t)
+
+	t.Run("decoder", func(t *testing.T) {
+		for _, f32 := range []bool{false, true} {
+			dec, err := NewDecoder(48000, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dec.st = 16
+			call := func() error {
+				if f32 {
+					_, err := dec.DecodeF32(pkt, make([]float32, 960), 960, false)
+					return err
+				}
+				_, err := dec.Decode(pkt, make([]int16, 960), 960, false)
+				return err
+			}
+			if err := call(); err == nil || !strings.Contains(err.Error(), "internal codec error") {
+				t.Fatalf("f32=%v: first call err = %v, want an internal codec error", f32, err)
+			}
+			if err := call(); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("f32=%v: later call err = %v, want it to report closed", f32, err)
+			}
+			if err := dec.Close(); err != nil {
+				t.Fatalf("Close after a panic: %v", err)
+			}
+		}
+	})
+
+	t.Run("encoder", func(t *testing.T) {
+		for _, f32 := range []bool{false, true} {
+			enc, err := NewEncoder(48000, 1, ApplicationAudio)
+			if err != nil {
+				t.Fatal(err)
+			}
+			enc.st = 16
+			out := make([]byte, 4000)
+			call := func() error {
+				if f32 {
+					_, err := enc.EncodeF32(make([]float32, 960), 960, out)
+					return err
+				}
+				_, err := enc.Encode(make([]int16, 960), 960, out)
+				return err
+			}
+			if err := call(); err == nil || !strings.Contains(err.Error(), "internal codec error") {
+				t.Fatalf("f32=%v: first call err = %v, want an internal codec error", f32, err)
+			}
+			if err := call(); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("f32=%v: later call err = %v, want it to report closed", f32, err)
+			}
+			if err := enc.Close(); err != nil {
+				t.Fatalf("Close after a panic: %v", err)
+			}
+		}
+	})
 }

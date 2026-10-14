@@ -727,12 +727,13 @@ func (e *Encoder) ctlInt32(request int32, value int32) error {
 // Encode encodes interleaved signed 16-bit PCM into a single Opus packet.
 //
 // frameSize is the number of samples per channel.
-func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (int, error) {
+func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (n int, err error) {
 	if e == nil {
 		return 0, errors.New("opus: encoder closed")
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	defer e.recoverCodecPanic(&n, &err)
 
 	if e.tls == nil || e.st == 0 {
 		return 0, errors.New("opus: encoder closed")
@@ -793,6 +794,16 @@ func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (int, error)
 	return int(ret), nil
 }
 
+// recoverCodecPanic is the Encoder counterpart of Decoder.recoverCodecPanic: a panic from the
+// transpiled codec becomes an error and disables the encoder. The caller holds e.mu.
+func (e *Encoder) recoverCodecPanic(n *int, err *error) {
+	if r := recover(); r != nil {
+		e.st = 0
+		*n = 0
+		*err = fmt.Errorf("opus: internal codec error, encoder disabled: %v", r)
+	}
+}
+
 // maxEncodeF32Amplitude bounds the float input the encoder sees. libopus expects samples in
 // [-1.0, 1.0]; headroom beyond that works, but at an amplitude of about 2000 the transpiled
 // encoder overflows internally and silently emits digital silence. Staying at 16 (+24 dB over full
@@ -808,12 +819,13 @@ const maxEncodeF32Amplitude = 16
 // Supported frame sizes at 48 kHz are 120, 240, 480, 960, 1920, and 2880 (2.5, 5, 10, 20, 40, and 60 ms).
 //
 // Returns the number of bytes written to packet.
-func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (int, error) {
+func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (n int, err error) {
 	if e == nil {
 		return 0, errors.New("opus: encoder closed")
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	defer e.recoverCodecPanic(&n, &err)
 
 	if e.tls == nil || e.st == 0 {
 		return 0, errors.New("opus: encoder closed")
