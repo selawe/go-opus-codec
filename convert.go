@@ -331,7 +331,9 @@ func encodeStream[T int16 | float32](c pcmCodec[T], l encodeLayout, pw *ogg.Pack
 		if !eofReached {
 			// We have a full frame of input audio available
 			copy(pcm, pending[:frameSamples])
-			pending = pending[frameSamples:]
+			// Shift the remainder down instead of re-slicing from the front: that would eat the
+			// slice's capacity and make the next append reallocate every couple of frames.
+			pending = pending[:copy(pending, pending[frameSamples:])]
 
 			nBytes, err := c.encode(pcm, l.frameSize, packet)
 			if err != nil {
@@ -361,7 +363,7 @@ func encodeStream[T int16 | float32](c pcmCodec[T], l encodeLayout, pw *ogg.Pack
 			toCopy := min(len(pending), frameSamples)
 			copy(pcm[:toCopy], pending[:toCopy])
 			clear(pcm[toCopy:])
-			pending = pending[toCopy:]
+			pending = pending[:copy(pending, pending[toCopy:])]
 
 			nBytes, err := c.encode(pcm, l.frameSize, packet)
 			if err != nil {
