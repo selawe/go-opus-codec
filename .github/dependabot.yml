@@ -1,0 +1,24 @@
+# Keeps the commit-pinned GitHub Actions (see .github/workflows) and the example modules' dependencies
+# current. The root module has no third-party dependencies, so there is nothing to bump there.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directories:
+      - /examples/play
+      - /examples/net
+      - /examples/convert
+      - /benchmarks/codec-comparison
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "build(examples)"
