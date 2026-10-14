@@ -83,6 +83,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer inF.Close()
 
+	// Ctrl-C or SIGTERM discards the temp file instead of leaving it behind.
+	defer atomicfile.AbortOnInterrupt()()
+
 	// Written to a temp file (or a fresh file) and only made visible by Commit, so a
 	// failure never leaves a partial output nor destroys an existing one.
 	outF, err := atomicfile.Create(*outPath, inPath)

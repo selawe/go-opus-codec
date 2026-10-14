@@ -50,6 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var w = stdout
 	var outFile *atomicfile.File
 	if *out != "" {
+		defer atomicfile.AbortOnInterrupt()() // Ctrl-C or SIGTERM discards the temp file
 		// Only made visible by Commit: a failure leaves no partial file and never
 		// destroys an existing one, and the input can not be truncated by accident.
 		outFile, err = atomicfile.Create(*out, fs.Arg(0))

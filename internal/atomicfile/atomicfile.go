@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sync"
+	"syscall"
 )
 
 // ErrSameFile is returned by Create when the destination is one of the input files.
@@ -27,7 +30,68 @@ type File struct {
 
 	dst    string
 	remove string // temporary file to delete on Abort ("" for in-place special files)
-	done   bool
+
+	mu   sync.Mutex // guards done, and serialises Commit/Abort against AbortAll from a signal goroutine
+	done bool
+}
+
+// active tracks every File that has been created and neither committed nor aborted, so a
+// signal handler can discard their temporary files.
+var active = struct {
+	sync.Mutex
+	files map[*File]struct{}
+}{files: map[*File]struct{}{}}
+
+func register(f *File) *File {
+	active.Lock()
+	active.files[f] = struct{}{}
+	active.Unlock()
+	return f
+}
+
+func unregister(f *File) {
+	active.Lock()
+	delete(active.files, f)
+	active.Unlock()
+}
+
+// AbortAll discards every unfinished File, removing their temporary files. It is what an
+// interrupt handler calls, since the deferred Abort of a killed process never runs.
+func AbortAll() {
+	active.Lock()
+	files := make([]*File, 0, len(active.files))
+	for f := range active.files {
+		files = append(files, f)
+	}
+	active.Unlock() // Abort re-takes the registry lock through unregister
+	for _, f := range files {
+		f.Abort()
+	}
+}
+
+// AbortOnInterrupt makes SIGINT and SIGTERM discard all unfinished Files and then exit the
+// process with status 130 or 143 (128 plus the signal number), instead of leaving
+// ".name.<hex>.tmp" files behind. It is meant for the command line tools; call the returned
+// function to restore the default behaviour.
+func AbortOnInterrupt() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case sig := <-ch:
+			AbortAll()
+			if sig == syscall.SIGTERM {
+				os.Exit(143)
+			}
+			os.Exit(130)
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
 }
 
 // Create opens dst for writing. It fails with ErrSameFile if dst refers to any of the
@@ -59,7 +123,7 @@ func Create(dst string, inputs ...string) (*File, error) {
 		if oerr != nil {
 			return nil, oerr
 		}
-		return &File{File: f, dst: dst}, nil
+		return register(&File{File: f, dst: dst}), nil
 	}
 	if dstInfo.Mode().Perm()&0o200 == 0 {
 		// A rename would silently replace a read-only file.
@@ -94,7 +158,7 @@ func createTemp(dst string, perm os.FileMode, chmod bool) (*File, error) {
 				return nil, err
 			}
 		}
-		return &File{File: tmp, dst: dst, remove: name}, nil
+		return register(&File{File: tmp, dst: dst, remove: name}), nil
 	}
 	return nil, &os.PathError{Op: "create", Path: dst, Err: os.ErrExist}
 }
@@ -102,10 +166,13 @@ func createTemp(dst string, perm os.FileMode, chmod bool) (*File, error) {
 // Commit flushes the file to disk and makes it visible at the destination.
 // After a failed Commit the output is discarded as by Abort.
 func (f *File) Commit() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.done {
 		return errors.New("atomicfile: already finished")
 	}
 	f.done = true
+	unregister(f)
 
 	var err error
 	if f.remove != "" { // regular file: make sure the data reached the disk
@@ -137,10 +204,13 @@ func syncDir(dir string) {
 // Abort discards the output. It is a no-op after Commit or a previous Abort, so it can
 // be deferred right after Create.
 func (f *File) Abort() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.done {
 		return
 	}
 	f.done = true
+	unregister(f)
 	_ = f.Close()
 	if f.remove != "" {
 		_ = os.Remove(f.remove)

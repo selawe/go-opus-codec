@@ -9,6 +9,7 @@ import (
 	"runtime/pprof"
 
 	opusgo "github.com/selawe/go-opus-codec"
+	"github.com/selawe/go-opus-codec/internal/atomicfile"
 )
 
 func main() {
@@ -55,6 +56,9 @@ func run(args []string, stderr io.Writer) int {
 		}
 		defer pprof.StopCPUProfile()
 	}
+
+	// The library writes through a temp file; Ctrl-C or SIGTERM must discard it.
+	defer atomicfile.AbortOnInterrupt()()
 
 	if err := opusgo.ConvertOggOpusFileToWAV(fs.Arg(0), *out, opusgo.WithMaxOutputBytes(*maxBytes)); err != nil {
 		return fail(stderr, err)
