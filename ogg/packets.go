@@ -314,8 +314,11 @@ func pageAtOrAfter(seeker io.ReadSeeker, buf []byte, off, total int64) (seekPage
 		if n, err = ensure(end + 4); err != nil {
 			return seekPage{}, err
 		}
-		if end > n || (!last && !(end+4 <= n && bytes.Equal(buf[end:end+4], []byte("OggS")))) {
+		if end > n {
 			continue
+		}
+		if !last && (end+4 > n || !bytes.Equal(buf[end:end+4], []byte("OggS"))) {
+			continue // not followed by another page: the capture pattern was inside a payload
 		}
 		return seekPage{valid: true, off: off + int64(i), size: end - i, granule: binary.LittleEndian.Uint64(buf[i+6 : i+14])}, nil
 	}
@@ -344,7 +347,7 @@ func searchPages(seeker io.ReadSeeker, total int64, target uint64) (before seekP
 	lo, hi := int64(0), total
 	// Once the target page is known to exist and fewer bytes remain than the final scan's page
 	// reader buffers anyway, more probing would only re-read what that scan reads next.
-	for lo < hi && !(found && hi-lo <= seekScanSlack) {
+	for lo < hi && (!found || hi-lo > seekScanSlack) {
 		mid := lo + (hi-lo)/2
 		p, err := firstPageWithGranule(seeker, buf, mid, total)
 		if err != nil {
