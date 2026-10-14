@@ -83,13 +83,13 @@ func (rp *Repacketizer) Close() error {
 // Reset resets the repacketizer state, clearing any previously concatenated frames.
 func (rp *Repacketizer) Reset() error {
 	if rp == nil {
-		return errors.New("opus: repacketizer closed")
+		return errRepacketizerClosed
 	}
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if rp.tls == nil || rp.st == 0 {
-		return errors.New("opus: repacketizer closed")
+		return errRepacketizerClosed
 	}
 	opusccenc.Opus_opus_repacketizer_init(rp.tls, rp.st)
 	clear(rp.packets)
@@ -101,13 +101,13 @@ func (rp *Repacketizer) Reset() error {
 // Multiple packets can be added sequentially up to a maximum duration of 120 ms or 48 frames.
 func (rp *Repacketizer) Cat(packet []byte) error {
 	if rp == nil {
-		return errors.New("opus: repacketizer closed")
+		return errRepacketizerClosed
 	}
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if rp.tls == nil || rp.st == 0 {
-		return errors.New("opus: repacketizer closed")
+		return errRepacketizerClosed
 	}
 	if len(packet) == 0 {
 		return errors.New("opus: cannot repacketize empty packet")
@@ -148,13 +148,13 @@ func (rp *Repacketizer) Frames() int {
 // Out outputs the combined repacketized packet into dst and returns the number of bytes written.
 func (rp *Repacketizer) Out(dst []byte) (int, error) {
 	if rp == nil {
-		return 0, errors.New("opus: repacketizer closed")
+		return 0, errRepacketizerClosed
 	}
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if rp.tls == nil || rp.st == 0 {
-		return 0, errors.New("opus: repacketizer closed")
+		return 0, errRepacketizerClosed
 	}
 	if len(dst) == 0 {
 		return 0, errors.New("opus: destination buffer is empty")
@@ -173,13 +173,13 @@ func (rp *Repacketizer) Out(dst []byte) (int, error) {
 // OutRange outputs a selected range of frames [begin, end) from the repacketizer into dst.
 func (rp *Repacketizer) OutRange(begin, end int, dst []byte) (int, error) {
 	if rp == nil {
-		return 0, errors.New("opus: repacketizer closed")
+		return 0, errRepacketizerClosed
 	}
 	rp.mu.Lock()
 	defer rp.mu.Unlock()
 
 	if rp.tls == nil || rp.st == 0 {
-		return 0, errors.New("opus: repacketizer closed")
+		return 0, errRepacketizerClosed
 	}
 	if begin < 0 || end <= begin {
 		return 0, errors.New("opus: invalid frame range")

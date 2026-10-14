@@ -261,14 +261,14 @@ func (d *Decoder) IsMultistream() bool {
 // Returns the number of samples per channel written into pcm.
 func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bool) (n int, err error) {
 	if d == nil {
-		return 0, errors.New("opus: decoder closed")
+		return 0, errDecoderClosed
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	defer d.recoverCodecPanic(&n, &err)
 
 	if d.tls == nil || d.st == 0 {
-		return 0, errors.New("opus: decoder closed")
+		return 0, errDecoderClosed
 	}
 	if frameSize <= 0 {
 		return 0, errors.New("opus: invalid frameSize")
@@ -321,14 +321,14 @@ func (d *Decoder) Decode(packet []byte, pcm []int16, frameSize int, decodeFEC bo
 // Returns the number of samples per channel written into pcm.
 func (d *Decoder) DecodeF32(packet []byte, pcm []float32, frameSize int, decodeFEC bool) (n int, err error) {
 	if d == nil {
-		return 0, errors.New("opus: decoder closed")
+		return 0, errDecoderClosed
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	defer d.recoverCodecPanic(&n, &err)
 
 	if d.tls == nil || d.st == 0 {
-		return 0, errors.New("opus: decoder closed")
+		return 0, errDecoderClosed
 	}
 	if frameSize <= 0 {
 		return 0, errors.New("opus: invalid frameSize")
@@ -441,13 +441,13 @@ func (d *Decoder) SetGain(gainQ8 int) error {
 
 func (d *Decoder) ctl(request int32) error {
 	if d == nil {
-		return errors.New("opus: decoder closed")
+		return errDecoderClosed
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.tls == nil || d.st == 0 {
-		return errors.New("opus: decoder closed")
+		return errDecoderClosed
 	}
 
 	var ret int32
@@ -464,13 +464,13 @@ func (d *Decoder) ctl(request int32) error {
 
 func (d *Decoder) ctlInt32(request int32, value int32) error {
 	if d == nil {
-		return errors.New("opus: decoder closed")
+		return errDecoderClosed
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.tls == nil || d.st == 0 {
-		return errors.New("opus: decoder closed")
+		return errDecoderClosed
 	}
 
 	bp := d.tls.Alloc(16)
@@ -493,13 +493,13 @@ func (d *Decoder) ctlInt32(request int32, value int32) error {
 // entropy decoding conformance.
 func (d *Decoder) FinalRange() (uint32, error) {
 	if d == nil {
-		return 0, errors.New("opus: decoder closed")
+		return 0, errDecoderClosed
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if d.tls == nil || d.st == 0 {
-		return 0, errors.New("opus: decoder closed")
+		return 0, errDecoderClosed
 	}
 
 	bp := d.tls.Alloc(32)
@@ -538,7 +538,7 @@ func (decoder *Decoder) DecodePacketFEC(nextPacket *ogg.OpusAudioPacket, pcm []i
 
 func (decoder *Decoder) decodePacketInternal(packet *ogg.OpusAudioPacket, pcm []int16, decodeFEC bool) ([]int16, int, error) {
 	if decoder == nil {
-		return nil, 0, errors.New("opus: decoder closed")
+		return nil, 0, errDecoderClosed
 	}
 	var data []byte
 	if packet != nil {
@@ -584,7 +584,7 @@ func (decoder *Decoder) DecodePacketFECF32(nextPacket *ogg.OpusAudioPacket, pcm 
 
 func (decoder *Decoder) decodePacketF32Internal(packet *ogg.OpusAudioPacket, pcm []float32, decodeFEC bool) ([]float32, int, error) {
 	if decoder == nil {
-		return nil, 0, errors.New("opus: decoder closed")
+		return nil, 0, errDecoderClosed
 	}
 	var data []byte
 	if packet != nil {

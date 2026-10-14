@@ -362,13 +362,13 @@ func (e *Encoder) SetPacketLossPerc(percentage int) error {
 
 func (e *Encoder) ctl(request int32) error {
 	if e == nil {
-		return errors.New("opus: encoder closed")
+		return errEncoderClosed
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.tls == nil || e.st == 0 {
-		return errors.New("opus: encoder closed")
+		return errEncoderClosed
 	}
 
 	var ret int32
@@ -524,7 +524,7 @@ func (e *Encoder) SetForceChannels(channels int) error {
 		return fmt.Errorf("opus: invalid forced channels %d (must be Auto, 1, or 2)", channels)
 	}
 	if e == nil {
-		return errors.New("opus: encoder closed")
+		return errEncoderClosed
 	}
 	// libopus applies the control to each underlying encoder in turn and a mono one rejects 2, so
 	// on a multistream encoder with uncoupled streams the call would fail half-applied: the stereo
@@ -613,13 +613,13 @@ func (e *Encoder) Lookahead() (int, error) {
 
 func (e *Encoder) ctlGetInt32(request int32) (int32, error) {
 	if e == nil {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.tls == nil || e.st == 0 {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 
 	bp := e.tls.Alloc(64)
@@ -689,13 +689,13 @@ func (e *Encoder) PreSkip() (int, error) {
 // FinalRange returns the final range of the entropy encoder from the most recently encoded frame.
 func (e *Encoder) FinalRange() (uint32, error) {
 	if e == nil {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.tls == nil || e.st == 0 {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 
 	bp := e.tls.Alloc(32)
@@ -728,13 +728,13 @@ func (e *Encoder) FinalRange() (uint32, error) {
 
 func (e *Encoder) ctlInt32(request int32, value int32) error {
 	if e == nil {
-		return errors.New("opus: encoder closed")
+		return errEncoderClosed
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.tls == nil || e.st == 0 {
-		return errors.New("opus: encoder closed")
+		return errEncoderClosed
 	}
 
 	bp := e.tls.Alloc(16)
@@ -757,14 +757,14 @@ func (e *Encoder) ctlInt32(request int32, value int32) error {
 // frameSize is the number of samples per channel.
 func (e *Encoder) Encode(pcm []int16, frameSize int, packet []byte) (n int, err error) {
 	if e == nil {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	defer e.recoverCodecPanic(&n, &err)
 
 	if e.tls == nil || e.st == 0 {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 	if frameSize <= 0 {
 		return 0, errors.New("opus: invalid frameSize")
@@ -849,14 +849,14 @@ const maxEncodeF32Amplitude = 16
 // Returns the number of bytes written to packet.
 func (e *Encoder) EncodeF32(pcm []float32, frameSize int, packet []byte) (n int, err error) {
 	if e == nil {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	defer e.recoverCodecPanic(&n, &err)
 
 	if e.tls == nil || e.st == 0 {
-		return 0, errors.New("opus: encoder closed")
+		return 0, errEncoderClosed
 	}
 	if frameSize <= 0 {
 		return 0, errors.New("opus: invalid frameSize")

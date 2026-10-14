@@ -45,13 +45,13 @@ func (sc *SoftClipper) finalize() {
 // Process applies soft clipping in-place to interleaved pcm samples.
 func (sc *SoftClipper) Process(pcm []float32) error {
 	if sc == nil {
-		return errors.New("opus: soft clipper closed")
+		return errSoftClipperClosed
 	}
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
 	if sc.tls == nil {
-		return errors.New("opus: soft clipper closed")
+		return errSoftClipperClosed
 	}
 	if len(pcm) == 0 {
 		return nil

@@ -275,3 +275,43 @@ func TestCreateFailureNeverPrintsNilVerb(t *testing.T) {
 		t.Fatalf("createFailure must wrap its cause, got %v", err)
 	}
 }
+
+// Every closed-state error matches ErrClosed, so callers can use errors.Is instead of comparing text.
+func TestClosedObjectsReturnErrClosed(t *testing.T) {
+	enc, err := NewEncoder(48000, 1, ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := NewDecoder(48000, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp, err := NewRepacketizer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := NewSoftClipper(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []interface{ Close() error }{enc, dec, rp, sc} {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pkt := make([]byte, 100)
+	_, encErr := enc.Encode(make([]int16, 960), 960, pkt)
+	_, decErr := dec.Decode([]byte{0xFC, 1}, make([]int16, 960), 960, false)
+	_, bitrateErr := enc.Bitrate()
+	_, rpErr := rp.Out(make([]byte, 16))
+	scErr := sc.Process(make([]float32, 8))
+	for name, err := range map[string]error{"Encode": encErr, "Decode": decErr, "Bitrate": bitrateErr, "Repacketizer.Out": rpErr, "SoftClipper": scErr} {
+		if !errors.Is(err, ErrClosed) {
+			t.Errorf("%s on a closed object: err = %v, want errors.Is(err, ErrClosed)", name, err)
+		}
+	}
+	if !strings.Contains(decErr.Error(), "decoder closed") {
+		t.Errorf("the message should still name the object: %q", decErr)
+	}
+}
