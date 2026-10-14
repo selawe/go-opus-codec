@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+Minor release (pre-1.0 semver): `player` now plays chained Ogg streams through (it used to stop after the first stream), plus new `opus` API (`ErrClosed`, decoder getters) and lower allocation use in the WAV paths.
+
 ### Added
 - `player.OpusPlayer` plays chained Ogg streams through (the usual shape of an internet radio Opus stream): after an end-of-stream packet it reads one packet ahead, and a following stream gets a fresh decoder, its own pre-skip and end trimming while `CurrentSample`/`CurrentTime` keep counting. `IsFinished` turns true only at the real end. A stream with a different channel count ends playback with the sticky `player.ErrStreamChange` after the earlier stream has played in full. Seeking, `Length` and `TotalSamples` remain single-stream (`8354580`)
 - `opus.ErrClosed`: every method of a closed (or codec-error-disabled) `Encoder`, `Decoder`, `Repacketizer` and `SoftClipper` returns an error that matches it with `errors.Is`; the messages still name the object (`f345cf7`)
