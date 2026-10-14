@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"testing"
+	"time"
 )
 
 func buildMockOpusStream(serial uint32, channels uint8, preSkip uint16, artist string, audioPackets [][]byte) ([]byte, error) {
@@ -293,5 +295,61 @@ func TestOpusReader_ChainedStreamTruncatedAfterHead(t *testing.T) {
 	}
 	if !errors.Is(last, ErrHeaderSequence) {
 		t.Fatalf("err = %v, want ErrHeaderSequence rather than a clean EOF", last)
+	}
+}
+
+// buildStreamWithEOSGranule returns a one-packet stream whose final page claims the given granule.
+func buildStreamWithEOSGranule(t *testing.T, granule uint64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	pw := NewPacketWriter(&buf, 9)
+	headPkt, _ := BuildOpusHeadPacket(OpusHead{Version: 1, Channels: 2, PreSkip: 312, InputSampleRate: 48000})
+	tagsPkt, _ := BuildOpusTagsPacket(OpusTags{Vendor: "t"})
+	for i, p := range [][]byte{headPkt, tagsPkt} {
+		if err := pw.WritePacket(p, 0, i == 0, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := pw.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.WritePacket([]byte{0xFC, 1}, granule, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestOpusReader_TotalDurationDoesNotOverflow(t *testing.T) {
+	// 10e9 samples at 48 kHz is ~57.9 hours; samples*time.Second wraps negative there.
+	r, err := NewOpusReader(bytes.NewReader(buildStreamWithEOSGranule(t, 10_000_000_000+312)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.TotalDuration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Duration(10_000_000_000/48000)*time.Second + time.Duration(10_000_000_000%48000)*time.Second/48000
+	if d != want || d <= 0 {
+		t.Fatalf("TotalDuration = %v, want %v", d, want)
+	}
+}
+
+// A granule of 2^63 or more is not a sample count and must not turn into a negative length.
+func TestOpusReader_HugeGranuleIsNotNegative(t *testing.T) {
+	for _, g := range []uint64{1 << 63, 1<<63 + 5, math.MaxUint64 - 1} {
+		r, err := NewOpusReader(bytes.NewReader(buildStreamWithEOSGranule(t, g)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := r.TotalSamples(); n < 0 {
+			t.Fatalf("granule %d gave TotalSamples %d", g, n)
+		}
+		if d, _ := r.TotalDuration(); d < 0 {
+			t.Fatalf("granule %d gave TotalDuration %v", g, d)
+		}
 	}
 }

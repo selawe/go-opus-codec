@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -299,7 +300,13 @@ func (r *OpusReader) TotalDuration() (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	return time.Duration(samples) * time.Second / OpusSampleRateHz, nil
+	// Split into seconds and remainder: samples*time.Second overflows int64 beyond ~53 hours,
+	// and a forged granule position can claim far more than that.
+	secs, rem := samples/OpusSampleRateHz, samples%OpusSampleRateHz
+	if secs > int64(math.MaxInt64/time.Second)-1 {
+		return time.Duration(math.MaxInt64), nil
+	}
+	return time.Duration(secs)*time.Second + time.Duration(rem)*time.Second/OpusSampleRateHz, nil
 }
 
 func parseOpusHead(b []byte) (OpusHead, error) {

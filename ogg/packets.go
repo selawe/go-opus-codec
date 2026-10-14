@@ -384,10 +384,12 @@ func (r *PacketReader) LastPageGranule() (int64, error) {
 			}
 			return 0, fmt.Errorf("ogg: could not find last page granule: %w", err)
 		}
-		if page.GranulePosition != math.MaxUint64 {
+		// -1 (all ones) means "no packet ends on this page"; values of 2^63 and above cannot be
+		// a sample count and would turn negative in int64, so they are ignored too.
+		if page.GranulePosition <= math.MaxInt64 {
 			lastGranule = int64(page.GranulePosition)
 		}
-		if page.IsEOS() && page.GranulePosition != math.MaxUint64 {
+		if page.IsEOS() && page.GranulePosition <= math.MaxInt64 {
 			return int64(page.GranulePosition), nil
 		}
 	}
