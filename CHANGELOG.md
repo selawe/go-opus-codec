@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-14
+
+Minor release (pre-1.0 semver): new public API (encoder controls, more WAV formats, chained Ogg, `PacketWriter.Close`/`WriteOpusHeaders`, `DefaultMaxOutputBytes`) and a few behaviors that tighten, listed under Changed and Security. The `SeekToPage` rewrite is the largest change.
+
 ### Added
 - **Encoder controls.** `opus.Encoder` gains `SetBandwidth`, `SetMaxBandwidth`, `SetSignal`, `SetForceChannels`, `SetLSBDepth`, `SetPredictionDisabled`, `SetPhaseInversionDisabled`, `SetVBRConstraint` and a getter for every control (`Bitrate`, `VBR`, `Complexity`, `DTX`, `InbandFEC`, `PacketLossPerc`, `Bandwidth`, `MaxBandwidth`, `Signal`, ...), with the typed values `opus.Signal` (`SignalAuto`, `SignalVoice`, `SignalMusic`) and `BandwidthAuto`. `MaxBandwidth` on a multistream encoder is read from stream 0, because libopus's multistream control omits it. Note that `Bandwidth()` is the bandwidth of the last encoded frame, not the last value passed to `SetBandwidth` (`3931bc7`)
 - **More WAV formats.** `wav.Reader` reads 8-bit unsigned, 24-bit and 32-bit integer PCM and 32-bit float, plain or `WAVE_FORMAT_EXTENSIBLE`, and RF64/BW64 files over 4 GiB (ds64). New `Reader.ReadFloat32PCM`, `BitsPerSample` and `Format`. `EncodeWAVToOggOpus` sends wider-than-16-bit and float input through the float32 encoder without an int16 round trip (`d0e2d3f`)
