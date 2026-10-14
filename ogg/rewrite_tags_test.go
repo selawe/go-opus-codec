@@ -280,3 +280,40 @@ func TestRewriteOpusTags_TruncatedInputIsNotEOF(t *testing.T) {
 		}
 	}
 }
+
+// RFC 3533: a page on which no packet ends carries granule position -1. OpusTags larger than one page spans several, and
+// only the last of those pages (where the packet ends) may carry a real value (0 for a header). Strict demuxers care.
+func TestRewriteOpusTags_SpanningTagPagesUseGranuleMinusOne(t *testing.T) {
+	music, err := os.ReadFile("../test/music_64kbps.opus")
+	if err != nil {
+		t.Skip(err)
+	}
+	huge := OpusTags{Vendor: "v", Comments: []string{"COMMENT=" + strings.Repeat("x", 200_000)}} // ~4 pages
+	var out bytes.Buffer
+	if err := RewriteOpusTags(bytes.NewReader(music), &out, huge); err != nil {
+		t.Fatal(err)
+	}
+	pages := readPages(t, out.Bytes())
+	var tagPages []*Page
+	for _, p := range pages[1:] {
+		tagPages = append(tagPages, p)
+		if len(p.SegmentTable) > 0 && p.SegmentTable[len(p.SegmentTable)-1] < 255 { // the packet ends here
+			break
+		}
+	}
+	if len(tagPages) < 3 {
+		t.Fatalf("expected the tags to span several pages, got %d", len(tagPages))
+	}
+	for i, p := range tagPages {
+		last := i == len(tagPages)-1
+		switch {
+		case !last && p.GranulePosition != ^uint64(0):
+			t.Errorf("tag page %d (the packet continues): granule %#x, want -1", i, p.GranulePosition)
+		case last && p.GranulePosition != 0:
+			t.Errorf("last tag page: granule %#x, want 0", p.GranulePosition)
+		}
+		if wantContinued := i > 0; p.IsContinuedPacket() != wantContinued {
+			t.Errorf("tag page %d: continued flag = %v, want %v", i, p.IsContinuedPacket(), wantContinued)
+		}
+	}
+}

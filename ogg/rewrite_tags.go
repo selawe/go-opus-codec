@@ -253,7 +253,12 @@ func writeSpanningTags(w io.Writer, serial uint32, seq *uint32, packet []byte) e
 		copy(hdr[0:4], "OggS")
 		hdr[4] = 0
 		hdr[5] = headerType
-		binary.LittleEndian.PutUint64(hdr[6:14], 0) // granule 0 for header
+		// Granule 0 on the page where the header packet ends; -1 on pages where it continues (RFC 3533).
+		granule := uint64(0)
+		if nSeg < len(lace) {
+			granule = ^uint64(0)
+		}
+		binary.LittleEndian.PutUint64(hdr[6:14], granule)
 		binary.LittleEndian.PutUint32(hdr[14:18], serial)
 		binary.LittleEndian.PutUint32(hdr[18:22], *seq)
 		binary.LittleEndian.PutUint32(hdr[22:26], 0)
