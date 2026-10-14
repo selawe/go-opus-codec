@@ -146,7 +146,9 @@ func (c *countingReadSeeker) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (c *countingReadSeeker) Seek(off int64, whence int) (int64, error) { return c.rs.Seek(off, whence) }
+func (c *countingReadSeeker) Seek(off int64, whence int) (int64, error) {
+	return c.rs.Seek(off, whence)
+}
 
 // A seek must cost O(log n) page reads, not a pass over the file: a probe that reads a whole
 // 128 KiB buffer, or a scan that restarts at byte 0, shows up here as megabytes.
