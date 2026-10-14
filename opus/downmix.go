@@ -24,6 +24,14 @@ import (
 // If your input is from a WAV file or SMPTE stream, reorder it first with ConvertSMPTEToVorbis51
 // (or its float32 variant) and then call Downmix51ToStereo or Downmix51ToStereoNormalized.
 
+// Notes common to the downmix functions:
+//
+//   - The LFE (subwoofer) channel is not mixed into the stereo output, as is conventional for ITU-R BS.775 downmixes; add it
+//     yourself if you want it.
+//   - dst is reused when its capacity suffices, otherwise a new slice is allocated; the result is always returned. dst may
+//     be src[:0] to convert in place (each output frame is written behind the input frames it reads), but not a slice that
+//     overlaps src at an offset.
+//   - Samples are rounded (int16) and clamped to the sample range; float32 output is clamped to [-1, 1].
 var (
 	ErrInvalidSampleCount = errors.New("opus: sample count is not a multiple of channel count")
 )
@@ -271,8 +279,8 @@ func Downmix71ToStereo(dst []int16, src []int16) ([]int16, error) {
 		rl := float64(src[offset+5])
 		rr := float64(src[offset+6])
 
-		surroundL := (sl + rl) * (sqrt2Inv * 0.7071)
-		surroundR := (sr + rr) * (sqrt2Inv * 0.7071)
+		surroundL := (sl + rl) * 0.5
+		surroundR := (sr + rr) * 0.5
 		center := fc * sqrt2Inv
 
 		l := fl + center + surroundL
@@ -341,7 +349,7 @@ func Downmix71ToStereoF32(dst []float32, src []float32) ([]float32, error) {
 	}
 
 	const cCenter = float32(sqrt2Inv)
-	const cSurround = float32(sqrt2Inv * 0.7071)
+	const cSurround = float32(0.5)
 
 	for i := 0; i < numFrames; i++ {
 		offset := i * 8

@@ -335,3 +335,59 @@ func TestConvertSMPTEToVorbis71(t *testing.T) {
 		t.Errorf("SMPTE LFE after the reorder and downmix: %v, want silence", out)
 	}
 }
+
+// The surround channels of the 7.1 downmix each carry half the weight: (SL + RL) / 2 into L. The weight was written as
+// sqrt2Inv*0.7071 = 0.499995, close enough to hide in rounded int16 tests but not in a float comparison.
+func TestDownmix71SurroundWeightIsExactlyHalf(t *testing.T) {
+	// Vorbis/Opus 7.1 order: FL FC FR SL SR RL RR LFE.
+	src := []float32{0, 0, 0, 0.25, 0.25, 0.25, 0.25, 0.9}
+	out, err := Downmix71ToStereoF32(nil, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range out {
+		if d := float64(v) - 0.25; d < -1e-7 || d > 1e-7 { // (0.25 + 0.25) * 0.5
+			t.Errorf("surround-only L/R[%d] = %.8f, want 0.25 exactly (LFE must not leak either)", i, v)
+		}
+	}
+}
+
+// Converting in place (dst = src[:0]) is documented to work, because every output frame is written behind the input frames it reads.
+func TestDownmixInPlaceMatchesSeparateBuffer(t *testing.T) {
+	mk := func(n int) []int16 {
+		b := make([]int16, n)
+		for i := range b {
+			b[i] = int16((i*7919)%30000 - 15000)
+		}
+		return b
+	}
+	for name, c := range map[string]struct {
+		ch int
+		f  func(dst, src []int16) ([]int16, error)
+	}{
+		"5.1":            {6, Downmix51ToStereo},
+		"5.1 normalized": {6, Downmix51ToStereoNormalized},
+		"7.1":            {8, Downmix71ToStereo},
+		"7.1 normalized": {8, Downmix71ToStereoNormalized},
+		"stereo to mono": {2, DownmixStereoToMono},
+	} {
+		src := mk(c.ch * 40)
+		want, err := c.f(nil, append([]int16(nil), src...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		work := append([]int16(nil), src...)
+		got, err := c.f(work[:0], work)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: len %d vs %d", name, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s: in-place result differs at %d: %d vs %d", name, i, got[i], want[i])
+			}
+		}
+	}
+}
