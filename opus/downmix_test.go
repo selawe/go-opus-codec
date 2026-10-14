@@ -151,3 +151,81 @@ func TestDownmix71ToStereoF32(t *testing.T) {
 		t.Errorf("expected (0.2, 0.4), got (%f, %f)", stereo[0], stereo[1])
 	}
 }
+
+func TestDownmix51ToStereoNormalized_NoClipping(t *testing.T) {
+	// Full-scale in every channel: 32767
+	fullScale := []int16{32767, 32767, 32767, 32767, 32767, 32767}
+	stereo, err := Downmix51ToStereoNormalized(nil, fullScale)
+	if err != nil {
+		t.Fatalf("Downmix51ToStereoNormalized: %v", err)
+	}
+
+	// Total sum coefficient is exactly 1.0 (0.4142 + 2*0.29289 = 1.0), so result must be <= 32767
+	if stereo[0] > 32767 || stereo[1] > 32767 {
+		t.Errorf("expected normalized output <= 32767, got (%d, %d)", stereo[0], stereo[1])
+	}
+	// Result should be approximately 32767
+	if math.Abs(float64(stereo[0]-32767)) > 2 {
+		t.Errorf("expected ~32767, got %d", stereo[0])
+	}
+
+	// Float32 full-scale
+	fullScaleF32 := []float32{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}
+	stereoF32, err := Downmix51ToStereoNormalizedF32(nil, fullScaleF32)
+	if err != nil {
+		t.Fatalf("Downmix51ToStereoNormalizedF32: %v", err)
+	}
+	if stereoF32[0] > 1.0001 || stereoF32[1] > 1.0001 {
+		t.Errorf("expected normalized float output <= 1.0, got (%f, %f)", stereoF32[0], stereoF32[1])
+	}
+}
+
+func TestDownmix71ToStereoNormalized_NoClipping(t *testing.T) {
+	fullScale := []int16{32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767}
+	stereo, err := Downmix71ToStereoNormalized(nil, fullScale)
+	if err != nil {
+		t.Fatalf("Downmix71ToStereoNormalized: %v", err)
+	}
+	if stereo[0] > 32767 || stereo[1] > 32767 {
+		t.Errorf("expected normalized 7.1 output <= 32767, got (%d, %d)", stereo[0], stereo[1])
+	}
+
+	fullScaleF32 := []float32{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}
+	stereoF32, err := Downmix71ToStereoNormalizedF32(nil, fullScaleF32)
+	if err != nil {
+		t.Fatalf("Downmix71ToStereoNormalizedF32: %v", err)
+	}
+	if stereoF32[0] > 1.0001 || stereoF32[1] > 1.0001 {
+		t.Errorf("expected normalized 7.1 float output <= 1.0, got (%f, %f)", stereoF32[0], stereoF32[1])
+	}
+}
+
+func TestConvertSMPTEToVorbis51(t *testing.T) {
+	// SMPTE: [0:FL, 1:FR, 2:FC, 3:LFE, 4:RL, 5:RR]
+	smpte := []int16{1, 2, 3, 4, 5, 6}
+	vorbis, err := ConvertSMPTEToVorbis51(nil, smpte)
+	if err != nil {
+		t.Fatalf("ConvertSMPTEToVorbis51: %v", err)
+	}
+	// Expected Vorbis: [0:FL, 1:FC, 2:FR, 3:RL, 4:RR, 5:LFE] -> [1, 3, 2, 5, 6, 4]
+	expected := []int16{1, 3, 2, 5, 6, 4}
+	for i, v := range expected {
+		if vorbis[i] != v {
+			t.Errorf("channel %d: got %d, want %d", i, vorbis[i], v)
+		}
+	}
+
+	// Float32 conversion
+	smpteF32 := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}
+	vorbisF32, err := ConvertSMPTEToVorbis51F32(nil, smpteF32)
+	if err != nil {
+		t.Fatalf("ConvertSMPTEToVorbis51F32: %v", err)
+	}
+	expectedF32 := []float32{1.0, 3.0, 2.0, 5.0, 6.0, 4.0}
+	for i, v := range expectedF32 {
+		if vorbisF32[i] != v {
+			t.Errorf("channel %d: got %f, want %f", i, vorbisF32[i], v)
+		}
+	}
+}
+
