@@ -30,26 +30,26 @@ const OpusSampleRateHz = ogg.OpusSampleRateHz
 
 // NewPlayerFromReader creates a new OpusPlayer from an io.Reader that produces int16 PCM samples.
 // If the reader implements io.Seeker, frame-accurate seeking within the stream will be supported.
-func NewPlayerFromReader(reader io.Reader) (*OpusPlayer[int16], error) {
-	return player.NewPlayerFromReader(reader)
+func NewPlayerFromReader(reader io.Reader, opts ...ogg.ReaderOption) (*OpusPlayer[int16], error) {
+	return player.NewPlayerFromReader(reader, opts...)
 }
 
 // NewPlayerF32FromReader creates a new OpusPlayer from an io.Reader that produces normalized float32 PCM samples in [-1.0, 1.0].
 // If the reader implements io.Seeker, frame-accurate seeking within the stream will be supported.
-func NewPlayerF32FromReader(reader io.Reader) (*OpusPlayer[float32], error) {
-	return player.NewPlayerF32FromReader(reader)
+func NewPlayerF32FromReader(reader io.Reader, opts ...ogg.ReaderOption) (*OpusPlayer[float32], error) {
+	return player.NewPlayerF32FromReader(reader, opts...)
 }
 
 // NewPlayerFromFile creates a new OpusPlayer from a file path producing int16 PCM samples.
 // If stream is true, the file will be streamed on-demand instead of fully loaded into memory.
 // Calling player.Close() releases the underlying file handle and decoder resources.
-func NewPlayerFromFile(path string, stream bool) (*OpusPlayer[int16], error) {
-	return player.NewPlayerFromFile(path, stream)
+func NewPlayerFromFile(path string, stream bool, opts ...ogg.ReaderOption) (*OpusPlayer[int16], error) {
+	return player.NewPlayerFromFile(path, stream, opts...)
 }
 
 // NewPlayerF32FromFile creates a new OpusPlayer from a file path producing normalized float32 PCM samples in [-1.0, 1.0].
 // If stream is true, the file will be streamed on-demand instead of fully loaded into memory.
 // Calling player.Close() releases the underlying file handle and decoder resources.
-func NewPlayerF32FromFile(path string, stream bool) (*OpusPlayer[float32], error) {
-	return player.NewPlayerF32FromFile(path, stream)
+func NewPlayerF32FromFile(path string, stream bool, opts ...ogg.ReaderOption) (*OpusPlayer[float32], error) {
+	return player.NewPlayerF32FromFile(path, stream, opts...)
 }

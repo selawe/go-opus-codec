@@ -1332,3 +1332,104 @@ func TestPlayer_ChainedChannelChangeIsAStickyError(t *testing.T) {
 		t.Fatalf("a later Read returned %v, want the same error", err)
 	}
 }
+
+func splitRawPages(t *testing.T, raw []byte) [][]byte {
+	t.Helper()
+	var pages [][]byte
+	pr := ogg.NewPageReader(bytes.NewReader(raw))
+	off := 0
+	for {
+		p, err := pr.ReadPage()
+		if errors.Is(err, io.EOF) {
+			return pages
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 27 + len(p.SegmentTable) + len(p.SegmentData)
+		pages = append(pages, raw[off:off+n])
+		off += n
+	}
+}
+
+// muxStreams interleaves whole streams page by page, all BOS pages first (the Ogg grouping rule).
+func muxStreams(t *testing.T, streams ...[]byte) []byte {
+	t.Helper()
+	pages := make([][][]byte, len(streams))
+	var out bytes.Buffer
+	for i, s := range streams {
+		pages[i] = splitRawPages(t, s)
+		out.Write(pages[i][0])
+		pages[i] = pages[i][1:]
+	}
+	for more := true; more; {
+		more = false
+		for i := range pages {
+			if len(pages[i]) > 0 {
+				out.Write(pages[i][0])
+				pages[i] = pages[i][1:]
+				more = true
+			}
+		}
+	}
+	return out.Bytes()
+}
+
+func fakeForeignStream(t *testing.T, serial uint32, packets int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, serial)
+	if err := pw.WritePacket([]byte("\x01vorbis-identification"), 0, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.FlushPage(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < packets; i++ {
+		if err := pw.WritePacket(bytes.Repeat([]byte{0xAA}, 300), uint64(i+1)*1024, false, i == packets-1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// In a multiplexed file the player plays the first Opus stream and skips the rest; options choose another.
+func TestPlayer_MultiplexedFile(t *testing.T) {
+	english := encodeChainPart(t, 10, 2, 8, 300)
+	bahasa := encodeChainPart(t, 20, 2, 6, 900)
+	wantEnglish, wantBahasa := playAll(t, english), playAll(t, bahasa)
+	file := muxStreams(t, fakeForeignStream(t, 5, 20), english, bahasa)
+
+	if got := playAll(t, file); !bytes.Equal(got, wantEnglish) {
+		t.Fatalf("default: played %d bytes that are not the first Opus stream (%d bytes)", len(got), len(wantEnglish))
+	}
+
+	p, err := NewPlayerFromReader(bytes.NewReader(file), ogg.WithSerial(20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if got, err := io.ReadAll(p); err != nil || !bytes.Equal(got, wantBahasa) {
+		t.Fatalf("WithSerial(20): %d bytes, err %v; want the second stream (%d bytes)", len(got), err, len(wantBahasa))
+	}
+
+	// Seeking works on the selected stream of a multiplexed file as it does on that stream alone.
+	alone, err := NewPlayerFromReader(bytes.NewReader(bahasa))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer alone.Close()
+	for _, p2 := range []*OpusPlayer[int16]{p, alone} {
+		if err := p2.SeekSample(2000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _ := io.ReadAll(p)
+	b, _ := io.ReadAll(alone)
+	if len(a) == 0 || !bytes.Equal(a, b) {
+		t.Fatalf("after a seek the multiplexed player differs from the stream alone (%d vs %d bytes)", len(a), len(b))
+	}
+}

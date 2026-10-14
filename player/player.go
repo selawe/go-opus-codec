@@ -75,8 +75,8 @@ type OpusPlayer[SampleT DataType] struct {
 	volume              float64
 }
 
-func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
-	opusReader, err := ogg.NewOpusReader(reader)
+func newPlayerFromReader[T DataType](reader io.Reader, opts []ogg.ReaderOption) (*OpusPlayer[T], error) {
+	opusReader, err := ogg.NewOpusReaderWithOptions(reader, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -110,16 +110,19 @@ func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
 //
 // Internally the reader is wrapped in a bufio.Reader, so you do not have to
 // wrap it yourself.
-func NewPlayerFromReader(reader io.Reader) (*OpusPlayer[int16], error) {
-	return newPlayerFromReader[int16](reader)
+func NewPlayerFromReader(reader io.Reader, opts ...ogg.ReaderOption) (*OpusPlayer[int16], error) {
+	return newPlayerFromReader[int16](reader, opts)
 }
 
+// The optional ogg.ReaderOption values choose the stream to play in a multiplexed Ogg file (ogg.WithSerial,
+// ogg.WithStreamSelector); by default the first Opus stream is played and the others are skipped.
+//
 // Same as NewPlayerFromReader but the Read() and ReadPacket() methods will produce float32 PCM data
-func NewPlayerF32FromReader(reader io.Reader) (*OpusPlayer[float32], error) {
-	return newPlayerFromReader[float32](reader)
+func NewPlayerF32FromReader(reader io.Reader, opts ...ogg.ReaderOption) (*OpusPlayer[float32], error) {
+	return newPlayerFromReader[float32](reader, opts)
 }
 
-func newPlayerFromFile[T DataType](path string, stream bool) (*OpusPlayer[T], error) {
+func newPlayerFromFile[T DataType](path string, stream bool, opts []ogg.ReaderOption) (*OpusPlayer[T], error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -127,7 +130,7 @@ func newPlayerFromFile[T DataType](path string, stream bool) (*OpusPlayer[T], er
 
 	if stream {
 		// dont need bufio here because OggOpusReader already uses bufio internally
-		p, err := newPlayerFromReader[T](file)
+		p, err := newPlayerFromReader[T](file, opts)
 		if err != nil {
 			file.Close()
 			return nil, err
@@ -142,20 +145,20 @@ func newPlayerFromFile[T DataType](path string, stream bool) (*OpusPlayer[T], er
 			return nil, err
 		}
 
-		return newPlayerFromReader[T](bytes.NewReader(data.Bytes()))
+		return newPlayerFromReader[T](bytes.NewReader(data.Bytes()), opts)
 	}
 }
 
 // Create a new OpusPlayer from a file path that produces int16 PCM data.
 // If stream is true, the file will be kept open and
 // otherwise if stream is false then the entirety of the file will be read into memory.
-func NewPlayerFromFile(path string, stream bool) (*OpusPlayer[int16], error) {
-	return newPlayerFromFile[int16](path, stream)
+func NewPlayerFromFile(path string, stream bool, opts ...ogg.ReaderOption) (*OpusPlayer[int16], error) {
+	return newPlayerFromFile[int16](path, stream, opts)
 }
 
 // Same as NewPlayerFromFile but produces float32 PCM data
-func NewPlayerF32FromFile(path string, stream bool) (*OpusPlayer[float32], error) {
-	return newPlayerFromFile[float32](path, stream)
+func NewPlayerF32FromFile(path string, stream bool, opts ...ogg.ReaderOption) (*OpusPlayer[float32], error) {
+	return newPlayerFromFile[float32](path, stream, opts)
 }
 
 // Close closes the underlying decoder and any opened file streams.
