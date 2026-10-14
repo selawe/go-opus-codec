@@ -3,13 +3,27 @@ package ogg
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"io"
 	"math"
 )
 
+var (
+	// ErrWriterClosed is returned by a PacketWriter used after Close.
+	ErrWriterClosed = errors.New("ogg: write after Close")
+	// ErrWriteAfterEOS is returned when a packet is written after one flagged as the end of the
+	// stream: a logical bitstream ends at its EOS page.
+	ErrWriteAfterEOS = errors.New("ogg: write after the end-of-stream packet")
+	// ErrMissingEOS is returned by Close when no packet was flagged as the end of the stream and
+	// there was no pending page left to flag, so the stream cannot be terminated properly.
+	ErrMissingEOS = errors.New("ogg: stream closed without an end-of-stream packet")
+)
+
 // PacketWriter writes Ogg packets as pages using the lacing scheme (RFC 3533).
 //
-// This is a minimal single-stream writer.
+// This is a minimal single-stream writer. Write the OpusHead and OpusTags packets with
+// WriteOpusHeaders (it keeps the RFC 7845 section 3 page layout), flag the last audio packet as the
+// end of the stream, and call Close. The first write error is sticky: every later call returns it.
 type PacketWriter struct {
 	bw *bufio.Writer
 
@@ -37,6 +51,11 @@ type PacketWriter struct {
 
 	laceBuf    []byte
 	pageHeader [27]byte
+
+	err      error // first write error, returned by every later call
+	eos      bool  // a packet flagged as the end of the stream has been written
+	closed   bool
+	closeErr error
 }
 
 // NewPacketWriter creates a new PacketWriter that serializes packets into Ogg pages using the given bitstream serial.
@@ -58,7 +77,13 @@ func NewPacketWriter(w io.Writer, serial uint32) *PacketWriter {
 
 // FlushPage forces any buffered packets in the current page to be written out.
 func (pw *PacketWriter) FlushPage() error {
-	if pw == nil || !pw.hasPendingPage || len(pw.pageSegTable) == 0 {
+	if pw == nil {
+		return nil
+	}
+	if pw.err != nil {
+		return pw.err
+	}
+	if !pw.hasPendingPage || len(pw.pageSegTable) == 0 {
 		return nil
 	}
 	err := pw.writePage(pw.pageHeaderType, pw.pageGranule, pw.pageSegTable, pw.pageData)
@@ -86,17 +111,71 @@ func (pw *PacketWriter) Flush() error {
 	if pw.bw == nil {
 		return nil
 	}
-	return pw.bw.Flush()
+	if err := pw.bw.Flush(); err != nil {
+		pw.err = err
+		return err
+	}
+	return nil
 }
 
-// WritePacket writes a single logical Ogg packet.
-//
-// If MaxPageSize > 0, small packets are batched together into a single page
-// to reduce framing overhead per RFC 3533 §6.
-//
-// If the packet is too large for one page, it will be continued across pages.
-// For continued packets, only the final page carries the provided granulePos;
-// earlier pages use granulePos = -1 (0xFFFFFFFFFFFFFFFF).
+// WriteOpusHeaders writes the OpusHead and OpusTags packets with the page layout RFC 7845 section 3
+// requires: OpusHead alone on the first (BOS) page, OpusTags ending its own page, so that the first
+// audio packet starts on a fresh page even when batching (MaxPageSize) is on. Call it once, first.
+func (pw *PacketWriter) WriteOpusHeaders(head OpusHead, tags OpusTags) error {
+	headPkt, err := BuildOpusHeadPacket(head)
+	if err != nil {
+		return err
+	}
+	tagsPkt, err := BuildOpusTagsPacket(tags)
+	if err != nil {
+		return err
+	}
+	for i, pkt := range [][]byte{headPkt, tagsPkt} {
+		if err := pw.WritePacket(pkt, 0, i == 0, false); err != nil {
+			return err
+		}
+		if err := pw.FlushPage(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close ends the stream: a page still buffered by batching is flagged as the end of the stream and
+// written, and the buffered output is flushed (the underlying writer is not closed). It returns
+// ErrMissingEOS if no end-of-stream packet was written and nothing was pending to flag; the same
+// error is returned by every later call, and writes after Close fail with ErrWriterClosed.
+func (pw *PacketWriter) Close() error {
+	if pw == nil {
+		return nil
+	}
+	if pw.closed {
+		return pw.closeErr
+	}
+	pw.closed = true
+	pw.closeErr = pw.finish()
+	return pw.closeErr
+}
+
+func (pw *PacketWriter) finish() error {
+	if pw.err != nil {
+		return pw.err
+	}
+	if !pw.eos && pw.hasPendingPage {
+		pw.pageHeaderType |= 0x04
+		pw.eos = true
+	}
+	if err := pw.Flush(); err != nil {
+		return err
+	}
+	if !pw.eos {
+		return ErrMissingEOS
+	}
+	return nil
+}
+
+// lacing returns the lacing values of packet: 255-byte segments, ended by one shorter than 255
+// (a zero when the length is a multiple of 255). The slice is reused by the next call.
 func (pw *PacketWriter) lacing(packet []byte) []byte {
 	pw.laceBuf = pw.laceBuf[:0]
 	remaining := len(packet)
@@ -117,6 +196,23 @@ func (pw *PacketWriter) lacing(packet []byte) []byte {
 // For continued packets, only the final page carries the provided granulePos;
 // earlier pages use granulePos = -1 (0xFFFFFFFFFFFFFFFF).
 func (pw *PacketWriter) WritePacket(packet []byte, granulePos uint64, bos bool, eos bool) error {
+	if pw.err != nil {
+		return pw.err
+	}
+	if pw.closed {
+		return ErrWriterClosed
+	}
+	if pw.eos {
+		return ErrWriteAfterEOS
+	}
+	if err := pw.writePacket(packet, granulePos, bos, eos); err != nil {
+		return err
+	}
+	pw.eos = eos
+	return nil
+}
+
+func (pw *PacketWriter) writePacket(packet []byte, granulePos uint64, bos bool, eos bool) error {
 	segTable := pw.lacing(packet)
 
 	// If batching is disabled (MaxPageSize <= 0), or if packet spans across pages (> 255 segments):
@@ -252,14 +348,19 @@ func (pw *PacketWriter) writePage(headerType uint8, granulePos uint64, segTable 
 	crc := oggCRC3(header, segTable, segData)
 	binary.LittleEndian.PutUint32(header[22:26], crc)
 
+	// A failed write leaves a partial page in the buffer; nothing after it can be valid, so the
+	// error is remembered and returned by every later call.
 	if _, err := pw.bw.Write(header); err != nil {
+		pw.err = err
 		return err
 	}
 	if _, err := pw.bw.Write(segTable); err != nil {
+		pw.err = err
 		return err
 	}
 	if len(segData) > 0 {
 		if _, err := pw.bw.Write(segData); err != nil {
+			pw.err = err
 			return err
 		}
 	}
