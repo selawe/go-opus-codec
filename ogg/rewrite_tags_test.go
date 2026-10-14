@@ -193,3 +193,59 @@ func TestRewriteOpusTags_MissingTagsPageRejection(t *testing.T) {
 	}
 }
 
+func TestRewriteOpusTags_CorruptedAndTruncatedStreams(t *testing.T) {
+	// Build a valid Ogg stream
+	head := testHead()
+	origTags := OpusTags{Vendor: "test", Comments: []string{"A=B"}}
+	var oggBuf bytes.Buffer
+	pw := NewPacketWriter(&oggBuf, 0x99887766)
+	_ = pw.WriteOpusHeaders(head, origTags)
+	for i := 0; i < 5; i++ {
+		isEOS := i == 4
+		_ = pw.WritePacket([]byte{0xf8, byte(i)}, uint64((i+1)*960), false, isEOS)
+	}
+	_ = pw.Close()
+
+	validBytes := oggBuf.Bytes()
+
+	// 1. Corrupted byte in middle of the stream (e.g. at offset 150)
+	corrupted := make([]byte, len(validBytes))
+	copy(corrupted, validBytes)
+	corrupted[150] ^= 0xFF
+
+	var outCorrupt bytes.Buffer
+	newTags := OpusTags{Vendor: "new", Comments: []string{"A=B"}}
+	err := RewriteOpusTags(bytes.NewReader(corrupted), &outCorrupt, newTags)
+	if err == nil {
+		t.Fatal("expected error on corrupted byte in stream, got nil")
+	}
+
+	// 2. Truncated tail (strip last 50 bytes)
+	truncated := validBytes[:len(validBytes)-50]
+	var outTrunc bytes.Buffer
+	err = RewriteOpusTags(bytes.NewReader(truncated), &outTrunc, newTags)
+	if err == nil {
+		t.Fatal("expected error on truncated stream, got nil")
+	}
+
+	// 3. Stream missing EOS page (strip the final EOS page entirely)
+	// The stream has 7 pages: page 0 (head), page 1 (tags), pages 2-6 (audio, 6 is EOS)
+	pr := NewPageReader(bytes.NewReader(validBytes))
+	pr.Resync = false
+	var noEOSBuf bytes.Buffer
+	for i := 0; i < 6; i++ { // omit the 7th page (EOS)
+		p, err := pr.ReadPage()
+		if err != nil {
+			t.Fatalf("ReadPage: %v", err)
+		}
+		_ = writeRawPage(&noEOSBuf, p)
+	}
+
+	var outNoEOS bytes.Buffer
+	err = RewriteOpusTags(bytes.NewReader(noEOSBuf.Bytes()), &outNoEOS, newTags)
+	if !errors.Is(err, ErrMissingEOS) {
+		t.Fatalf("expected ErrMissingEOS on stream without EOS page, got: %v", err)
+	}
+}
+
+

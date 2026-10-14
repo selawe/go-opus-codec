@@ -23,12 +23,13 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 
 	pr := NewPageReader(r)
 	pr.VerifyCRC = true
+	pr.Resync = false // Never skip corrupted bytes silently in a file rewriting tool
 
 	// Step 1: Read the first page (must be BOS and contain OpusHead).
 	p0, err := pr.ReadPage()
 	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return io.ErrUnexpectedEOF
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return ErrTruncatedPage
 		}
 		return fmt.Errorf("read BOS page: %w", err)
 	}
@@ -37,6 +38,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 		return ErrNotOpusOgg
 	}
 	serial := p0.BitstreamSerial
+	expectedInputSeq := p0.PageSequence + 1
 
 	// Write the OpusHead BOS page unchanged.
 	if err := writeRawPage(w, p0); err != nil {
@@ -49,6 +51,9 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	for {
 		p, err := pr.ReadPage()
 		if err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) || err == ErrTruncatedPage {
+				return ErrTruncatedPage
+			}
 			return fmt.Errorf("read old OpusTags: %w", err)
 		}
 		if p.BitstreamSerial != serial {
@@ -58,6 +63,11 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 			}
 			continue
 		}
+
+		if p.PageSequence != expectedInputSeq {
+			return fmt.Errorf("ogg: page sequence gap in input stream: got %d, want %d", p.PageSequence, expectedInputSeq)
+		}
+		expectedInputSeq++
 
 		if firstTagPage {
 			if len(p.SegmentData) < 8 || string(p.SegmentData[:8]) != "OpusTags" {
@@ -92,16 +102,29 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	}
 
 	// Step 4: Stream and resequence all subsequent audio pages.
+	sawEOS := false
 	for {
 		p, err := pr.ReadPage()
-		if errors.Is(err, io.EOF) {
-			break
-		}
 		if err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) || err == ErrTruncatedPage {
+				return ErrTruncatedPage
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return fmt.Errorf("read audio page: %w", err)
 		}
 
 		if p.BitstreamSerial == serial {
+			if p.PageSequence != expectedInputSeq {
+				return fmt.Errorf("ogg: page sequence gap in input stream: got %d, want %d", p.PageSequence, expectedInputSeq)
+			}
+			expectedInputSeq++
+
+			if p.IsEOS() {
+				sawEOS = true
+			}
+
 			// Resequence page
 			p.PageSequence = currSeq
 			currSeq++
@@ -114,6 +137,10 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 				return err
 			}
 		}
+	}
+
+	if !sawEOS {
+		return fmt.Errorf("%w: input stream ended without EOS page", ErrMissingEOS)
 	}
 
 	return nil
