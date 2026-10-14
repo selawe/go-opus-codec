@@ -7,7 +7,18 @@ import (
 	"io"
 )
 
+// truncatedInputError is what RewriteOpusTags returns when its input ends early. It matches ErrTruncatedPage and
+// io.ErrUnexpectedEOF but, unlike ErrTruncatedPage (which wraps io.EOF for the page reader's benefit), NOT io.EOF:
+// callers routinely read errors.Is(err, io.EOF) as "finished", and a cut-off file is not.
+type truncatedInputError struct{}
 
+func (truncatedInputError) Error() string {
+	return "ogg: input ends before the end of the stream (truncated)"
+}
+func (truncatedInputError) Is(target error) bool { return target == ErrTruncatedPage }
+func (truncatedInputError) Unwrap() error        { return io.ErrUnexpectedEOF }
+
+var errTruncatedInput error = truncatedInputError{}
 
 // RewriteOpusTags streams an Ogg Opus file from r to w, replacing its OpusTags
 // metadata comments with newTags without decoding or re-encoding any audio packets.
@@ -29,7 +40,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	p0, err := pr.ReadPage()
 	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return ErrTruncatedPage
+			return errTruncatedInput
 		}
 		return fmt.Errorf("read BOS page: %w", err)
 	}
@@ -51,8 +62,9 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 	for {
 		p, err := pr.ReadPage()
 		if err != nil {
-			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrTruncatedPage) {
-				return ErrTruncatedPage
+			// A stream that stops after OpusHead is truncated too (its OpusTags never arrived).
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrTruncatedPage) {
+				return errTruncatedInput
 			}
 			return fmt.Errorf("read old OpusTags: %w", err)
 		}
@@ -107,7 +119,7 @@ func RewriteOpusTags(r io.Reader, w io.Writer, newTags OpusTags) error {
 		p, err := pr.ReadPage()
 		if err != nil {
 			if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrTruncatedPage) {
-				return ErrTruncatedPage
+				return errTruncatedInput
 			}
 			if errors.Is(err, io.EOF) {
 				break

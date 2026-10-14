@@ -3,6 +3,8 @@ package ogg
 import (
 	"bytes"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -248,4 +250,33 @@ func TestRewriteOpusTags_CorruptedAndTruncatedStreams(t *testing.T) {
 	}
 }
 
-
+// A truncated input must not look like a clean end: callers routinely treat errors.Is(err, io.EOF) as success.
+func TestRewriteOpusTags_TruncatedInputIsNotEOF(t *testing.T) {
+	music, err := os.ReadFile("../test/music_64kbps.opus")
+	if err != nil {
+		t.Skip(err)
+	}
+	headOnly := splitPages(t, music)[0] // OpusHead and then nothing: the OpusTags page is missing
+	for name, in := range map[string][]byte{
+		"empty input":         {},
+		"only OpusHead":       headOnly,
+		"cut at the end":      music[:len(music)-100],
+		"cut inside the body": music[:len(music)/2+7],
+	} {
+		var out bytes.Buffer
+		err := RewriteOpusTags(bytes.NewReader(in), &out, OpusTags{Vendor: "v"})
+		if err == nil {
+			t.Errorf("%s: no error", name)
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			t.Errorf("%s: err = %v satisfies errors.Is(err, io.EOF); a truncated file would be taken for a finished one", name, err)
+		}
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("%s: err = %v, want errors.Is(err, io.ErrUnexpectedEOF)", name, err)
+		}
+		if !errors.Is(err, ErrTruncatedPage) {
+			t.Errorf("%s: err = %v must still match ErrTruncatedPage", name, err)
+		}
+	}
+}
