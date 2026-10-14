@@ -1206,3 +1206,129 @@ func TestPlayer_SeekOutOfRangeLeavesPlaybackIntact(t *testing.T) {
 		t.Logf("SeekTime(max) -> %v (acceptable)", err)
 	}
 }
+
+// encodeChainPart returns one complete Ogg Opus stream of a sine wave: frames 20 ms frames, whose end-of-stream
+// granule trims 100 samples off the last one, so the pre-skip and end-trimming of every part are exercised.
+func encodeChainPart(t *testing.T, serial uint32, channels, frames int, freq float64) []byte {
+	t.Helper()
+	enc, err := opus.NewEncoder(48000, channels, opus.ApplicationAudio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enc.Close()
+	preSkip, err := enc.PreSkip()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	pw := ogg.NewPacketWriter(&buf, serial)
+	pw.MaxPageSize = 8000
+	if err := pw.WriteOpusHeaders(ogg.OpusHead{Version: 1, Channels: uint8(channels), PreSkip: uint16(preSkip), InputSampleRate: 48000}, ogg.OpusTags{Vendor: "chain"}); err != nil {
+		t.Fatal(err)
+	}
+	pcm := make([]int16, 960*channels)
+	pkt := make([]byte, 4000)
+	for f := 0; f < frames; f++ {
+		for i := 0; i < 960; i++ {
+			v := int16(9000 * math.Sin(2*math.Pi*freq*float64(f*960+i)/48000))
+			for c := 0; c < channels; c++ {
+				pcm[i*channels+c] = v
+			}
+		}
+		n, err := enc.Encode(pcm, 960, pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		granule := uint64(preSkip) + uint64(f+1)*960
+		last := f == frames-1
+		if last {
+			granule -= 100
+		}
+		if err := pw.WritePacket(pkt[:n], granule, false, last); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func playAll(t *testing.T, data []byte) []byte {
+	t.Helper()
+	p, err := NewPlayerFromReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	out, err := io.ReadAll(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A chained file plays through every stream, each with its own pre-skip, end trimming and a fresh decoder:
+// the output is exactly the parts played one after another.
+func TestPlayer_FollowsChainedStreams(t *testing.T) {
+	a := encodeChainPart(t, 1, 2, 12, 300)
+	b := encodeChainPart(t, 2, 2, 9, 1700)
+	c := encodeChainPart(t, 3, 2, 5, 600)
+	wantA, wantB, wantC := playAll(t, a), playAll(t, b), playAll(t, c)
+	want := append(append(append([]byte(nil), wantA...), wantB...), wantC...)
+
+	p, err := NewPlayerFromReader(bytes.NewReader(append(append(append([]byte(nil), a...), b...), c...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	// Reading exactly the first stream must not report the end: another stream follows.
+	first := make([]byte, len(wantA))
+	if _, err := io.ReadFull(p, first); err != nil {
+		t.Fatal(err)
+	}
+	if p.IsFinished() {
+		t.Fatal("IsFinished is true after the first stream although two more follow")
+	}
+	rest, err := io.ReadAll(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := append(first, rest...); !bytes.Equal(got, want) {
+		t.Fatalf("chained playback differs from the parts played separately (%d vs %d bytes)", len(got), len(want))
+	}
+	if !p.IsFinished() {
+		t.Error("IsFinished is false after the last stream")
+	}
+	if got, wantSamples := p.CurrentSample(), int64(len(want)/4); got != wantSamples {
+		t.Errorf("CurrentSample = %d, want %d", got, wantSamples)
+	}
+}
+
+// The output format is fixed, so a chained stream with another channel count ends playback with an error that
+// stays: the earlier stream is played in full first.
+func TestPlayer_ChainedChannelChangeIsAStickyError(t *testing.T) {
+	a := encodeChainPart(t, 1, 2, 6, 300)
+	b := encodeChainPart(t, 2, 1, 6, 300)
+	wantA := playAll(t, a)
+
+	p, err := NewPlayerFromReader(bytes.NewReader(append(append([]byte(nil), a...), b...)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	got, err := io.ReadAll(p)
+	if !errors.Is(err, ErrStreamChange) {
+		t.Fatalf("err = %v, want ErrStreamChange", err)
+	}
+	if !bytes.Equal(got, wantA) {
+		t.Fatalf("the first stream was not played in full before the error (%d vs %d bytes)", len(got), len(wantA))
+	}
+	buf := make([]byte, 64)
+	if _, err := p.Read(buf); !errors.Is(err, ErrStreamChange) {
+		t.Fatalf("a later Read returned %v, want the same error", err)
+	}
+}

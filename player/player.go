@@ -8,9 +8,11 @@
 //   - Stream playback from disk or arbitrary io.Reader streams.
 //   - Concurrent thread-safe access across multiple goroutines.
 //
-// Chained Ogg files (several logical bitstreams one after another) are not followed: playback
-// ends at the first stream's end-of-stream page, and Length and seeking assume a single stream.
-// Use opusgo.DecodeOggOpusToWAV or ogg.OpusReader, which do follow chains, to read them whole.
+// Chained Ogg files (several logical bitstreams one after another, as internet radio sends them) play
+// through: each stream gets a fresh decoder and its own pre-skip and end trimming, and CurrentSample and
+// CurrentTime keep counting across streams. A stream whose channel count differs ends playback with
+// ErrStreamChange, since the output format is fixed. Seeking, Length, TotalSamples and Duration still
+// assume a single stream: on a chain they cover only the last one, and a seek can land in the wrong stream.
 //
 // Every method takes one mutex, held across I/O on the underlying reader (see Close): a blocked
 // source blocks the other methods too, and a non-seekable source is consumed whole by Length.
@@ -63,7 +65,9 @@ type OpusPlayer[SampleT DataType] struct {
 	position         int
 	bytesPerSample   int
 	finished         bool
-	readErr          error // sticky non-EOF error that ended the stream, returned until a Seek
+	readErr          error                // sticky non-EOF error that ended the stream, returned until a Seek
+	stashed          *ogg.OpusAudioPacket // read ahead after an end-of-stream packet: the first packet of the next chained stream
+	channels         uint8                // channel count of the first stream; chained streams must match it
 	// how many samples have been read so far
 	totalSamples        int64
 	totalSamplesDecoded uint64
@@ -88,6 +92,7 @@ func newPlayerFromReader[T DataType](reader io.Reader) (*OpusPlayer[T], error) {
 		reader:           opusReader,
 		decoder:          decoder,
 		preskipRemaining: int64(opusReader.Head.PreSkip),
+		channels:         opusReader.Head.Channels,
 		position:         0,
 		bytesPerSample:   dataSize(zero),
 		volume:           1.0,
@@ -265,6 +270,74 @@ func (player *OpusPlayer[SampleT]) readPacketLocked(p []byte) (int, error) {
 	return 0, fmt.Errorf("unsupported data type")
 }
 
+// ErrStreamChange is returned when a chained Ogg stream changes the channel count, which the player's
+// fixed output format cannot follow. Playback of the earlier streams is unaffected.
+var ErrStreamChange = errors.New("player: chained stream changes the channel count")
+
+// fail ends playback with err: io.EOF is a clean end, anything else is remembered so that a corrupt
+// or truncated stream does not later look like a clean EOF.
+func (player *OpusPlayer[T]) fail(err error) error {
+	player.finished = true
+	if !errors.Is(err, io.EOF) {
+		player.readErr = err
+	}
+	return err
+}
+
+// nextPacket returns the next audio packet to play, or the error that ends playback. It follows
+// chained Ogg streams: the first packet of a new stream gets a fresh decoder and its own pre-skip.
+func (player *OpusPlayer[T]) nextPacket() (*ogg.OpusAudioPacket, error) {
+	packet := player.stashed
+	player.stashed = nil
+	if packet == nil {
+		var err error
+		if packet, err = player.reader.ReadAudioPacket(); err != nil {
+			return nil, player.fail(err)
+		}
+	}
+	if packet.NewStream {
+		if err := player.beginStream(); err != nil {
+			return nil, player.fail(err)
+		}
+	}
+	player.updateTimestamp(packet.GranulePos)
+	return packet, nil
+}
+
+// beginStream switches to the stream the reader has just entered (reader.Head is already its header).
+// The player works from its own copy of the channel count (player.channels): reading ahead after an
+// end-of-stream packet moves reader.Head on while the previous stream's audio is still being played out.
+func (player *OpusPlayer[T]) beginStream() error {
+	head := player.reader.Head
+	if head.Channels != player.channels {
+		return fmt.Errorf("%w: %d channels, then %d", ErrStreamChange, player.channels, head.Channels)
+	}
+	decoder, err := opus.NewDecoderFromHead(head)
+	if err != nil {
+		return err
+	}
+	if player.decoder != nil {
+		_ = player.decoder.Close() // only releases memory; the new decoder is already in hand
+	}
+	player.decoder = decoder
+	player.preskipRemaining = int64(head.PreSkip)
+	player.totalSamplesDecoded = 0 // granule positions restart at zero in every stream
+	return nil
+}
+
+// peekNextStream runs after an end-of-stream packet has been decoded. It reads one packet ahead to
+// learn whether a chained stream follows (kept for the next read) or the data ends here; the
+// audio already decoded is still played out first. On a network source this waits for that
+// packet, as the next read would have.
+func (player *OpusPlayer[T]) peekNextStream() {
+	next, err := player.reader.ReadAudioPacket()
+	if err != nil {
+		_ = player.fail(err)
+		return
+	}
+	player.stashed = next
+}
+
 // endErr is what a read returns once the stream is exhausted: io.EOF, or the error that cut it short.
 func (player *OpusPlayer[SampleT]) endErr() error {
 	if player.readErr != nil {
@@ -278,19 +351,9 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 		return 0, player.endErr()
 	}
 	if player.position >= len(player.bufferFloat32) {
-		packet, err := player.reader.ReadAudioPacket()
+		packet, err := player.nextPacket()
 		if err != nil {
-			player.finished = true
-			if !errors.Is(err, io.EOF) {
-				player.readErr = err // a corrupt or truncated stream must not later look like a clean EOF
-			}
 			return 0, err
-		}
-
-		player.updateTimestamp(packet.GranulePos)
-
-		if packet.EOS {
-			player.finished = true
 		}
 
 		player.bufferFloat32 = player.bufferFloat32[:cap(player.bufferFloat32)]
@@ -309,12 +372,16 @@ func (player *OpusPlayer[SampleT]) readPacketFloat32(p []byte) (int, error) {
 
 		newSize := player.handleSkip(n, packet, len(player.bufferFloat32))
 		player.bufferFloat32 = player.bufferFloat32[:newSize]
+
+		if packet.EOS {
+			player.peekNextStream()
+		}
 	}
 
 	channels := player.Channels()
 	vol := float32(player.volume)
 
-	switch player.reader.Head.Channels {
+	switch player.channels {
 	case 1:
 		// we have to produce stereo audio, so each input sample becomes two output samples
 		atMost := min(len(p)/8, len(player.bufferFloat32)-player.position)
@@ -403,7 +470,7 @@ func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxL
 	if player.preskipRemaining > 0 {
 		skip := min(int64(n), player.preskipRemaining)
 		player.preskipRemaining -= skip
-		player.position += int(skip) * int(player.reader.Head.Channels)
+		player.position += int(skip) * int(player.channels)
 	}
 
 	size := maxLength
@@ -412,7 +479,7 @@ func (player *OpusPlayer[T]) handleSkip(n int, packet *ogg.OpusAudioPacket, maxL
 	// trim any trailing excess samples beyond the granule position.
 	if packet.GranuleValid && player.totalSamplesDecoded > packet.GranulePos {
 		excessSamples := player.totalSamplesDecoded - packet.GranulePos
-		upper := excessSamples * uint64(player.reader.Head.Channels)
+		upper := excessSamples * uint64(player.channels)
 		if upper < uint64(size) {
 			size -= int(upper)
 		} else {
@@ -432,19 +499,9 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 		return 0, player.endErr()
 	}
 	if player.position >= len(player.bufferInt16) {
-		packet, err := player.reader.ReadAudioPacket()
+		packet, err := player.nextPacket()
 		if err != nil {
-			player.finished = true
-			if !errors.Is(err, io.EOF) {
-				player.readErr = err // a corrupt or truncated stream must not later look like a clean EOF
-			}
 			return 0, err
-		}
-
-		player.updateTimestamp(packet.GranulePos)
-
-		if packet.EOS {
-			player.finished = true
 		}
 
 		player.bufferInt16 = player.bufferInt16[:cap(player.bufferInt16)]
@@ -463,12 +520,16 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 
 		newSize := player.handleSkip(n, packet, len(player.bufferInt16))
 		player.bufferInt16 = player.bufferInt16[:newSize]
+
+		if packet.EOS {
+			player.peekNextStream()
+		}
 	}
 
 	channels := player.Channels()
 	vol := player.volume
 
-	switch player.reader.Head.Channels {
+	switch player.channels {
 	case 1:
 		// we have to produce stereo audio, so each input sample becomes two output samples
 		atMost := min(len(p)/4, len(player.bufferInt16)-player.position)
@@ -568,10 +629,10 @@ func (player *OpusPlayer[SampleT]) readPacketInt16(p []byte) (int, error) {
 // Mono audio (1 channel) is upmixed to stereo (2 channels).
 // Multichannel audio (e.g. 5.1, 7.1) preserves all channels.
 func (player *OpusPlayer[T]) Channels() int {
-	if player.reader.Head.Channels == 1 {
+	if player.channels == 1 {
 		return 2 // mono is upmixed to stereo
 	}
-	return int(player.reader.Head.Channels)
+	return int(player.channels)
 }
 
 // The sample rate of the decoded PCM stream, which is always 48000 Hz for Opus
@@ -736,6 +797,7 @@ func (player *OpusPlayer[T]) seekSampleLocked(position uint64) error {
 	player.updateTimestamp(granule)
 	player.finished = false
 	player.readErr = nil
+	player.stashed = nil
 	player.totalSamplesDecoded = granule
 
 	// reset decoder state

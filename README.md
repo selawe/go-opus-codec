@@ -465,9 +465,10 @@ boundary and marks the first packet of a new stream with `NewStream` and `Stream
 converts a chain whose streams all have the same channel count, and fails with an error on a
 mismatch or on more than 65536 streams.
 
-Two limits to know about: `player.OpusPlayer` stops at the end of the first stream, and seeking
-(`SeekToPage`, the player's `Seek*`) and `TotalSamples` assume a single stream, so on a chain they can
-land in the wrong stream or report only the last stream's length. Read chained files sequentially.
+`player.OpusPlayer` plays a chain through as well (a stream with a different channel count ends playback with
+`player.ErrStreamChange`). The limit to know about: seeking (`SeekToPage`, the player's `Seek*`), `Length` and
+`TotalSamples` assume a single stream, so on a chain they can land in the wrong stream or report only the last
+stream's length. Read chained files sequentially.
 
 ## Examples Directory
 
